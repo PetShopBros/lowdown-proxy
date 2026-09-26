@@ -74,7 +74,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       interactions >= 100 ? "high" :
       interactions >= 10  ? "medium" : "low";
 
-    return res.status(200).json({
+    const nodeId = (req.headers["x-lowdown-node-id"] as string) ?? null;
+
+    // 기본 응답
+    const baseResponse = {
       target,
       target_type: data.target_type,
       interactions,
@@ -83,6 +86,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       avg_rating: data.avg_rating,
       review_conversion_rate: data.review_conversion_rate,
       confidence,
+    };
+
+    // node_id 없으면 기본 응답
+    if (!nodeId) {
+      return res.status(200).json(baseResponse);
+    }
+
+    // node_id 있으면 상세 데이터 추가
+    const { data: breakdown } = await supabase
+      .from("interactions")
+      .select("task_type, outcome, latency_ms, created_at")
+      .eq("target", target)
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    const taskBreakdown: Record<string, { success: number; failure: number }> = {};
+    const recentTrends: { date: string; count: number }[] = [];
+    const dateCounts: Record<string, number> = {};
+
+    for (const row of breakdown ?? []) {
+      // task_breakdown
+      const t = row.task_type ?? "unknown";
+      if (!taskBreakdown[t]) taskBreakdown[t] = { success: 0, failure: 0 };
+      if (row.outcome === "success") taskBreakdown[t].success++;
+      else taskBreakdown[t].failure++;
+
+      // recent_trends (날짜별 카운트)
+      const date = row.created_at?.slice(0, 10);
+      if (date) dateCounts[date] = (dateCounts[date] ?? 0) + 1;
+    }
+
+    for (const [date, count] of Object.entries(dateCounts).sort()) {
+      recentTrends.push({ date, count });
+    }
+
+    return res.status(200).json({
+      ...baseResponse,
+      task_breakdown: taskBreakdown,
+      recent_trends: recentTrends,
     });
   } catch (err) {
     console.error(err);

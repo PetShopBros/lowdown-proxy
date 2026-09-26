@@ -2,7 +2,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
+import { getNodeId } from "./node-identity.js";
+
 const BASE_URL = process.env.LOWDOWN_API_URL ?? "https://lowdown-proxy.vercel.app";
+const NODE_ID = getNodeId();
 
 const server = new McpServer({
   name: "lowdown",
@@ -22,7 +25,7 @@ server.tool(
   async ({ target }) => {
     const res = await fetch(
       `${BASE_URL}/api/reputation/${encodeURIComponent(target)}`,
-      { headers: { "x-lowdown-source": "organic" } }
+      { headers: { "x-lowdown-source": "organic", "x-lowdown-node-id": NODE_ID } }
     );
     const data = await res.json() as any;
     return {
