@@ -1,6 +1,6 @@
 {
   "name": "lowdown-proxy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Transparent stdio proxy that records MCP tool call interactions for the Lowdown reputation experiment.",
   "type": "module",
   "bin": {
