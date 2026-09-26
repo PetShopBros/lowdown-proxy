@@ -8,6 +8,7 @@ export interface InteractionRecord {
   outcome: "success" | "partial" | "failure";
   latency_ms?: number;
   source?: "organic" | "seeded" | "synthetic";
+  node_id?: string;
 }
 
 let client: ReturnType<typeof createClient> | null = null;
@@ -53,6 +54,7 @@ export async function recordInteraction(record: InteractionRecord): Promise<void
       outcome: record.outcome,
       latency_ms: record.latency_ms ?? null,
       source: record.source ?? "organic",
+      node_id: record.node_id ?? null,
     } as never);
     if (error && process.env.LOWDOWN_DEBUG) {
       console.error("[lowdown] interaction 기록 실패:", error.message);

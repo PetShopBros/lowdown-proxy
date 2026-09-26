@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { recordInteraction, type InteractionRecord } from "./supabase.js";
+import { getNodeId } from "./node-identity.js";
 
 interface PendingCall {
   method: string;
@@ -25,6 +26,7 @@ interface ProxyOptions {
  * - tool_execution 성공(JSON-RPC 에러 없음)과 실제 결과 품질은 다른 문제 — v0는 전자만 다룬다.
  */
 export function runProxy(opts: ProxyOptions): void {
+  const nodeId = getNodeId();
   const child = spawn(opts.command, opts.args, {
     stdio: ["pipe", "pipe", "inherit"], // stderr는 그대로 상위로 흘려보냄(디버깅용)
   });
@@ -77,6 +79,7 @@ export function runProxy(opts: ProxyOptions): void {
           outcome,
           latency_ms,
           source: opts.source,
+          node_id: nodeId,
         };
 
         // fire-and-forget — 응답 전달을 기다리게 하지 않음
