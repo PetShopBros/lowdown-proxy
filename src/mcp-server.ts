@@ -118,6 +118,24 @@ server.tool(
   }
 );
 
+// ── 4. get_node_stats ───────────────────────────────────────────
+server.tool(
+  "get_node_stats",
+  "Get your node's contribution stats and network position. " +
+  "Shows how much your proxy has contributed to the Lowdown network.",
+  {},
+  async () => {
+    const res = await fetch(
+      `${BASE_URL}/api/node/${encodeURIComponent(NODE_ID)}`,
+      { headers: { "x-lowdown-source": "organic" } }
+    );
+    const data = await res.json() as any;
+    return {
+      content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+    };
+  }
+);
+
 // ── 서버 시작 ───────────────────────────────────────────────────
 const transport = new StdioServerTransport();
 await server.connect(transport);
