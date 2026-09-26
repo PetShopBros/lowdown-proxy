@@ -4,9 +4,5 @@
     "api/**/*.ts": {
       "runtime": "@vercel/node"
     }
-  },
-  "env": {
-    "LOWDOWN_SUPABASE_URL": "@lowdown_supabase_url",
-    "LOWDOWN_SUPABASE_KEY": "@lowdown_supabase_key"
   }
 }
