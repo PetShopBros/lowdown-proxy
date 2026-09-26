@@ -1,0 +1,31 @@
+{
+  "name": "lowdown-proxy",
+  "version": "0.1.0",
+  "description": "Transparent stdio proxy that records MCP tool call interactions for the Lowdown reputation experiment.",
+  "type": "module",
+  "bin": {
+    "lowdown-proxy": "./dist/cli.js"
+  },
+  "main": "./dist/cli.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts"
+  },
+  "keywords": ["mcp", "agent", "reputation", "interaction", "lowdown"],
+  "license": "MIT",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "@vercel/node": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
