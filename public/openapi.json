@@ -1,0 +1,93 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Lowdown API",
+    "description": "Query and record AI agent/tool interaction reputation data.",
+    "version": "0.1.3"
+  },
+  "servers": [
+    {
+      "url": "https://lowdown-proxy.vercel.app"
+    }
+  ],
+  "paths": {
+    "/api/reputation/{target}": {
+      "get": {
+        "operationId": "getReputation",
+        "summary": "Get reputation of an agent, tool, or service",
+        "description": "Returns interaction history, success rate, and confidence level for the given target. Supports fuzzy matching — short names like 'brave-search' resolve automatically.",
+        "parameters": [
+          {
+            "name": "target",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Identifier of the target. e.g. 'mcp:modelcontextprotocol/brave-search' or just 'brave-search'"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Reputation data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "target": { "type": "string" },
+                    "interactions": { "type": "integer" },
+                    "success_rate": { "type": "number" },
+                    "confidence": { "type": "string", "enum": ["low", "medium", "high"] },
+                    "avg_latency_ms": { "type": "number" },
+                    "review_count": { "type": "integer" },
+                    "avg_rating": { "type": "number" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/interactions": {
+      "post": {
+        "operationId": "recordInteraction",
+        "summary": "Record an interaction with an agent, tool, or service",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["actor", "target", "target_type", "task_type", "outcome"],
+                "properties": {
+                  "actor": { "type": "string", "description": "Your agent/system identifier" },
+                  "target": { "type": "string", "description": "Identifier of what you used" },
+                  "target_type": { "type": "string", "enum": ["agent", "tool", "service", "human"] },
+                  "task_type": { "type": "string", "description": "e.g. 'web_search', 'code_gen'" },
+                  "outcome": { "type": "string", "enum": ["success", "partial", "failure"] },
+                  "latency_ms": { "type": "integer" },
+                  "source": { "type": "string", "enum": ["organic", "seeded", "synthetic"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

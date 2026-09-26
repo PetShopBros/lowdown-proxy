@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.3] - 2026-09-26
+
+### Added
+- Fuzzy matching on `GET /api/reputation/:target` — short names like `brave-search` now resolve to `mcp:modelcontextprotocol/brave-search` automatically
+- MCP Registry registration at `io.github.PetShopBros/lowdown-proxy` via `mcp-publisher`
+- Synthetic seed data: 180 interaction records across 6 targets (5 MCP tools + `api:deepseek/deepseek-chat`), source tagged `synthetic`
+
+### Changed
+- `mcpName` in `package.json` corrected to `io.github.PetShopBros/lowdown-proxy`
+- `server.json` updated with correct namespace and transport field format
+
 ## [0.1.1] - 2026-09-26
 
 ### Added

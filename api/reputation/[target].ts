@@ -45,10 +45,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const source = req.headers["x-lowdown-source"] === "seeded" ? "seeded" : "organic";
     const requester = (req.headers["x-lowdown-actor"] as string) ?? null;
 
+    const userAgent = (req.headers["user-agent"] as string) ?? null;
+
     await supabase.from("reputation_lookups").insert({
       requester,
       target,
       source,
+      user_agent: userAgent,
     } as never);
 
     if (error || !data) {
