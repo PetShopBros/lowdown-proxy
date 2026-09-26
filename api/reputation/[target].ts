@@ -22,12 +22,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const supabase = getSupabase();
 
-    // reputation_summary 뷰에서 집계 조회
-    const { data, error } = await supabase
+    // reputation_summary 뷰에서 집계 조회 (정확 매칭 → 퍼지 매칭 순)
+    let { data, error } = await supabase
       .from("reputation_summary")
       .select("*")
       .eq("target", target)
       .single();
+
+    // 정확 매칭 실패 시 LIKE 퍼지 매칭
+    if (error || !data) {
+      const { data: fuzzy } = await supabase
+        .from("reputation_summary")
+        .select("*")
+        .ilike("target", `%${target}%`)
+        .order("interactions", { ascending: false })
+        .limit(1)
+        .single();
+      if (fuzzy) { data = fuzzy; error = null; }
+    }
 
     // 조회 자체를 로깅 (organic vs seeded 구분)
     const source = req.headers["x-lowdown-source"] === "seeded" ? "seeded" : "organic";
