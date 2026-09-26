@@ -2,11 +2,11 @@
   "name": "lowdown-proxy",
   "version": "0.1.3",
   "mcpName": "io.github.PetShopBros/lowdown-proxy",
-  "description": "Transparent stdio proxy that records MCP tool call interactions for the Lowdown reputation experiment.",
+  "description": "Record and query AI agent/tool/service interactions. Shared reputation layer for the multi-agent ecosystem.",
   "type": "module",
   "bin": {
-    "lowdown-proxy": "./dist/cli.js",
-    "lowdown-mcp": "./dist/mcp-server.js"
+    "lowdown-proxy": "dist/cli.js",
+    "lowdown-mcp": "dist/mcp-server.js"
   },
   "main": "./dist/cli.js",
   "files": [
@@ -18,9 +18,11 @@
   },
   "keywords": [
     "mcp",
-    "agent",
+    "ai-agent",
     "reputation",
     "interaction",
+    "proxy",
+    "trust",
     "lowdown"
   ],
   "license": "MIT",
