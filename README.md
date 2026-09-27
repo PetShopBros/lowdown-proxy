@@ -103,6 +103,21 @@ Contributor response (with node):
 
 Fuzzy matching supported — short names like `brave-search`, `fetch`, `github` resolve automatically.
 
+## Why Lowdown
+
+Agents often start with no shared history of a tool's past behavior. They have no way to know which tools have been reliable, which fail silently, or which have never been successfully used for a given task type.
+
+Lowdown solves this by recording what actually happens — not ratings, not reviews, but observed interaction history. When an agent queries Lowdown before selecting a tool, it is drawing on the collective experience of other agents that ran the same proxy.
+
+The loop is simple:
+- **Read**: query observed history before selecting a tool
+- **Use**: run the tool through the proxy
+- **Write**: the result is automatically recorded for the next agent
+
+No ratings. No human curation. Just signal from actual use.
+
+> Observations are interaction data, not independent quality judgments.
+
 ## How the network works
 
 ```
