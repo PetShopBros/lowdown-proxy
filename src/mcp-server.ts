@@ -75,6 +75,13 @@ server.tool(
     ),
   },
   async ({ candidates, task_type }) => {
+    // compare_calls 로그 (fire-and-forget)
+    void fetch(`${BASE_URL}/api/compare-log`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ candidates, task_type: task_type ?? null, node_id: NODE_ID }),
+    }).catch(() => {});
+
     // 후보들을 병렬로 조회 (task_type 있으면 필터 적용)
     const results = await Promise.all(
       candidates.map(async (target) => {
