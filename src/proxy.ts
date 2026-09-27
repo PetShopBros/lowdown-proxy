@@ -29,6 +29,7 @@ export function runProxy(opts: ProxyOptions): void {
   const nodeId = getNodeId();
   const child = spawn(opts.command, opts.args, {
     stdio: ["pipe", "pipe", "inherit"], // stderr는 그대로 상위로 흘려보냄(디버깅용)
+    shell: process.platform === "win32",
   });
 
   const pending = new Map<string | number, PendingCall>();
