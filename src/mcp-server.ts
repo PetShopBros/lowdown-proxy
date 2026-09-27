@@ -74,15 +74,15 @@ server.tool(
       "Filter by task type if you want task-specific comparison"
     ),
   },
-  async ({ candidates }) => {
-    // 후보들을 병렬로 조회
+  async ({ candidates, task_type }) => {
+    // 후보들을 병렬로 조회 (task_type 있으면 필터 적용)
     const results = await Promise.all(
       candidates.map(async (target) => {
         try {
-          const res = await fetch(
-            `${BASE_URL}/api/reputation/${encodeURIComponent(target)}`,
-            { headers: { "x-lowdown-source": "organic" } }
-          );
+          const url = task_type
+            ? `${BASE_URL}/api/reputation/${encodeURIComponent(target)}?task_type=${encodeURIComponent(task_type)}`
+            : `${BASE_URL}/api/reputation/${encodeURIComponent(target)}`;
+          const res = await fetch(url, { headers: { "x-lowdown-source": "organic" } });
           return await res.json() as any;
         } catch {
           return { target, interactions: 0, success_rate: null as any, confidence: "none" };
@@ -101,18 +101,33 @@ server.tool(
     const summary = ranked
       .map((r, i) => {
         const rate = r.success_rate !== null ? `${(Number(r.success_rate) * 100).toFixed(0)}%` : "no data";
-        return `${i + 1}. ${r.target} — success: ${rate}, interactions: ${r.interactions}, confidence: ${r.confidence}`;
+        const latency = r.avg_latency_ms ? `, latency: ${r.avg_latency_ms}ms` : "";
+        return `${i + 1}. ${r.target} — success: ${rate}, interactions: ${r.interactions}, confidence: ${r.confidence}${latency}`;
       })
       .join("\n");
 
-    const recommendation = ranked[0]?.success_rate !== null
-      ? `Recommended: ${ranked[0].target}`
-      : "Not enough data to recommend.";
+    // recommendation + reason 자동 생성
+    const best = ranked[0];
+    let recommendation: { target: string; reason: string } | null = null;
+
+    if (best?.interactions >= 5 && best?.success_rate !== null) {
+      const rate = `${(Number(best.success_rate) * 100).toFixed(0)}%`;
+      const latencyNote = best.avg_latency_ms ? ` with avg latency ${best.avg_latency_ms}ms` : "";
+      const taskNote = task_type ? ` for ${task_type}` : "";
+      recommendation = {
+        target: best.target,
+        reason: `Highest success rate${taskNote} (${rate}) across ${best.interactions} observations${latencyNote}.`,
+      };
+    }
 
     return {
       content: [{
         type: "text",
-        text: `${summary}\n\n${recommendation}`,
+        text: JSON.stringify({
+          task_type: task_type ?? null,
+          candidates: ranked,
+          recommendation: recommendation ?? { target: null, reason: "Insufficient interaction history for a reliable comparison." },
+        }, null, 2),
       }],
     };
   }

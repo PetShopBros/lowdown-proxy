@@ -15,30 +15,86 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
-
   const target = req.query.target as string;
   if (!target) return res.status(400).json({ error: "target required" });
+  const taskType = (req.query.task_type as string) ?? null;
+
 
   try {
     const supabase = getSupabase();
 
-    // reputation_summary 뷰에서 집계 조회 (정확 매칭 → 퍼지 매칭 순)
-    let { data, error } = await supabase
-      .from("reputation_summary")
-      .select("*")
-      .eq("target", target)
-      .single();
+    // task_type 필터가 있으면 interactions 테이블에서 직접 집계
+    let data: any = null;
+    let error: any = null;
 
-    // 정확 매칭 실패 시 LIKE 퍼지 매칭
-    if (error || !data) {
-      const { data: fuzzy } = await supabase
+    if (taskType) {
+      const { data: rows } = await supabase
+        .from("interactions")
+        .select("outcome, latency_ms")
+        .eq("target", target)
+        .eq("task_type", taskType);
+
+      if (!rows || rows.length === 0) {
+        // 퍼지 매칭
+        const { data: fuzzyTargets } = await supabase
+          .from("reputation_summary")
+          .select("target")
+          .ilike("target", `%${target}%`)
+          .limit(1)
+          .single();
+
+        if (fuzzyTargets) {
+          const { data: fuzzyRows } = await supabase
+            .from("interactions")
+            .select("outcome, latency_ms")
+            .eq("target", (fuzzyTargets as any).target)
+            .eq("task_type", taskType);
+
+          if (fuzzyRows && fuzzyRows.length > 0) {
+            const success = fuzzyRows.filter((r: any) => r.outcome === "success").length;
+            const latencies = fuzzyRows.map((r: any) => r.latency_ms).filter(Boolean);
+            data = {
+              target: (fuzzyTargets as any).target,
+              interactions: fuzzyRows.length,
+              success_rate: success / fuzzyRows.length,
+              avg_latency_ms: latencies.length
+                ? Math.round(latencies.reduce((a: number, b: number) => a + b, 0) / latencies.length)
+                : null,
+            };
+          }
+        }
+      } else {
+        const success = rows.filter((r: any) => r.outcome === "success").length;
+        const latencies = rows.map((r: any) => r.latency_ms).filter(Boolean);
+        data = {
+          target,
+          interactions: rows.length,
+          success_rate: success / rows.length,
+          avg_latency_ms: latencies.length
+            ? Math.round(latencies.reduce((a: number, b: number) => a + b, 0) / latencies.length)
+            : null,
+        };
+      }
+    } else {
+      // 기존 reputation_summary 뷰 조회
+      const result = await supabase
         .from("reputation_summary")
         .select("*")
-        .ilike("target", `%${target}%`)
-        .order("interactions", { ascending: false })
-        .limit(1)
+        .eq("target", target)
         .single();
-      if (fuzzy) { data = fuzzy; error = null; }
+      data = result.data;
+      error = result.error;
+
+      if (error || !data) {
+        const { data: fuzzy } = await supabase
+          .from("reputation_summary")
+          .select("*")
+          .ilike("target", `%${target}%`)
+          .order("interactions", { ascending: false })
+          .limit(1)
+          .single();
+        if (fuzzy) { data = fuzzy; error = null; }
+      }
     }
 
     // 조회 자체를 로깅 (organic vs seeded 구분)
@@ -55,14 +111,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     } as never);
 
     if (error || !data) {
-      // 데이터 없으면 "아직 기록 없음" 응답
       return res.status(200).json({
         target,
+        task_type: taskType ?? undefined,
         interactions: 0,
-        reviews: 0,
         success_rate: null,
-        avg_rating: null,
-        review_conversion_rate: null,
         confidence: "none",
         message: "No interactions recorded yet.",
       });
@@ -79,12 +132,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 기본 응답
     const baseResponse = {
       target,
+      task_type: taskType ?? undefined,
       target_type: data.target_type,
       interactions,
-      reviews: Number(data.reviews ?? 0),
       success_rate: data.success_rate,
-      avg_rating: data.avg_rating,
-      review_conversion_rate: data.review_conversion_rate,
+      avg_latency_ms: data.avg_latency_ms ?? undefined,
+      ...(taskType ? {} : {
+        reviews: Number(data.reviews ?? 0),
+        avg_rating: data.avg_rating,
+        review_conversion_rate: data.review_conversion_rate,
+      }),
       confidence,
     };
 
