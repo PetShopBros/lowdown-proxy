@@ -72,12 +72,24 @@ export function runProxy(opts: ProxyOptions): void {
           ? "failure"
           : "success";
 
+        let failure_type: InteractionRecord["failure_type"] | undefined;
+        if (msg.error) {
+          const code = msg.error?.code;
+          const message: string = msg.error?.message ?? "";
+          if (code === -32602) failure_type = "invalid_arguments";
+          else if (message.toLowerCase().includes("timeout")) failure_type = "timeout";
+          else if (code === -32603) failure_type = "server_error";
+          else if (code === -32000) failure_type = "tool_error";
+          else failure_type = "unknown";
+        }
+
         const record: InteractionRecord = {
           actor: opts.actor,
           target: opts.targetLabel,
           target_type: "tool",
           task_type: call.toolName ?? call.method,
           outcome,
+          failure_type,
           latency_ms,
           source: opts.source,
           node_id: nodeId,

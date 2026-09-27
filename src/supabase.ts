@@ -6,6 +6,7 @@ export interface InteractionRecord {
   target_type: "agent" | "tool" | "service" | "human";
   task_type: string;
   outcome: "success" | "partial" | "failure";
+  failure_type?: "invalid_arguments" | "timeout" | "server_error" | "tool_error" | "unknown";
   latency_ms?: number;
   source?: "organic" | "seeded" | "synthetic";
   node_id?: string;
@@ -55,6 +56,7 @@ export async function recordInteraction(record: InteractionRecord): Promise<void
       latency_ms: record.latency_ms ?? null,
       source: record.source ?? "organic",
       node_id: record.node_id ?? null,
+      failure_type: record.failure_type ?? null,
     } as never);
     if (error && process.env.LOWDOWN_DEBUG) {
       console.error("[lowdown] interaction 기록 실패:", error.message);
