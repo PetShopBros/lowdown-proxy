@@ -1,6 +1,6 @@
 {
   "name": "lowdown-proxy",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "mcpName": "io.github.PetShopBros/lowdown-proxy",
   "description": "Record and query AI agent/tool/service interactions. Shared interaction history for the multi-agent ecosystem.",
   "type": "module",
