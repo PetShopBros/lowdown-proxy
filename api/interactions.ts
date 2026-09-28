@@ -14,6 +14,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") return res.status(200).end();
+
+  if (req.method === "GET") {
+    const { actor, task_type, limit = "100" } = req.query as Record<string, string>
+    if (!actor) return res.status(400).json({ error: "actor required" })
+    const supabase = getSupabase()
+    let query = supabase
+      .from("interactions")
+      .select("*")
+      .eq("actor", actor)
+      .order("created_at", { ascending: false })
+      .limit(parseInt(limit))
+    if (task_type) query = query.eq("task_type", task_type)
+    const { data, error } = await query
+    if (error) return res.status(500).json({ error: error.message })
+    return res.status(200).json({ ok: true, data })
+  }
+
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const { actor, target, target_type, task_type, outcome, failure_type, latency_ms, source } = req.body ?? {};
