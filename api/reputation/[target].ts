@@ -30,7 +30,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (taskType) {
       const { data: rows } = await supabase
         .from("interactions")
-        .select("outcome, latency_ms")
+        .select("outcome, latency_ms, failure_type")
         .eq("target", target)
         .eq("task_type", taskType);
 
@@ -46,13 +46,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (fuzzyTargets) {
           const { data: fuzzyRows } = await supabase
             .from("interactions")
-            .select("outcome, latency_ms")
+            .select("outcome, latency_ms, failure_type")
             .eq("target", (fuzzyTargets as any).target)
             .eq("task_type", taskType);
 
           if (fuzzyRows && fuzzyRows.length > 0) {
             const success = fuzzyRows.filter((r: any) => r.outcome === "success").length;
             const latencies = fuzzyRows.map((r: any) => r.latency_ms).filter(Boolean);
+            const failureBreakdown = buildFailureBreakdown(fuzzyRows);
             data = {
               target: (fuzzyTargets as any).target,
               interactions: fuzzyRows.length,
@@ -60,12 +61,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               avg_latency_ms: latencies.length
                 ? Math.round(latencies.reduce((a: number, b: number) => a + b, 0) / latencies.length)
                 : null,
+              failure_breakdown: failureBreakdown,
             };
           }
         }
       } else {
         const success = rows.filter((r: any) => r.outcome === "success").length;
         const latencies = rows.map((r: any) => r.latency_ms).filter(Boolean);
+        const failureBreakdown = buildFailureBreakdown(rows);
         data = {
           target,
           interactions: rows.length,
@@ -73,6 +76,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           avg_latency_ms: latencies.length
             ? Math.round(latencies.reduce((a: number, b: number) => a + b, 0) / latencies.length)
             : null,
+          failure_breakdown: failureBreakdown,
         };
       }
     } else {
@@ -137,6 +141,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       interactions,
       success_rate: data.success_rate,
       avg_latency_ms: data.avg_latency_ms ?? undefined,
+      ...(data.failure_breakdown ? { failure_breakdown: data.failure_breakdown } : {}),
       ...(taskType ? {} : {
         reviews: Number(data.reviews ?? 0),
         avg_rating: data.avg_rating,
@@ -153,12 +158,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // node_id 있으면 상세 데이터 추가
     const { data: breakdown } = await supabase
       .from("interactions")
-      .select("task_type, outcome, latency_ms, created_at")
+      .select("task_type, outcome, latency_ms, failure_type, created_at")
       .eq("target", target)
       .order("created_at", { ascending: false })
       .limit(50);
 
-    const taskBreakdown: Record<string, { success: number; failure: number }> = {};
+    const taskBreakdown: Record<string, { success: number; failure: number; failure_types?: Record<string, number> }> = {};
     const recentTrends: { date: string; count: number }[] = [];
     const dateCounts: Record<string, number> = {};
 
@@ -166,8 +171,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // task_breakdown
       const t = row.task_type ?? "unknown";
       if (!taskBreakdown[t]) taskBreakdown[t] = { success: 0, failure: 0 };
-      if (row.outcome === "success") taskBreakdown[t].success++;
-      else taskBreakdown[t].failure++;
+      if (row.outcome === "success") {
+        taskBreakdown[t].success++;
+      } else {
+        taskBreakdown[t].failure++;
+        if (row.failure_type) {
+          taskBreakdown[t].failure_types = taskBreakdown[t].failure_types ?? {};
+          taskBreakdown[t].failure_types[row.failure_type] = (taskBreakdown[t].failure_types[row.failure_type] ?? 0) + 1;
+        }
+      }
 
       // recent_trends (날짜별 카운트)
       const date = row.created_at?.slice(0, 10);
@@ -187,4 +199,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.error(err);
     return res.status(500).json({ error: "Internal server error" });
   }
+}
+
+function buildFailureBreakdown(rows: any[]): Record<string, number> | null {
+  const failed = rows.filter((r) => r.outcome !== "success");
+  if (failed.length === 0) return null;
+  const breakdown: Record<string, number> = {};
+  for (const r of failed) {
+    const key = r.failure_type ?? "unknown";
+    breakdown[key] = (breakdown[key] ?? 0) + 1;
+  }
+  return breakdown;
 }

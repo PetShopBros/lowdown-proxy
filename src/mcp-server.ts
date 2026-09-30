@@ -45,14 +45,17 @@ server.tool(
     target_type: z.enum(["agent", "tool", "service", "human"]),
     task_type: z.string().describe("What kind of task was performed. e.g. 'web_search', 'code_gen'"),
     outcome: z.enum(["success", "partial", "failure"]),
-    latency_ms: z.number().optional().describe("How long it took in milliseconds"),
+failure_type: z.enum(["invalid_arguments", "timeout", "server_error", "tool_error", "unknown"])
+  .optional()
+  .describe("Required when outcome is failure. Distinguish tool failure vs argument error."),
+latency_ms: z.number().optional().describe("How long it took in milliseconds"),
     source: z.enum(["organic", "seeded", "synthetic"]).optional(),
   },
-  async ({ actor, target, target_type, task_type, outcome, latency_ms, source }) => {
+  async ({ actor, target, target_type, task_type, outcome, failure_type, latency_ms, source }) => {
     const res = await fetch(`${BASE_URL}/api/interactions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actor, target, target_type, task_type, outcome, latency_ms, source }),
+      body: JSON.stringify({ actor, target, target_type, task_type, outcome, failure_type, latency_ms, source }),
     });
     const data = await res.json() as any;
     return {
