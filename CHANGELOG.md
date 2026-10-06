@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] - v0.4 Scanner
+
+### Added
+- `scanner/` — daily observation of remote (streamable-http) MCP servers listed in the official MCP Registry. Records `initialize` / `tools/list` reachability as plain facts (HTTP status, latency, tool count, schema hash). Never calls a tool; never stores tool names or descriptions.
+- `scanner` block on `GET /api/reputation/:target` — observation data from the Scanner, kept separate from interaction data and never counted in `success_rate`. Short names resolve when unambiguous; otherwise `scanner_candidates` lists up to 5 matches.
+- Optional `?ref=<tag>` on `GET /api/reputation/:target`, recorded in `reputation_lookups.ref` to measure where lookups come from.
+- `supabase/scanner_observations.sql` — `scanner_observations` table (RLS on, no public policy), `scanner_summary` public aggregate view, `reputation_lookups.ref` column.
+- GitHub Actions: `scanner.yml` (daily) and `backup.yml` (weekly CSV export to a separate `lowdown-data` repository).
+
+### Notes
+- Hosted API change only — no npm release is needed for installed clients to see the `scanner` block through `get_lowdown`.
+- Run `supabase/scanner_observations.sql` before expecting `scanner` data; until then the API behaves exactly as before.
+
 ## [0.1.3] - 2026-09-26
 
 ### Added

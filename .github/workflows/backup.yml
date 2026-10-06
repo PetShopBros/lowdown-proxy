@@ -1,0 +1,50 @@
+name: backup
+
+on:
+  schedule:
+    - cron: '43 19 * * 0' # 매주 월요일 04:43 KST (UTC 일요일 19:43)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # lowdown-data 는 README 등으로 초기화된(비어 있지 않은) 레포여야 한다.
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/lowdown-data
+          token: ${{ secrets.LOWDOWN_DATA_TOKEN }}
+          path: data-repo
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Export scanner_observations to CSV
+        run: node scanner/export.ts data-repo --months 2
+        env:
+          LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
+          LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
+
+      - name: Commit and push
+        working-directory: data-repo
+        run: |
+          git config user.name "lowdown-bot"
+          git config user.email "lowdown-bot@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no changes"
+            exit 0
+          fi
+          git commit -m "data: scanner_observations export $(date -u +%F)"
+          git push

@@ -1,0 +1,42 @@
+name: scanner
+
+on:
+  schedule:
+    - cron: '17 19 * * *' # 매일 04:17 KST (UTC 19:17). 정각을 피해 지연 완화
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'DB에 쓰지 않고 결과만 출력'
+        type: boolean
+        default: false
+      limit:
+        description: '샘플 개수 (비우면 전체)'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Run scanner
+        run: node scanner/scan.ts
+        env:
+          LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
+          LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
+          LOWDOWN_NODE_ID: ${{ secrets.LOWDOWN_NODE_ID }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          SCAN_LIMIT: ${{ inputs.limit }}

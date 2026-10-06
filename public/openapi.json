@@ -23,6 +23,13 @@
             "required": true,
             "schema": { "type": "string" },
             "description": "Identifier of the target. e.g. 'mcp:modelcontextprotocol/brave-search' or just 'brave-search'"
+          },
+          {
+            "name": "ref",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$" },
+            "description": "Optional referral tag used to measure where lookups come from."
           }
         ],
         "responses": {
@@ -39,7 +46,36 @@
                     "confidence": { "type": "string", "enum": ["low", "medium", "high"] },
                     "avg_latency_ms": { "type": "number" },
                     "review_count": { "type": "integer" },
-                    "avg_rating": { "type": "number" }
+                    "avg_rating": { "type": "number" },
+                    "scanner": {
+                      "type": "object",
+                      "description": "Observations by Lowdown Scanner (initialize + tools/list only; no tool calls). Separate from interaction data; not included in success_rate.",
+                      "properties": {
+                        "target": { "type": "string" },
+                        "last_observed_at": { "type": "string", "format": "date-time" },
+                        "observations_30d": { "type": "integer" },
+                        "remotes_observed": { "type": "integer" },
+                        "latest": {
+                          "type": "object",
+                          "properties": {
+                            "reached_level": { "type": "integer", "enum": [0, 1, 2], "description": "0 = initialize failed, 1 = initialize ok, 2 = initialize + tools/list ok" },
+                            "http_status": { "type": ["integer", "null"] },
+                            "error_type": { "type": ["string", "null"] },
+                            "latency_ms": { "type": ["integer", "null"] },
+                            "tool_count": { "type": ["integer", "null"] },
+                            "schema_hash": { "type": ["string", "null"] },
+                            "server_version": { "type": ["string", "null"] }
+                          }
+                        },
+                        "schema_versions_30d": { "type": "integer" },
+                        "status_distribution_30d": { "type": "object", "additionalProperties": { "type": "integer" } }
+                      }
+                    },
+                    "scanner_candidates": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Returned instead of `scanner` when a short name matches several scanned servers."
+                    }
                   }
                 }
               }

@@ -21,6 +21,16 @@ Agents should not have to trust an agent/tool they've never interacted with.
 - v0.2: compare_tools() — 후보 2~3개 실제 실행 비교, 규칙기반(성공률/latency), judge 없음
 - v0.3: get_lowdown(target) — 외부 공개 조회 API/MCP 도구
 
+## v0.4 — Scanner (cold-start 관찰)
+- Scanner는 제품이 아니라 Lowdown의 cold-start 데이터 생산기다. 사용자가 없어도 관찰 데이터가 쌓이게 한다.
+- 대상: 공식 MCP Registry의 원격(streamable-http) 서버. 하루 1회 initialize → tools/list 까지만 호출한다. tools/call 은 하지 않는다.
+- 관찰(scanner_observations)과 상호작용(interactions)은 섞지 않는다. 관찰 = 우리가 봤다, interaction = 실제 에이전트가 썼다.
+- 사실만 기록한다: 401/403 은 http_status 숫자 그대로, 해석은 조회 시점에 한다. 원격 서버가 보낸 tool 이름·설명문은 저장하지 않고 개수와 해시만 저장한다.
+- 조회: GET /api/reputation/:target 응답의 `scanner` 블록 (success_rate 에 합산하지 않음). target 표기는 `mcp:` + Registry 이름.
+- 공개 데이터: 주 1회 CSV 를 lowdown-data 저장소로 내보낸다.
+- 7일 PoC 기준: 사람 개입 없이 7일 동안 매일 실행되고 매일 reached_level ≥ 1 관찰이 남는다.
+- 범위 밖: 별점/Reliability Score, Local Scanner, 모니터링 SaaS, 알림.
+
 ## 하지 않는 것 (v0)
 - 결제/에스크로, 온체인, 토큰
 - 행동 이상탐지, critic/audience 등급 분리, 신뢰도 가중치

@@ -103,6 +103,32 @@ Contributor response (with node):
 
 Fuzzy matching supported — short names like `brave-search`, `fetch`, `github` resolve automatically.
 
+### Scanner observations
+
+For MCP servers listed in the official MCP Registry, the response also carries a separate `scanner` block: what Lowdown's Scanner observed when it connected to the server (`initialize` and `tools/list` only — it never calls a tool). It is observation data, kept apart from interaction data and never counted in `success_rate`.
+
+```bash
+curl https://lowdown-proxy.vercel.app/api/reputation/mcp:io.github.user/server
+```
+
+```json
+{
+  "target": "mcp:io.github.user/server",
+  "interactions": 0,
+  "success_rate": null,
+  "scanner": {
+    "target": "mcp:io.github.user/server",
+    "last_observed_at": "2026-10-07T19:17:00+00:00",
+    "observations_30d": 28,
+    "latest": { "reached_level": 2, "http_status": 200, "latency_ms": 312, "tool_count": 7 },
+    "schema_versions_30d": 1,
+    "status_distribution_30d": { "200": 28 }
+  }
+}
+```
+
+HTTP statuses are reported as observed — a `401` is a `401`, not "dead".
+
 ## Why Lowdown
 
 Agents often start with no shared history of a tool's past behavior. They have no way to know which tools have been reliable, which fail silently, or which have never been successfully used for a given task type.
@@ -174,6 +200,10 @@ MCP 서버를 감싸는 stdio 프록시가 첫 번째 진입점입니다.
 ```
 
 프록시를 실행하는 것 자체가 노드 참여입니다. 기여할수록 더 상세한 데이터를 조회할 수 있습니다.
+
+### Scanner 관찰 데이터
+
+공식 MCP Registry에 등록된 원격 MCP 서버는 응답에 `scanner` 블록이 함께 옵니다. Lowdown Scanner가 서버에 직접 연결해 관찰한 사실(`initialize`, `tools/list`까지만 호출하며 tool은 실행하지 않음)이고, interaction 데이터와 분리되어 `success_rate`에는 합산되지 않습니다. HTTP 상태는 해석 없이 관찰된 값 그대로 보여줍니다.
 
 ### 설계 원칙 (요약)
 

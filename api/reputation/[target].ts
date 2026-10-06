@@ -18,6 +18,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const target = req.query.target as string;
   if (!target) return res.status(400).json({ error: "target required" });
   const taskType = (req.query.task_type as string) ?? null;
+  // 조회 유입 측정용 태그 (예: ?ref=report). 안전한 문자만 허용.
+  const refRaw = req.query.ref;
+  const ref = typeof refRaw === "string" && /^[A-Za-z0-9._:-]{1,64}$/.test(refRaw) ? refRaw : null;
 
 
   try {
@@ -101,6 +104,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
+    // Scanner 관찰 데이터: interactions/success_rate 와 합산하지 않고 별도 `scanner` 블록으로만 노출.
+    // 실패해도 기존 응답에는 영향 없음. task_type 필터 요청에는 붙이지 않는다.
+    const scannerLookup = taskType ? null : await findScanner(supabase, target);
+
     // 조회 자체를 로깅 (organic vs seeded 구분)
     const source = req.headers["x-lowdown-source"] === "seeded" ? "seeded" : "organic";
     const requester = (req.headers["x-lowdown-actor"] as string) ?? null;
@@ -112,6 +119,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       target,
       source,
       user_agent: userAgent,
+      ...(ref ? { ref } : {}),
     } as never);
 
     if (error || !data) {
@@ -122,6 +130,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         success_rate: null,
         confidence: "none",
         message: "No interactions recorded yet.",
+        ...scannerFields(scannerLookup),
       });
     }
 
@@ -148,6 +157,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         review_conversion_rate: data.review_conversion_rate,
       }),
       confidence,
+      ...scannerFields(scannerLookup),
     };
 
     // node_id 없으면 기본 응답
@@ -210,4 +220,75 @@ function buildFailureBreakdown(rows: any[]): Record<string, number> | null {
     breakdown[key] = (breakdown[key] ?? 0) + 1;
   }
   return breakdown;
+}
+
+// ── Scanner 관찰 블록 ────────────────────────────────────────────
+interface ScannerLookup {
+  summary: Record<string, unknown> | null;
+  candidates: string[];
+}
+
+function scannerFields(lookup: ScannerLookup | null): Record<string, unknown> {
+  if (!lookup) return {};
+  if (lookup.summary) return { scanner: lookup.summary };
+  if (lookup.candidates.length > 0) return { scanner_candidates: lookup.candidates };
+  return {};
+}
+
+/**
+ * scanner_summary(공개 집계 view)에서 target 을 찾는다.
+ * 1) 정확히 일치 (입력 그대로, 없으면 `mcp:` 접두사 붙여서)
+ * 2) 3자 이상이면 부분 일치: 1건이면 그 대상, 여러 건이면 후보 이름(최대 5개)만 반환
+ * 어떤 오류가 나도 null — 기존 reputation 응답을 막지 않는다.
+ */
+async function findScanner(supabase: any, target: string): Promise<ScannerLookup | null> {
+  try {
+    const ids = target.startsWith("mcp:") ? [target] : [target, `mcp:${target}`];
+    for (const id of ids) {
+      const exact = await supabase.from("scanner_summary").select("*").eq("target_id", id).limit(1);
+      if (exact.error) return null;
+      const row = (exact.data ?? [])[0];
+      if (row) return { summary: shapeScanner(row), candidates: [] };
+    }
+
+    if (target.length < 3) return null;
+    const pattern = `%${target.replace(/[\\%_]/g, "\\$&")}%`;
+    const fuzzy = await supabase
+      .from("scanner_summary")
+      .select("*")
+      .ilike("target_id", pattern)
+      .order("observations_30d", { ascending: false })
+      .limit(6);
+    if (fuzzy.error) return null;
+    const rows = (fuzzy.data ?? []) as any[];
+    if (rows.length === 1) return { summary: shapeScanner(rows[0]), candidates: [] };
+    if (rows.length > 1) return { summary: null, candidates: rows.slice(0, 5).map((r) => String(r.target_id)) };
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function shapeScanner(r: any): Record<string, unknown> {
+  const version = typeof r.latest_server_version === "string" && /^[0-9A-Za-z.+_-]{1,32}$/.test(r.latest_server_version)
+    ? r.latest_server_version
+    : null;
+  return {
+    target: r.target_id,
+    last_observed_at: r.last_observed_at,
+    observations_30d: Number(r.observations_30d ?? 0),
+    remotes_observed: Number(r.remotes_observed ?? 0),
+    latest: {
+      reached_level: r.latest_reached_level,
+      http_status: r.latest_http_status,
+      error_type: r.latest_error_type,
+      latency_ms: r.latest_latency_ms,
+      tool_count: r.latest_tool_count,
+      schema_hash: r.latest_schema_hash,
+      server_version: version,
+    },
+    schema_versions_30d: Number(r.schema_versions_30d ?? 0),
+    status_distribution_30d: r.status_distribution_30d ?? {},
+    note: "Observed by Lowdown Scanner (initialize + tools/list only; no tool calls). Not included in success_rate.",
+  };
 }
