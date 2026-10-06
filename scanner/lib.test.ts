@@ -417,6 +417,7 @@ describe('fetchRegistryTargets', () => {
     assert.equal(stats.skipped_templated_url, 1);
     assert.equal(stats.remotes_probeable, 3);
     assert.match(seen[0]!, /limit=100/);
+    assert.match(seen[0]!, /version=latest/);
     assert.match(seen[1]!, /cursor=c1/);
   });
   test('커서 무시 서버 → 명확히 실패(무한루프 방지)', async () => {

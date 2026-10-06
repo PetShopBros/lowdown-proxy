@@ -596,7 +596,7 @@ export async function fetchRegistryTargets(
   const f = deps.fetchImpl ?? fetch;
   const sleep = deps.sleep ?? defaultSleep;
   const pageSize = deps.pageSize ?? 100;
-  const maxPages = deps.maxPages ?? 300;
+  const maxPages = deps.maxPages ?? 500;
 
   const stats: RegistryStats = {
     pages: 0,
@@ -614,7 +614,8 @@ export async function fetchRegistryTargets(
 
   for (;;) {
     if (stats.pages >= maxPages) throw new Error(`registry: exceeded maxPages=${maxPages}`);
-    const qs = new URLSearchParams({ limit: String(pageSize) });
+    // version=latest: 서버별 최신 버전만 (없으면 모든 버전이 와서 페이지 수가 수 배로 늘어남)
+    const qs = new URLSearchParams({ limit: String(pageSize), version: 'latest' });
     if (cursor) qs.set('cursor', cursor);
     const url = `${base}/v0.1/servers?${qs.toString()}`;
 
