@@ -9,6 +9,8 @@ All notable changes to this project will be documented in this file.
 - `scanner` block on `GET /api/reputation/:target` — observation data from the Scanner, kept separate from interaction data and never counted in `success_rate`. Short names resolve when unambiguous; otherwise `scanner_candidates` lists up to 5 matches.
 - Optional `?ref=<tag>` on `GET /api/reputation/:target`, recorded in `reputation_lookups.ref` to measure where lookups come from.
 - `supabase/scanner_observations.sql` — `scanner_observations` table (RLS on, no public policy), `scanner_summary` public aggregate view, `reputation_lookups.ref` column.
+- Fixed cohort: Day 0 selects 2,000 probeable Registry entries by SHA-256 order and stores them in `scanner_cohort` (`cohort_version`, e.g. `2026-10-07-v1`); every later run observes the same entries with their current remote URLs. Entries that disappear from the Registry are counted as `cohort_missing`, not recorded as failures. Observations carry `metadata.cohort_version`.
+- Registry requests use `version=latest` (the Registry otherwise returns every version of every server).
 - GitHub Actions: `scanner.yml` (daily) and `backup.yml` (weekly CSV export to a separate `lowdown-data` repository).
 
 ### Notes

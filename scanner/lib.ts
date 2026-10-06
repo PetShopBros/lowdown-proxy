@@ -773,6 +773,129 @@ export async function insertObservations(rows: ObservationRow[], cfg: SupabaseCo
   return inserted;
 }
 
+// ─────────────────────────────────────────────
+// 고정 코호트 (Day 0 에 확정 → 이후 같은 대상만 관찰)
+// ─────────────────────────────────────────────
+
+export const DEFAULT_COHORT_VERSION = '2026-10-07-v1';
+export const DEFAULT_COHORT_SIZE = 2000;
+export const MAX_COHORT_SIZE = 10_000;
+
+/** target_id(`mcp:...`)를 SHA-256 으로 정렬해 상위 size 개. 입력 순서와 무관하게 결정적. */
+export function selectCohort(targetIds: string[], size: number): string[] {
+  const unique = [...new Set(targetIds)];
+  return unique
+    .map((id) => ({ id, h: sha256(id) }))
+    .sort((a, b) => (a.h < b.h ? -1 : a.h > b.h ? 1 : a.id < b.id ? -1 : 1))
+    .slice(0, size)
+    .map((x) => x.id);
+}
+
+export interface CohortDeps {
+  fetchImpl?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+  pageSize?: number;
+  maxAttempts?: number;
+}
+
+/** 저장된 코호트의 target_id 목록. 없으면 빈 배열. 읽기 실패는 throw (조용히 새 코호트를 만들지 않는다). */
+export async function fetchCohort(cfg: SupabaseConfig, version: string, deps: CohortDeps = {}): Promise<string[]> {
+  const f = deps.fetchImpl ?? fetch;
+  const pageSize = deps.pageSize ?? 1000;
+  const base = cfg.url.replace(/\/+$/, '');
+  const out: string[] = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const qs = new URLSearchParams({
+      select: 'target_id',
+      cohort_version: `eq.${version}`,
+      order: 'target_id.asc',
+      limit: String(pageSize),
+      offset: String(offset),
+    });
+    let res: Response;
+    try {
+      res = await f(`${base}/rest/v1/scanner_cohort?${qs.toString()}`, {
+        headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      throw new Error('cohort read failed: network');
+    }
+    if (!res.ok) {
+      let snippet = '';
+      try {
+        snippet = (await res.text()).slice(0, 300);
+      } catch {
+        // 무시
+      }
+      throw new Error(`cohort read failed: HTTP ${res.status} ${snippet}`.trim());
+    }
+    const page = (await res.json()) as Array<{ target_id?: unknown }>;
+    if (!Array.isArray(page)) throw new Error('cohort read failed: unexpected response shape');
+    for (const r of page) if (typeof r.target_id === 'string') out.push(r.target_id);
+    if (page.length < pageSize) break;
+  }
+  return out;
+}
+
+/** 코호트를 한 번의 요청(단일 트랜잭션)으로 저장. 부분 저장이 남지 않는다. 이미 있는 행은 무시(멱등). */
+export async function saveCohort(cfg: SupabaseConfig, version: string, targetIds: string[], deps: CohortDeps = {}): Promise<void> {
+  const f = deps.fetchImpl ?? fetch;
+  const sleep = deps.sleep ?? defaultSleep;
+  const maxAttempts = deps.maxAttempts ?? 4;
+  const selectedAt = new Date().toISOString();
+  const body = JSON.stringify(targetIds.map((target_id) => ({ cohort_version: version, target_id, selected_at: selectedAt })));
+  const endpoint = `${cfg.url.replace(/\/+$/, '')}/rest/v1/scanner_cohort?on_conflict=cohort_version,target_id`;
+  for (let attempt = 1; ; attempt++) {
+    let res: Response | null = null;
+    try {
+      res = await f(endpoint, {
+        method: 'POST',
+        headers: supabaseHeaders(cfg.key, { 'Content-Type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' }),
+        body,
+        signal: AbortSignal.timeout(60_000),
+      });
+    } catch {
+      res = null;
+    }
+    if (res && res.status >= 200 && res.status < 300) return;
+    const retryable = !res || res.status >= 500 || res.status === 429 || res.status === 408;
+    if (!retryable || attempt >= maxAttempts) {
+      let snippet = '';
+      try {
+        snippet = res ? (await res.text()).slice(0, 300) : '';
+      } catch {
+        // 무시
+      }
+      throw new Error(`cohort save failed: HTTP ${res?.status ?? 'network'} ${snippet}`.trim());
+    }
+    await sleep(1000 * 2 ** (attempt - 1));
+  }
+}
+
+export interface CohortJob {
+  name: string;
+  version: string;
+  remote: RegistryRemote;
+  index: number;
+}
+
+/** 코호트 멤버 중 현재 Registry 에서 probe 가능한 remote 만 작업으로 만든다. 없어진 멤버는 missing 으로만 센다(실패로 기록하지 않음). */
+export function planCohortJobs(targets: RegistryTarget[], cohortIds: string[]): { jobs: CohortJob[]; missing: number } {
+  const byId = new Map(targets.map((t) => [`mcp:${t.name}`, t]));
+  const jobs: CohortJob[] = [];
+  let missing = 0;
+  for (const id of cohortIds) {
+    const t = byId.get(id);
+    if (!t) {
+      missing++;
+      continue;
+    }
+    t.remotes.forEach((remote, index) => jobs.push({ name: t.name, version: t.version, remote, index }));
+  }
+  return { jobs, missing };
+}
+
 export const EXPORT_COLUMNS = [
   'id',
   'scan_run_id',

@@ -12,6 +12,7 @@ import {
   classifyNetworkError,
   csvEscape,
   extractRpcMessage,
+  fetchCohort,
   fetchMonthRows,
   fetchRegistryTargets,
   hashTools,
@@ -20,9 +21,12 @@ import {
   isBlockedIp,
   monthRanges,
   parseSafeUrl,
+  planCohortJobs,
   probeRemote,
   rowsToCsv,
   runPool,
+  saveCohort,
+  selectCohort,
   supabaseHeaders,
   TransportError,
 } from './lib.ts';
@@ -497,6 +501,84 @@ describe('supabase', () => {
   test('재시도 소진 시 실패', async () => {
     const f = (async () => new Response('x', { status: 503 })) as unknown as typeof fetch;
     await assert.rejects(insertObservations([ROW], CFG, { fetchImpl: f, sleep: async () => {}, maxAttempts: 3 }), /HTTP 503/);
+  });
+});
+
+// ───────────── 고정 코호트 ─────────────
+describe('cohort', () => {
+  const ids = Array.from({ length: 50 }, (_, i) => `mcp:io.example/server-${i}`);
+  test('selectCohort: 입력 순서와 무관하게 결정적, 중복 제거, size 상한', () => {
+    const a = selectCohort(ids, 10);
+    const b = selectCohort([...ids].reverse(), 10);
+    assert.deepEqual(a, b);
+    assert.equal(a.length, 10);
+    assert.deepEqual(selectCohort([...ids, ...ids], 10), a);
+    assert.equal(selectCohort(ids, 1000).length, 50);
+    assert.deepEqual(selectCohort([], 5), []);
+  });
+  test('selectCohort: 새 대상이 끼어들어도 기존 선택은 해시 순서로만 바뀜(그래서 저장이 필요)', () => {
+    const before = selectCohort(ids, 10);
+    const after = selectCohort([...ids, ...Array.from({ length: 200 }, (_, i) => `mcp:new/s-${i}`)], 10);
+    assert.notDeepEqual(before, after); // 확정 저장 없이 매번 상위 N 을 뽑으면 코호트가 흔들린다
+  });
+  test('fetchCohort: 페이지네이션 + 필터/정렬 + 헤더', async () => {
+    const urls: string[] = [];
+    const f = (async (u: string, init: RequestInit) => {
+      urls.push(u);
+      assert.equal((init.headers as Record<string, string>).apikey, 'sb_secret_abc');
+      const q = new URL(u).searchParams;
+      const off = Number(q.get('offset'));
+      const all = ['a', 'b', 'c', 'd', 'e'];
+      return new Response(JSON.stringify(all.slice(off, off + 2).map((target_id) => ({ target_id }))), { status: 200 });
+    }) as unknown as typeof fetch;
+    const out = await fetchCohort(CFG, 'v1', { fetchImpl: f, pageSize: 2 });
+    assert.deepEqual(out, ['a', 'b', 'c', 'd', 'e']);
+    assert.equal(urls.length, 3);
+    const q = new URL(urls[0]!).searchParams;
+    assert.equal(q.get('cohort_version'), 'eq.v1');
+    assert.equal(q.get('order'), 'target_id.asc');
+    assert.equal(new URL(urls[0]!).pathname, '/rest/v1/scanner_cohort');
+  });
+  test('fetchCohort: 빈 결과는 빈 배열, 오류는 throw(조용히 새 코호트 금지)', async () => {
+    const empty = (async () => new Response('[]', { status: 200 })) as unknown as typeof fetch;
+    assert.deepEqual(await fetchCohort(CFG, 'v1', { fetchImpl: empty }), []);
+    for (const status of [401, 404, 500]) {
+      const bad = (async () => new Response('{"message":"x"}', { status })) as unknown as typeof fetch;
+      await assert.rejects(fetchCohort(CFG, 'v1', { fetchImpl: bad }), new RegExp(`HTTP ${status}`));
+    }
+    const net = (async () => {
+      throw new Error('boom');
+    }) as unknown as typeof fetch;
+    await assert.rejects(fetchCohort(CFG, 'v1', { fetchImpl: net }), /network/);
+  });
+  test('saveCohort: 단일 요청, on_conflict + ignore-duplicates, 재시도', async () => {
+    const calls: Array<{ url: string; prefer: string; n: number }> = [];
+    let n = 0;
+    const f = (async (u: string, init: RequestInit) => {
+      n++;
+      if (n === 1) return new Response('x', { status: 503 });
+      const body = JSON.parse(String(init.body)) as Array<{ cohort_version: string; target_id: string }>;
+      calls.push({ url: u, prefer: (init.headers as Record<string, string>).Prefer ?? '', n: body.length });
+      assert.equal(body[0]!.cohort_version, 'v1');
+      return new Response(null, { status: 201 });
+    }) as unknown as typeof fetch;
+    await saveCohort(CFG, 'v1', ['a', 'b', 'c'], { fetchImpl: f, sleep: async () => {} });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.n, 3);
+    assert.match(calls[0]!.url, /scanner_cohort\?on_conflict=cohort_version,target_id$/);
+    assert.match(calls[0]!.prefer, /resolution=ignore-duplicates/);
+    const dead = (async () => new Response('{"message":"no"}', { status: 401 })) as unknown as typeof fetch;
+    await assert.rejects(saveCohort(CFG, 'v1', ['a'], { fetchImpl: dead, sleep: async () => {} }), /HTTP 401/);
+  });
+  test('planCohortJobs: 현재 remote 로 작업 생성, 사라진 멤버는 missing 으로만 집계', () => {
+    const targets = [
+      { name: 'a/x', version: '1.0.0', remotes: [{ type: 'streamable-http', url: 'https://a1.example.com' }, { type: 'streamable-http', url: 'https://a2.example.com' }] },
+      { name: 'b/y', version: '2.0.0', remotes: [{ type: 'streamable-http', url: 'https://b.example.com' }] },
+      { name: 'z/outside', version: '1.0.0', remotes: [{ type: 'streamable-http', url: 'https://z.example.com' }] },
+    ];
+    const { jobs, missing } = planCohortJobs(targets, ['mcp:a/x', 'mcp:gone/server', 'mcp:b/y']);
+    assert.deepEqual(jobs.map((j) => `${j.name}#${j.index}:${j.remote.url}`), ['a/x#0:https://a1.example.com', 'a/x#1:https://a2.example.com', 'b/y#0:https://b.example.com']);
+    assert.equal(missing, 1);
   });
 });
 

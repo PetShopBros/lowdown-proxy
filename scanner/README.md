@@ -22,9 +22,20 @@ api/reputation/[target].ts       # scanner 블록, ref 기록
 .github/workflows/backup.yml     # 매주 월 04:43 KST → lowdown-data 레포
 ```
 
+## 고정 코호트
+
+Registry에는 40,120건이 있고 probe 가능한 target은 24,064개입니다(2026-10-07 dry run 실측). 무료 인프라에서 매일 전체를 관찰할 수 없어서, **Day 0에 확정한 2,000개를 이후 계속 같은 대상으로 관찰**합니다.
+
+- 첫 실제 실행(Day 0)이 probe 가능 target을 SHA-256 순으로 `COHORT_SIZE`(기본 2000)개 골라 `scanner_cohort`에 저장합니다. 이후 실행은 저장된 대상만 관찰하고, remote URL만 그날의 Registry 값을 씁니다.
+- 코호트는 `cohort_version`(기본 `2026-10-07-v1`, 환경변수 `COHORT_VERSION`)별로 구분됩니다. 확장은 새 버전(v2 …)으로 하며 과거 데이터와 섞이지 않습니다. 각 observation의 `metadata.cohort_version`에 버전이 남습니다.
+- Registry에서 사라졌거나 probe 가능한 remote가 없어진 멤버는 관찰하지 않고 실행 요약의 `cohort_missing`으로만 셉니다. "서버가 죽었다"로 기록하지 않습니다.
+- dry run은 코호트를 저장하지 않습니다(저장된 코호트가 있으면 읽어서 사용, 없으면 선택될 대상을 미리 보여줌). `limit`은 코호트 안에서 앞의 N개만 probe합니다(테스트용).
+- 코호트를 새로 만들려면 `COHORT_VERSION`을 바꾸세요. 같은 버전의 행을 지우고 다시 만드는 것은 권장하지 않습니다.
+- 코호트는 "Registry 항목"의 표본입니다. 운영자(업체) 수가 아닙니다. 공개 리포트에서는 "2,000 Registry entries 관찰"로 표기하세요.
+
 ## 설정 (1회)
 
-1. Supabase SQL Editor에서 `supabase/scanner_observations.sql` 실행 (재실행 안전)
+1. Supabase SQL Editor에서 `supabase/scanner_observations.sql` 실행 (재실행 안전, `scanner_cohort` 포함)
 2. 레포 Secrets 등록
    - `LOWDOWN_SUPABASE_URL`
    - `LOWDOWN_SCANNER_KEY` — scanner write 전용 service key (기존 `LOWDOWN_SUPABASE_KEY`와 분리)
@@ -82,7 +93,7 @@ curl "https://lowdown-proxy.vercel.app/api/reputation/mcp:io.github.user/server?
 
 ## 7일 PoC 통과 기준
 
-사람 개입 없이 7일 동안 매일 실행되고, 매일 `reached_level >= 1` 행이 존재할 것. 확인 쿼리는 `supabase/scanner_observations.sql` 하단 주석.
+사람 개입 없이 7일 동안 매일 실행되고, 매일 `reached_level >= 1` 행이 존재할 것. 같은 코호트(`metadata.cohort_version`)의 같은 대상이 매일 관찰되어야 합니다. 확인 쿼리는 `supabase/scanner_observations.sql` 하단 주석.
 
 ## 알려진 한계
 

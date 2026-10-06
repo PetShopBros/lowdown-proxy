@@ -35,6 +35,20 @@ create unique index if not exists scanner_obs_run_target_remote_uq
 alter table scanner_observations enable row level security;
 
 -- ─────────────────────────────────────────────
+-- 고정 코호트: Day 0 에 확정한 관찰 대상. 같은 cohort_version 동안은 같은 target 만 관찰한다.
+--   cohort_version 예: 2026-10-07-v1 (확장 시 v2, v3 ... 으로 새로 만들어 과거 PoC 와 섞지 않는다)
+--   원본과 마찬가지로 공개하지 않는다 (policy 없음, Scanner service key 로만 접근).
+-- ─────────────────────────────────────────────
+create table if not exists scanner_cohort (
+  cohort_version text        not null,
+  target_id      text        not null,
+  selected_at    timestamptz not null default now(),
+  primary key (cohort_version, target_id)
+);
+
+alter table scanner_cohort enable row level security;
+
+-- ─────────────────────────────────────────────
 -- 공개 조회용 집계 view: GET /api/reputation/:target 의 `scanner` 블록이 읽는다.
 -- - 최근 30일, Scanner 가 호출하지 않은 행(error_type = 'blocked_url')은 제외
 -- - node_id / 원본 metadata / remote_url 은 노출하지 않는다
@@ -115,6 +129,16 @@ alter table reputation_lookups add column if not exists ref text;
 -- where observed_at > now() - interval '8 days'
 -- group by 1
 -- order by 1;
+
+-- 코호트 확인: 2,000개가 확정되었고, 매일 같은 대상이 관찰되는가
+-- select cohort_version, count(*) as targets, min(selected_at) as selected_at
+-- from scanner_cohort group by 1;
+-- select (observed_at at time zone 'Asia/Seoul')::date as day,
+--        metadata->>'cohort_version' as cohort_version,
+--        count(distinct target_id) as targets
+-- from scanner_observations
+-- where observed_at > now() - interval '8 days'
+-- group by 1, 2 order by 1;
 
 -- 외부 조회 유입 (organic 만, 본인 확인용 조회는 x-lowdown-source: seeded 로 보낸다)
 -- select ref, count(*) from reputation_lookups

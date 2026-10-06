@@ -24,12 +24,15 @@ Agents should not have to trust an agent/tool they've never interacted with.
 ## v0.4 — Scanner (cold-start 관찰)
 - Scanner는 제품이 아니라 Lowdown의 cold-start 데이터 생산기다. 사용자가 없어도 관찰 데이터가 쌓이게 한다.
 - 대상: 공식 MCP Registry의 원격(streamable-http) 서버. 하루 1회 initialize → tools/list 까지만 호출한다. tools/call 은 하지 않는다.
+- 규모(2026-10-07 dry run 실측): Registry 40,120건 중 probe 가능 target 24,064개 / remote 24,290개. 무료 인프라(DB 500MB)에서 매일 전체 관찰은 불가능하므로 **고정 코호트 2,000개**를 매일 관찰한다.
+- 고정 코호트: Day 0 에 probe 가능 target 을 SHA-256 순으로 2,000개 확정해 `scanner_cohort`(cohort_version 예: 2026-10-07-v1)에 저장하고, 같은 버전 동안은 같은 대상만 관찰한다. remote URL 은 매일 최신 Registry 값을 쓴다. Registry 에서 사라진 멤버는 실패로 기록하지 않고 `cohort_missing` 으로만 센다. 확장은 v2(5,000) 같은 새 버전으로 하며 과거 PoC 와 섞지 않는다.
+- 해석 주의: 코호트는 "Registry 항목"의 표본이다. 운영자 수가 아니다(한 업체가 여러 항목을 등록할 수 있음).
 - 관찰(scanner_observations)과 상호작용(interactions)은 섞지 않는다. 관찰 = 우리가 봤다, interaction = 실제 에이전트가 썼다.
 - 사실만 기록한다: 401/403 은 http_status 숫자 그대로, 해석은 조회 시점에 한다. 원격 서버가 보낸 tool 이름·설명문은 저장하지 않고 개수와 해시만 저장한다.
 - 조회: GET /api/reputation/:target 응답의 `scanner` 블록 (success_rate 에 합산하지 않음). target 표기는 `mcp:` + Registry 이름.
 - 공개 데이터: 주 1회 CSV 를 lowdown-data 저장소로 내보낸다.
 - 7일 PoC 기준: 사람 개입 없이 7일 동안 매일 실행되고 매일 reached_level ≥ 1 관찰이 남는다.
-- 범위 밖: 별점/Reliability Score, Local Scanner, 모니터링 SaaS, 알림.
+- 범위 밖: 별점/Reliability Score, Local Scanner, 모니터링 SaaS, 알림, 전체 24,000개 센서스, 운영자 중복 제거.
 
 ## 하지 않는 것 (v0)
 - 결제/에스크로, 온체인, 토큰
