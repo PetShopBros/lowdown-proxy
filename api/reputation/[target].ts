@@ -226,12 +226,20 @@ function buildFailureBreakdown(rows: any[]): Record<string, number> | null {
 interface ScannerLookup {
   summary: Record<string, unknown> | null;
   candidates: string[];
+  // 조회는 정상 수행했고 일치하는 관찰이 없음(조회 오류와 구분)
+  unobserved?: boolean;
 }
+
+const SCANNER_UNOBSERVED = {
+  observed: false,
+  note: "No Lowdown Scanner observation exists for this target. The Scanner observes a fixed set of 2,000 MCP Registry entries daily; absence of data says nothing about the target's status.",
+};
 
 function scannerFields(lookup: ScannerLookup | null): Record<string, unknown> {
   if (!lookup) return {};
   if (lookup.summary) return { scanner: lookup.summary };
   if (lookup.candidates.length > 0) return { scanner_candidates: lookup.candidates };
+  if (lookup.unobserved) return { scanner: SCANNER_UNOBSERVED };
   return {};
 }
 
@@ -251,7 +259,7 @@ async function findScanner(supabase: any, target: string): Promise<ScannerLookup
       if (row) return { summary: shapeScanner(row), candidates: [] };
     }
 
-    if (target.length < 3) return null;
+    if (target.length < 3) return { summary: null, candidates: [], unobserved: true };
     const pattern = `%${target.replace(/[\\%_]/g, "\\$&")}%`;
     const fuzzy = await supabase
       .from("scanner_summary")
@@ -263,7 +271,7 @@ async function findScanner(supabase: any, target: string): Promise<ScannerLookup
     const rows = (fuzzy.data ?? []) as any[];
     if (rows.length === 1) return { summary: shapeScanner(rows[0]), candidates: [] };
     if (rows.length > 1) return { summary: null, candidates: rows.slice(0, 5).map((r) => String(r.target_id)) };
-    return null;
+    return { summary: null, candidates: [], unobserved: true };
   } catch {
     return null;
   }

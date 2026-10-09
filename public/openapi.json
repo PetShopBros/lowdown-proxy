@@ -49,8 +49,10 @@
                     "avg_rating": { "type": "number" },
                     "scanner": {
                       "type": "object",
-                      "description": "Observations by Lowdown Scanner (initialize + tools/list only; no tool calls). Separate from interaction data; not included in success_rate.",
+                      "description": "Observations by Lowdown Scanner (initialize + tools/list only; no tool calls). Separate from interaction data; not included in success_rate. When the target is outside the Scanner's fixed set of 2,000 daily-observed MCP Registry entries, this block contains only `observed: false` and a note; absence of data says nothing about the target's status.",
                       "properties": {
+                        "observed": { "type": "boolean", "description": "false when no Scanner observation exists for this target." },
+                        "note": { "type": "string" },
                         "target": { "type": "string" },
                         "last_observed_at": { "type": "string", "format": "date-time" },
                         "observations_30d": { "type": "integer" },

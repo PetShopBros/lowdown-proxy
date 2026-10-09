@@ -219,14 +219,15 @@ describe('GET /api/reputation/:target — scanner 블록', () => {
 
   test('3자 미만 입력은 부분 일치를 시도하지 않음', async () => {
     const r = await call('so');
-    assert.equal(r.body.scanner, undefined);
+    assert.equal(r.body.scanner.observed, false);
+    assert.equal(r.body.scanner.last_observed_at, undefined);
     // (기존 reputation_summary 퍼지 매칭은 별개 — scanner_summary 에 대한 부분 일치만 검사)
     assert.ok(!requests.some((q) => q.includes('scanner_summary') && q.includes('ilike')));
   });
 
   test('LIKE 와일드카드 문자는 이스케이프 (% 로 전체 덤프 불가)', async () => {
     const r = await call('%%%');
-    assert.equal(r.body.scanner, undefined);
+    assert.equal(r.body.scanner.observed, false);
     assert.equal(r.body.scanner_candidates, undefined);
     const q = requests.find((x) => x.includes('scanner_summary') && x.includes('ilike'));
     assert.ok(q, 'scanner_summary ilike 쿼리가 나가야 함');
