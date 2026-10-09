@@ -5,7 +5,8 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased] - v0.4 Scanner
 
 ### Added
-- `scanner/` — daily observation of remote (streamable-http) MCP servers listed in the official MCP Registry. Records `initialize` / `tools/list` reachability as plain facts (HTTP status, latency, tool count, schema hash). Never calls a tool; never stores tool names or descriptions.
+- `scanner/` — daily observation of remote (streamable-http) MCP servers listed in the official MCP Registry.
+- `scanner/report.ts` — generates a public `REPORT.md` (counts only; no server names, scores, or labels) into the `lowdown-data` repository. `report.yml` runs it manually first; daily automation follows after verification. Records `initialize` / `tools/list` reachability as plain facts (HTTP status, latency, tool count, schema hash). Never calls a tool; never stores tool names or descriptions.
 - `scanner` block on `GET /api/reputation/:target` — observation data from the Scanner, kept separate from interaction data and never counted in `success_rate`. Short names resolve when unambiguous; otherwise `scanner_candidates` lists up to 5 matches.
 - `scanner: { observed: false, note }` on `GET /api/reputation/:target` when the lookup found no Scanner observation (target outside the fixed 2,000-entry cohort). States that absence of data says nothing about the target's status. Lookup errors still omit the block.
 - Optional `?ref=<tag>` on `GET /api/reputation/:target`, recorded in `reputation_lookups.ref` to measure where lookups come from.

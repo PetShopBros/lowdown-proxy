@@ -16,7 +16,7 @@
     "build": "tsc",
     "dev": "tsx src/cli.ts",
     "scanner:typecheck": "tsc -p scanner",
-    "scanner:test": "node --test scanner/lib.test.ts scanner/reputation.test.ts",
+    "scanner:test": "node --test scanner/lib.test.ts scanner/reputation.test.ts scanner/report.test.ts",
     "scanner:dry": "node scanner/scan.ts --dry-run --limit=30"
   },
   "keywords": [

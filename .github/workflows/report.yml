@@ -1,25 +1,26 @@
-name: backup
+name: report
+
+# 1단계: 수동 실행 전용 (집계·Markdown 생성·커밋이 안정적인지 2~3회 확인용)
+# 2단계: 검증 후 scanner.yml 에 `needs: scan` job 으로 연결 (Scanner 성공 시에만 일일 갱신)
 
 on:
-  schedule:
-    - cron: '43 19 * * 0' # 매주 월요일 04:43 KST (UTC 일요일 19:43)
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# lowdown-data 에 쓰는 워크플로(report, backup)는 같은 그룹으로 직렬화한다
 concurrency:
   group: lowdown-data-push
   cancel-in-progress: false
 
 jobs:
-  export:
+  report:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
-      # lowdown-data 는 README 등으로 초기화된(비어 있지 않은) 레포여야 한다.
       - uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/lowdown-data
@@ -30,8 +31,8 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Export scanner_observations to CSV
-        run: node scanner/export.ts data-repo --months 2
+      - name: Generate REPORT.md
+        run: node scanner/report.ts data-repo
         env:
           LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
           LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
@@ -41,10 +42,11 @@ jobs:
         run: |
           git config user.name "lowdown-bot"
           git config user.email "lowdown-bot@users.noreply.github.com"
-          git add -A
+          git add REPORT.md
           if git diff --cached --quiet; then
             echo "no changes"
             exit 0
           fi
-          git commit -m "data: scanner_observations export $(date -u +%F)"
+          git commit -m "report: REPORT.md $(date -u +%F)"
+          git pull --rebase
           git push
