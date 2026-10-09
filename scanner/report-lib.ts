@@ -256,6 +256,7 @@ export function renderReport(d: ReportData): string {
     `## Scope and limits`,
     ``,
     `- The Scanner sends \`initialize\` and \`tools/list\` only. It never calls a tool and does not authenticate. A \`401\` or \`403\` is recorded as the HTTP status that was observed; it is not classified as success or failure.`,
+    `- The Scanner does not follow redirects; a \`3xx\` status is recorded as the response received from the original URL.`,
     `- Each entry is observed once per day from a single network location (GitHub Actions). These counts describe single probes, not availability or uptime.`,
     `- \`reached_level 2\` means the probe completed \`initialize\` and \`tools/list\` at that moment. It does not mean a tool executed successfully.`,
     `- Cohort entries with no observation row in a run are counted separately and are not recorded as failures.`,

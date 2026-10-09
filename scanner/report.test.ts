@@ -131,6 +131,7 @@ describe('renderReport', () => {
     assert.match(md, /\*\*Observation period:\*\* 2026-10-07 to 2026-10-10 \(UTC\)/);
     assert.match(md, /not availability or uptime/);
     assert.match(md, /does not mean a tool executed successfully/);
+    assert.match(md, /does not follow redirects; a `3xx` status is recorded/);
   });
 
   test('분모 구분 행이 모두 있다', () => {
