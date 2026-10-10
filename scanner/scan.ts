@@ -4,6 +4,7 @@
 // 필수 환경변수(dry-run 이면 불필요): LOWDOWN_SUPABASE_URL, LOWDOWN_SCANNER_KEY(scanner 전용 service key), LOWDOWN_NODE_ID
 // 선택: DRY_RUN=1 또는 --dry-run, SCAN_LIMIT=<N> 또는 --limit=<N>, SCAN_CONCURRENCY=<N, 기본 8>, REGISTRY_URL
 //       COHORT_VERSION(기본 2026-10-07-v1), COHORT_SIZE(기본 2000)
+//       SKIP_IF_DONE=1 — 예비 실행용. 오늘(UTC) 관찰이 코호트 절반 이상 있으면 아무것도 하지 않고 끝낸다
 // 코호트: 해당 버전의 scanner_cohort 가 비어 있으면(Day 0) Registry 의 probe 가능 target 을 SHA-256 순으로 COHORT_SIZE 개 확정·저장하고,
 //         이후에는 저장된 같은 대상만 관찰한다(remote URL 만 매번 최신 Registry 값). dry-run 은 저장하지 않는다.
 // target_id 는 기존 Lowdown 표기와 맞춰 `mcp:` + Registry 이름 (예: mcp:io.github.user/server)
@@ -14,6 +15,7 @@ import {
   DEFAULT_COHORT_SIZE,
   DEFAULT_COHORT_VERSION,
   DEFAULT_REGISTRY_URL,
+  countObservationsSince,
   fetchCohort,
   fetchRegistryTargets,
   insertCohortGaps,
@@ -24,6 +26,7 @@ import {
   runPool,
   saveCohort,
   selectCohort,
+  utcDayStart,
 } from './lib.ts';
 import type { CohortGapRow, ObservationRow } from './lib.ts';
 
@@ -102,6 +105,22 @@ async function main(): Promise<void> {
     supabase = { url, key };
   }
   const cohortReadCfg = supabase ?? (envUrl && envKey ? { url: envUrl, key: envKey } : undefined);
+
+  // 예비 실행(SKIP_IF_DONE=1): 오늘(UTC) 이미 코호트 절반 이상 관찰했으면 건너뛴다.
+  // 본 실행이 지연·누락됐을 때만 채우기 위함. 확인 자체가 실패하면 실행한다(빠지는 날보다 중복이 낫다).
+  if (supabase && process.env.SKIP_IF_DONE === '1') {
+    const since = utcDayStart(new Date());
+    try {
+      const done = await countObservationsSince(supabase, since);
+      if (done >= Math.ceil(cohortSize / 2)) {
+        console.log(`skip: ${since} 이후 관찰 ${done}행 — 오늘 본 실행이 이미 끝남`);
+        return;
+      }
+      console.log(`backup run: ${since} 이후 관찰 ${done}행 — 오늘 본 실행이 없어서 실행`);
+    } catch (e) {
+      console.error(`오늘 관찰 확인 실패(그래도 실행): ${e instanceof Error ? e.message : 'unknown'}`);
+    }
+  }
 
   const runId = randomUUID();
   const registryUrl = process.env.REGISTRY_URL?.trim() || DEFAULT_REGISTRY_URL;

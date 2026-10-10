@@ -10,6 +10,7 @@ import { after, before, describe, test } from 'node:test';
 import {
   canonicalJson,
   classifyNetworkError,
+  countObservationsSince,
   csvEscape,
   extractRpcMessage,
   fetchCohort,
@@ -30,6 +31,7 @@ import {
   selectCohort,
   supabaseHeaders,
   TransportError,
+  utcDayStart,
 } from './lib.ts';
 import type { ObservationRow, PostFn, PostResult } from './lib.ts';
 
@@ -533,6 +535,34 @@ describe('insertCohortGaps', () => {
     assert.equal(await insertCohortGaps([GAP], CFG, { fetchImpl: flaky, sleep: async () => {} }), 1);
     const dead = (async () => new Response('{"message":"no"}', { status: 401 })) as unknown as typeof fetch;
     await assert.rejects(insertCohortGaps([GAP], CFG, { fetchImpl: dead, sleep: async () => {} }), /HTTP 401/);
+  });
+});
+
+describe('예비 실행: 오늘 관찰 수', () => {
+  test('utcDayStart: UTC 기준 자정 (KST 이른 아침도 전날 UTC)', () => {
+    assert.equal(utcDayStart(new Date('2026-10-12T01:17:00Z')), '2026-10-12T00:00:00.000Z');
+    assert.equal(utcDayStart(new Date('2026-10-11T23:59:59Z')), '2026-10-11T00:00:00.000Z');
+  });
+  test('Content-Range 총계를 읽고, 필터·헤더를 보낸다', async () => {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    const f = (async (u: string, init: RequestInit) => {
+      calls.push({ url: u, headers: init.headers as Record<string, string> });
+      return new Response('[]', { status: 200, headers: { 'Content-Range': '0-0/1996' } });
+    }) as unknown as typeof fetch;
+    assert.equal(await countObservationsSince(CFG, '2026-10-12T00:00:00.000Z', { fetchImpl: f }), 1996);
+    const u = new URL(calls[0]!.url);
+    assert.equal(u.pathname, '/rest/v1/scanner_observations');
+    assert.equal(u.searchParams.get('source'), 'eq.scanner');
+    assert.equal(u.searchParams.get('observed_at'), 'gte.2026-10-12T00:00:00.000Z');
+    assert.equal(calls[0]!.headers.Prefer, 'count=exact');
+  });
+  test('0행(*/0)은 0, 오류·총계 없음은 throw', async () => {
+    const empty = (async () => new Response('[]', { status: 200, headers: { 'Content-Range': '*/0' } })) as unknown as typeof fetch;
+    assert.equal(await countObservationsSince(CFG, 'x', { fetchImpl: empty }), 0);
+    const bad = (async () => new Response('x', { status: 500 })) as unknown as typeof fetch;
+    await assert.rejects(countObservationsSince(CFG, 'x', { fetchImpl: bad }), /HTTP 500/);
+    const noRange = (async () => new Response('[]', { status: 200 })) as unknown as typeof fetch;
+    await assert.rejects(countObservationsSince(CFG, 'x', { fetchImpl: noRange }), /content-range/);
   });
 });
 

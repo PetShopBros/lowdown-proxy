@@ -1,0 +1,34 @@
+name: keepalive
+
+# 공개 레포는 60일간 활동이 없으면 예약 워크플로(scanner 포함)가 자동 비활성화된다(GitHub 정책).
+# 리포트·백업 커밋은 lowdown-data 로 가므로 이 레포는 사람이 커밋해야 활동이 생긴다.
+# 마지막 커밋이 45일 넘었을 때만 빈 커밋 1개를 남긴다(평소에는 아무것도 하지 않음).
+
+on:
+  schedule:
+    - cron: '37 2 * * 1' # 매주 월요일 11:37 KST (UTC 02:37)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Empty commit if last commit is older than 45 days
+        run: |
+          last=$(git log -1 --format=%ct)
+          age_days=$(( ( $(date +%s) - last ) / 86400 ))
+          echo "last commit ${age_days} days ago"
+          if [ "$age_days" -lt 45 ]; then
+            echo "skip"
+            exit 0
+          fi
+          git config user.name "lowdown-bot"
+          git config user.email "lowdown-bot@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keepalive (scheduled workflows stay enabled)"
+          git push

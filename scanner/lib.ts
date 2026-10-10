@@ -973,7 +973,7 @@ export async function insertCohortGaps(rows: CohortGapRow[], cfg: SupabaseConfig
       res = null;
     }
     if (res && res.status >= 200 && res.status < 300) return rows.length;
-    if (res && res.status === 409 && ambiguous) return rows.length;
+    if (res && res.status === 409 && ambiguous) return rows.length; // 재시도 중 이미 커밋된 배치(unique index)
     const retryable = !res || res.status >= 500 || res.status === 429 || res.status === 408;
     if (retryable) ambiguous = true;
     if (!retryable || attempt >= maxAttempts) {
@@ -987,6 +987,30 @@ export async function insertCohortGaps(rows: CohortGapRow[], cfg: SupabaseConfig
     }
     await sleep(1000 * 2 ** (attempt - 1));
   }
+}
+
+/** UTC 날짜의 00:00 (ISO). 예비 실행이 "오늘 이미 관찰했는가"를 판단하는 기준. */
+export function utcDayStart(now: Date): string {
+  return `${now.toISOString().slice(0, 10)}T00:00:00.000Z`;
+}
+
+/** since 이후 Scanner 관찰 행 수. Content-Range(예: "0-0/1996", "*\/0")의 총계를 읽는다. 실패는 throw. */
+export async function countObservationsSince(cfg: SupabaseConfig, sinceIso: string, deps: { fetchImpl?: typeof fetch } = {}): Promise<number> {
+  const f = deps.fetchImpl ?? fetch;
+  const qs = new URLSearchParams({ select: 'id', source: 'eq.scanner', observed_at: `gte.${sinceIso}`, limit: '1' });
+  let res: Response;
+  try {
+    res = await f(`${cfg.url.replace(/\/+$/, '')}/rest/v1/scanner_observations?${qs.toString()}`, {
+      headers: supabaseHeaders(cfg.key, { Accept: 'application/json', Prefer: 'count=exact' }),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch {
+    throw new Error('observation count failed: network');
+  }
+  if (!res.ok) throw new Error(`observation count failed: HTTP ${res.status}`);
+  const total = /\/(\d+)\s*$/.exec(res.headers.get('content-range') ?? '')?.[1];
+  if (total === undefined) throw new Error('observation count failed: no content-range total');
+  return Number.parseInt(total, 10);
 }
 
 export const EXPORT_COLUMNS = [

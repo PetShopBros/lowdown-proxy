@@ -2,7 +2,10 @@ name: scanner
 
 on:
   schedule:
-    - cron: '17 19 * * *' # 매일 04:17 KST (UTC 19:17). 정각을 피해 지연 완화
+    # 본 실행: 매일 10:17 KST (UTC 01:17). UTC 하루 앞쪽에 두어 몇 시간 지연돼도 날짜가 넘어가지 않게 한다.
+    - cron: '17 1 * * *'
+    # 예비 실행: 매일 22:17 KST (UTC 13:17). 본 실행이 누락·지연됐을 때만 실행(SKIP_IF_DONE).
+    - cron: '17 13 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -16,6 +19,7 @@ on:
 
 permissions:
   contents: read
+  issues: write # 실패 시 이슈 생성(알림)
 
 concurrency:
   group: scanner
@@ -23,7 +27,8 @@ concurrency:
 
 jobs:
   scan:
-    runs-on: ubuntu-latest
+    # ubuntu-latest 는 2026-10-19부터 26.04로 바뀐다. 검증 전까지 24.04 고정.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -40,3 +45,13 @@ jobs:
           LOWDOWN_NODE_ID: ${{ secrets.LOWDOWN_NODE_ID }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           SCAN_LIMIT: ${{ inputs.limit }}
+          SKIP_IF_DONE: ${{ github.event.schedule == '17 13 * * *' && '1' || '' }}
+
+      - name: Open issue on failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "scanner 실패 $(date -u +%F) (${{ github.event.schedule }})" \
+            --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
