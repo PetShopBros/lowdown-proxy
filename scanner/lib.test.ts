@@ -17,6 +17,7 @@ import {
   fetchRegistryTargets,
   hashTools,
   httpsPost,
+  insertCohortGaps,
   insertObservations,
   isBlockedIp,
   monthRanges,
@@ -411,7 +412,7 @@ describe('fetchRegistryTargets', () => {
       ],
       [entry('c/local', '1.0.0'), entry('d/two', '1.0.0', { remotes: [http('https://d1.example.com'), http('https://d2.example.com')] })],
     ];
-    const { targets, stats } = await fetchRegistryTargets({ fetchImpl: mockRegistry(pages, seen), sleep: async () => {} });
+    const { targets, stats, registryInfo } = await fetchRegistryTargets({ fetchImpl: mockRegistry(pages, seen), sleep: async () => {} });
     assert.deepEqual(targets.map((t) => t.name), ['a/new', 'd/two']);
     assert.deepEqual(targets[0]!.remotes, [http('https://a.example.com')]);
     assert.equal(stats.pages, 2);
@@ -423,6 +424,11 @@ describe('fetchRegistryTargets', () => {
     assert.match(seen[0]!, /limit=100/);
     assert.match(seen[0]!, /version=latest/);
     assert.match(seen[1]!, /cursor=c1/);
+    // registryInfo: probe 대상이 아닌 항목도 사유 판단용으로 기록된다
+    assert.deepEqual(registryInfo.get('a/old'), { version: '1.0.0', status: 'active', isLatest: false, hasAnyRemotes: false, hasProbeableRemote: false });
+    assert.deepEqual(registryInfo.get('b/deprecated'), { version: '1.0.0', status: 'deprecated', isLatest: true, hasAnyRemotes: false, hasProbeableRemote: false });
+    assert.deepEqual(registryInfo.get('c/local'), { version: '1.0.0', status: 'active', isLatest: true, hasAnyRemotes: false, hasProbeableRemote: false });
+    assert.deepEqual(registryInfo.get('a/new'), { version: '2.0.0', status: 'active', isLatest: true, hasAnyRemotes: true, hasProbeableRemote: true });
   });
   test('커서 무시 서버 → 명확히 실패(무한루프 방지)', async () => {
     const f = (async () => new Response(JSON.stringify({ servers: [entry('a/x', '1.0.0')], metadata: { nextCursor: 'same' } }), { status: 200 })) as typeof fetch;
@@ -504,6 +510,32 @@ describe('supabase', () => {
   });
 });
 
+describe('insertCohortGaps', () => {
+  const GAP = { target_id: 'mcp:gone/server', reason: 'not_in_registry' as const, registry_version: null, registry_status: null, scan_run_id: 'r1', cohort_version: 'v1', observed_at: '2026-10-12T00:00:00Z' };
+  test('빈 배열은 요청 없이 0', async () => {
+    const f = (async () => { throw new Error('호출되면 안 됨'); }) as unknown as typeof fetch;
+    assert.equal(await insertCohortGaps([], CFG, { fetchImpl: f }), 0);
+  });
+  test('엔드포인트 + 성공', async () => {
+    const calls: Array<{ url: string; n: number }> = [];
+    const f = (async (u: string, init: RequestInit) => {
+      calls.push({ url: u, n: (JSON.parse(String(init.body)) as unknown[]).length });
+      return new Response(null, { status: 201 });
+    }) as unknown as typeof fetch;
+    const n = await insertCohortGaps([GAP, GAP], CFG, { fetchImpl: f });
+    assert.equal(n, 2);
+    assert.equal(calls[0]!.url, 'https://proj.supabase.co/rest/v1/scanner_cohort_gaps');
+    assert.equal(calls[0]!.n, 2);
+  });
+  test('5xx 재시도 후 성공, 첫 시도 401 은 즉시 실패', async () => {
+    let n = 0;
+    const flaky = (async () => (++n < 2 ? new Response('x', { status: 503 }) : new Response(null, { status: 201 }))) as unknown as typeof fetch;
+    assert.equal(await insertCohortGaps([GAP], CFG, { fetchImpl: flaky, sleep: async () => {} }), 1);
+    const dead = (async () => new Response('{"message":"no"}', { status: 401 })) as unknown as typeof fetch;
+    await assert.rejects(insertCohortGaps([GAP], CFG, { fetchImpl: dead, sleep: async () => {} }), /HTTP 401/);
+  });
+});
+
 // ───────────── 고정 코호트 ─────────────
 describe('cohort', () => {
   const ids = Array.from({ length: 50 }, (_, i) => `mcp:io.example/server-${i}`);
@@ -570,15 +602,40 @@ describe('cohort', () => {
     const dead = (async () => new Response('{"message":"no"}', { status: 401 })) as unknown as typeof fetch;
     await assert.rejects(saveCohort(CFG, 'v1', ['a'], { fetchImpl: dead, sleep: async () => {} }), /HTTP 401/);
   });
-  test('planCohortJobs: 현재 remote 로 작업 생성, 사라진 멤버는 missing 으로만 집계', () => {
+  test('planCohortJobs: 현재 remote 로 작업 생성, registryInfo 없으면 not_in_registry', () => {
     const targets = [
       { name: 'a/x', version: '1.0.0', remotes: [{ type: 'streamable-http', url: 'https://a1.example.com' }, { type: 'streamable-http', url: 'https://a2.example.com' }] },
       { name: 'b/y', version: '2.0.0', remotes: [{ type: 'streamable-http', url: 'https://b.example.com' }] },
       { name: 'z/outside', version: '1.0.0', remotes: [{ type: 'streamable-http', url: 'https://z.example.com' }] },
     ];
-    const { jobs, missing } = planCohortJobs(targets, ['mcp:a/x', 'mcp:gone/server', 'mcp:b/y']);
+    const { jobs, gaps } = planCohortJobs(targets, ['mcp:a/x', 'mcp:gone/server', 'mcp:b/y']);
     assert.deepEqual(jobs.map((j) => `${j.name}#${j.index}:${j.remote.url}`), ['a/x#0:https://a1.example.com', 'a/x#1:https://a2.example.com', 'b/y#0:https://b.example.com']);
-    assert.equal(missing, 1);
+    assert.deepEqual(gaps, [{ target_id: 'mcp:gone/server', reason: 'not_in_registry', registry_version: null, registry_status: null }]);
+  });
+  test('planCohortJobs: 사유별 분류 (no_remote / remote_not_probeable / not_active / not_in_registry)', () => {
+    const targets = [{ name: 'a/x', version: '1.0.0', remotes: [{ type: 'streamable-http', url: 'https://a1.example.com' }] }];
+    const registryInfo = new Map<string, import('./lib.ts').RegistryGapInfo>([
+      ['no-remote/server', { version: '0.22.1', status: 'active', isLatest: true, hasAnyRemotes: false, hasProbeableRemote: false }],
+      ['sse-only/server', { version: '1.0.0', status: 'active', isLatest: true, hasAnyRemotes: true, hasProbeableRemote: false }],
+      ['deprecated/server', { version: '1.0.0', status: 'deprecated', isLatest: true, hasAnyRemotes: true, hasProbeableRemote: true }],
+      ['old-version/server', { version: '0.9.0', status: 'active', isLatest: false, hasAnyRemotes: true, hasProbeableRemote: true }],
+    ]);
+    const { gaps } = planCohortJobs(
+      targets,
+      ['mcp:a/x', 'mcp:no-remote/server', 'mcp:sse-only/server', 'mcp:deprecated/server', 'mcp:old-version/server', 'mcp:never-seen/server'],
+      registryInfo,
+    );
+    assert.deepEqual(
+      gaps.map((g) => [g.target_id, g.reason]),
+      [
+        ['mcp:no-remote/server', 'no_remote'],
+        ['mcp:sse-only/server', 'remote_not_probeable'],
+        ['mcp:deprecated/server', 'not_active'],
+        ['mcp:old-version/server', 'not_active'],
+        ['mcp:never-seen/server', 'not_in_registry'],
+      ],
+    );
+    assert.deepEqual(gaps[0], { target_id: 'mcp:no-remote/server', reason: 'no_remote', registry_version: '0.22.1', registry_status: 'active' });
   });
 });
 

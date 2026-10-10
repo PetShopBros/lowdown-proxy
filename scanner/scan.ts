@@ -16,6 +16,7 @@ import {
   DEFAULT_REGISTRY_URL,
   fetchCohort,
   fetchRegistryTargets,
+  insertCohortGaps,
   insertObservations,
   MAX_COHORT_SIZE,
   planCohortJobs,
@@ -24,7 +25,7 @@ import {
   saveCohort,
   selectCohort,
 } from './lib.ts';
-import type { ObservationRow } from './lib.ts';
+import type { CohortGapRow, ObservationRow } from './lib.ts';
 
 function fail(message: string): never {
   console.error(`::error::${message}`);
@@ -107,7 +108,7 @@ async function main(): Promise<void> {
   console.log(`scan_run_id=${runId} dry_run=${dryRun} registry=${registryUrl}`);
 
   // 1) Registry 수집 (실패하면 명확하게 실패)
-  const { targets, stats } = await fetchRegistryTargets({ baseUrl: registryUrl });
+  const { targets, stats, registryInfo } = await fetchRegistryTargets({ baseUrl: registryUrl });
   console.log('registry stats', JSON.stringify(stats));
   if (targets.length === 0) fail('Registry 에서 probe 가능한 대상이 0개입니다 (응답 형식 변경 가능성).');
 
@@ -130,11 +131,32 @@ async function main(): Promise<void> {
       console.log(`cohort ${cohortVersion} preview (not saved): ${cohortIds.length} targets`);
     }
   }
-  const plan = planCohortJobs(targets, cohortIds);
+  const plan = planCohortJobs(targets, cohortIds, registryInfo);
   let jobs = plan.jobs;
   if (jobs.length === 0) fail('코호트에서 probe 할 remote 가 0개입니다 (Registry 와 코호트가 맞지 않음).');
-  const cohortInfo = { cohort_version: cohortVersion, cohort_source: cohortSource, cohort_created: cohortCreated, cohort_size: cohortIds.length, cohort_missing: plan.missing };
+  const gapReasonCounts = Object.fromEntries(count(plan.gaps.map((g) => g.reason)));
+  const cohortInfo = {
+    cohort_version: cohortVersion,
+    cohort_source: cohortSource,
+    cohort_created: cohortCreated,
+    cohort_size: cohortIds.length,
+    cohort_missing: plan.gaps.length,
+    cohort_gap_reasons: JSON.stringify(gapReasonCounts),
+  };
   console.log('cohort', JSON.stringify(cohortInfo));
+
+  // 사유 분리 저장: probe 와 무관하므로 먼저 저장한다. 실패해도 probe 는 계속 진행한다(관측 본체가 우선).
+  if (supabase && plan.gaps.length > 0) {
+    const gapObservedAt = new Date().toISOString();
+    const gapRows: CohortGapRow[] = plan.gaps.map((g) => ({ ...g, scan_run_id: runId, cohort_version: cohortVersion, observed_at: gapObservedAt }));
+    try {
+      await insertCohortGaps(gapRows, supabase);
+      console.log(`cohort gaps saved: ${gapRows.length}`);
+    } catch (e) {
+      console.error(`cohort gaps 저장 실패(계속 진행): ${e instanceof Error ? e.message : 'unknown'}`);
+    }
+  }
+
   if (limit) jobs = jobs.slice(0, limit);
   console.log(`probing ${jobs.length} remotes (concurrency=${concurrency})`);
 

@@ -567,6 +567,15 @@ export interface RegistryTarget {
   remotes: RegistryRemote[];
 }
 
+/** probe 대상이 아닌(또는 안 되는) 항목을 포함해, Registry 에서 본 모든 이름에 대해 기록한다. 사유 분리(planCohortJobs)에 쓰인다. */
+export interface RegistryGapInfo {
+  version: string;
+  status: string | undefined;
+  isLatest: boolean | undefined;
+  hasAnyRemotes: boolean;
+  hasProbeableRemote: boolean;
+}
+
 export interface RegistryStats {
   pages: number;
   entries: number;
@@ -591,7 +600,7 @@ export interface RegistryDeps {
 
 export async function fetchRegistryTargets(
   deps: RegistryDeps = {},
-): Promise<{ targets: RegistryTarget[]; stats: RegistryStats }> {
+): Promise<{ targets: RegistryTarget[]; stats: RegistryStats; registryInfo: Map<string, RegistryGapInfo> }> {
   const base = (deps.baseUrl ?? DEFAULT_REGISTRY_URL).replace(/\/+$/, '');
   const f = deps.fetchImpl ?? fetch;
   const sleep = deps.sleep ?? defaultSleep;
@@ -609,6 +618,7 @@ export async function fetchRegistryTargets(
     duplicate_names: 0,
   };
   const byName = new Map<string, RegistryTarget>();
+  const registryInfo = new Map<string, RegistryGapInfo>();
   const seenKeys = new Set<string>();
   let cursor: string | undefined;
 
@@ -652,12 +662,20 @@ export async function fetchRegistryTargets(
         newKeys++;
       }
       const meta = entry._meta?.[OFFICIAL_META] as { status?: unknown; isLatest?: unknown } | undefined;
-      if (!(meta?.status === 'active' && meta?.isLatest === true)) continue;
+      const metaStatus = typeof meta?.status === 'string' ? meta.status : undefined;
+      const metaIsLatest = typeof meta?.isLatest === 'boolean' ? meta.isLatest : undefined;
+      const version = String(s.version ?? '');
+
+      if (!(metaStatus === 'active' && metaIsLatest === true)) {
+        registryInfo.set(s.name, { version, status: metaStatus, isLatest: metaIsLatest, hasAnyRemotes: false, hasProbeableRemote: false });
+        continue;
+      }
       stats.active_latest++;
 
+      const rawRemotes = Array.isArray(s.remotes) ? (s.remotes as unknown[]) : [];
       const remotes: RegistryRemote[] = [];
       const seenUrls = new Set<string>();
-      for (const r of Array.isArray(s.remotes) ? (s.remotes as unknown[]) : []) {
+      for (const r of rawRemotes) {
         const rr = r as { type?: unknown; url?: unknown } | null;
         if (!rr || typeof rr.type !== 'string' || typeof rr.url !== 'string') continue;
         if (rr.type !== 'streamable-http') {
@@ -672,12 +690,14 @@ export async function fetchRegistryTargets(
         seenUrls.add(rr.url);
         remotes.push({ type: rr.type, url: rr.url });
       }
+      registryInfo.set(s.name, { version, status: metaStatus, isLatest: metaIsLatest, hasAnyRemotes: rawRemotes.length > 0, hasProbeableRemote: remotes.length > 0 });
+
       if (remotes.length === 0) continue;
       if (byName.has(s.name)) {
         stats.duplicate_names++;
         continue;
       }
-      byName.set(s.name, { name: s.name, version: String(s.version ?? ''), remotes });
+      byName.set(s.name, { name: s.name, version, remotes });
       stats.targets_with_probeable_remote++;
       stats.remotes_probeable += remotes.length;
     }
@@ -688,7 +708,7 @@ export async function fetchRegistryTargets(
     cursor = next;
   }
 
-  return { targets: [...byName.values()], stats };
+  return { targets: [...byName.values()], stats, registryInfo };
 }
 
 // ─────────────────────────────────────────────
@@ -880,20 +900,93 @@ export interface CohortJob {
   index: number;
 }
 
-/** 코호트 멤버 중 현재 Registry 에서 probe 가능한 remote 만 작업으로 만든다. 없어진 멤버는 missing 으로만 센다(실패로 기록하지 않음). */
-export function planCohortJobs(targets: RegistryTarget[], cohortIds: string[]): { jobs: CohortJob[]; missing: number } {
+export type CohortGapReason = 'no_remote' | 'remote_not_probeable' | 'not_active' | 'not_in_registry';
+
+/** 코호트 멤버 중 이번 run 에 observation 행이 생기지 않는 이유. scanner_observations 에는 넣지 않는다(분모 보호). */
+export interface CohortGap {
+  target_id: string;
+  reason: CohortGapReason;
+  registry_version: string | null;
+  registry_status: string | null;
+}
+
+/**
+ * 코호트 멤버 중 현재 Registry 에서 probe 가능한 remote 만 작업으로 만든다.
+ * 작업이 안 생기는 멤버는 gap 으로 사유와 함께 남긴다(실패로 기록하지 않음):
+ *   not_in_registry(이름 자체가 응답에 없음) / not_active(active·latest 아님)
+ *   / no_remote(active·latest 이나 원격 선언 없음) / remote_not_probeable(원격은 있으나 streamable-http 아니거나 템플릿 URL)
+ */
+export function planCohortJobs(
+  targets: RegistryTarget[],
+  cohortIds: string[],
+  registryInfo: Map<string, RegistryGapInfo> = new Map(),
+): { jobs: CohortJob[]; gaps: CohortGap[] } {
   const byId = new Map(targets.map((t) => [`mcp:${t.name}`, t]));
   const jobs: CohortJob[] = [];
-  let missing = 0;
+  const gaps: CohortGap[] = [];
   for (const id of cohortIds) {
     const t = byId.get(id);
-    if (!t) {
-      missing++;
+    if (t) {
+      t.remotes.forEach((remote, index) => jobs.push({ name: t.name, version: t.version, remote, index }));
       continue;
     }
-    t.remotes.forEach((remote, index) => jobs.push({ name: t.name, version: t.version, remote, index }));
+    const name = id.startsWith('mcp:') ? id.slice('mcp:'.length) : id;
+    const info = registryInfo.get(name);
+    if (!info) {
+      gaps.push({ target_id: id, reason: 'not_in_registry', registry_version: null, registry_status: null });
+    } else if (!(info.status === 'active' && info.isLatest === true)) {
+      gaps.push({ target_id: id, reason: 'not_active', registry_version: info.version, registry_status: info.status ?? null });
+    } else if (!info.hasAnyRemotes) {
+      gaps.push({ target_id: id, reason: 'no_remote', registry_version: info.version, registry_status: info.status ?? null });
+    } else {
+      gaps.push({ target_id: id, reason: 'remote_not_probeable', registry_version: info.version, registry_status: info.status ?? null });
+    }
   }
-  return { jobs, missing };
+  return { jobs, gaps };
+}
+
+export interface CohortGapRow extends CohortGap {
+  scan_run_id: string;
+  cohort_version: string;
+  observed_at: string;
+}
+
+/** scanner_cohort_gaps 에 저장. 하루 수십 행 수준이라 청크 없이 1회 POST. */
+export async function insertCohortGaps(rows: CohortGapRow[], cfg: SupabaseConfig, deps: InsertDeps = {}): Promise<number> {
+  if (rows.length === 0) return 0;
+  const f = deps.fetchImpl ?? fetch;
+  const sleep = deps.sleep ?? defaultSleep;
+  const maxAttempts = deps.maxAttempts ?? 4;
+  const endpoint = `${cfg.url.replace(/\/+$/, '')}/rest/v1/scanner_cohort_gaps`;
+  const body = JSON.stringify(rows);
+  let ambiguous = false;
+  for (let attempt = 1; ; attempt++) {
+    let res: Response | null = null;
+    try {
+      res = await f(endpoint, {
+        method: 'POST',
+        headers: supabaseHeaders(cfg.key, { 'Content-Type': 'application/json', Prefer: 'return=minimal' }),
+        body,
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      res = null;
+    }
+    if (res && res.status >= 200 && res.status < 300) return rows.length;
+    if (res && res.status === 409 && ambiguous) return rows.length;
+    const retryable = !res || res.status >= 500 || res.status === 429 || res.status === 408;
+    if (retryable) ambiguous = true;
+    if (!retryable || attempt >= maxAttempts) {
+      let snippet = '';
+      try {
+        snippet = res ? (await res.text()).slice(0, 300) : '';
+      } catch {
+        // 무시
+      }
+      throw new Error(`supabase cohort gaps insert failed: HTTP ${res?.status ?? 'network'} ${snippet}`.trim());
+    }
+    await sleep(1000 * 2 ** (attempt - 1));
+  }
 }
 
 export const EXPORT_COLUMNS = [
