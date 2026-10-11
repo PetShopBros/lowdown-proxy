@@ -1013,6 +1013,155 @@ export async function countObservationsSince(cfg: SupabaseConfig, sinceIso: stri
   return Number.parseInt(total, 10);
 }
 
+// ─────────────────────────────────────────────
+// 직후 재시도: 메인 probe 가 끝난 뒤, 일시적일 수 있는 실패만 호스트당 1건씩 다시 시도한다.
+//   첫 시도 컬럼(reached_level/http_status/error_type/latency_ms)은 바꾸지 않고
+//   같은 행의 metadata.retry 에만 덧붙인다(supabase/scanner_retry.sql 의 scanner_attach_retry).
+// ─────────────────────────────────────────────
+
+/** 일시적일 수 있는 연결 실패. dns/tls/blocked_url/invalid_response 는 지속 성격이라 제외. */
+export const RETRYABLE_ERROR_TYPES: ReadonlySet<string> = new Set(['timeout', 'conn_reset', 'conn_refused', 'network_error']);
+
+export function isRetryable(r: Pick<ProbeResult, 'error_type' | 'http_status'>): boolean {
+  if (r.error_type) return RETRYABLE_ERROR_TYPES.has(r.error_type);
+  const s = r.http_status;
+  return s !== null && (s === 408 || s === 429 || s >= 500);
+}
+
+export function hostOf(rawUrl: string): string {
+  try {
+    return new URL(rawUrl).host.toLowerCase();
+  } catch {
+    return rawUrl;
+  }
+}
+
+export interface RoundRobinResult<T, R> {
+  results: Array<{ item: T; result: R }>;
+  /** 시간 예산 안에 시작하지 못한 항목 */
+  skipped: T[];
+}
+
+/**
+ * 호스트당 동시 1건, 호스트 간 최대 concurrency 건. 호스트를 번갈아 골라 한 호스트가 시간을 독차지하지 않게 한다.
+ * deadline(ms, now() 기준) 이후에는 새 항목을 시작하지 않는다(이미 시작한 항목은 끝까지 기다린다).
+ * fn 은 throw 하지 않아야 한다(호출 측에서 감쌀 것).
+ */
+export async function runPerHostRoundRobin<T, R>(
+  items: readonly T[],
+  keyOf: (item: T) => string,
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+  opts: { deadline?: number; now?: () => number } = {},
+): Promise<RoundRobinResult<T, R>> {
+  const now = opts.now ?? Date.now;
+  const queues = new Map<string, T[]>();
+  for (const it of items) {
+    const k = keyOf(it);
+    const q = queues.get(k);
+    if (q) q.push(it);
+    else queues.set(k, [it]);
+  }
+  const hosts = [...queues.keys()];
+  const busy = new Set<string>();
+  const results: Array<{ item: T; result: R }> = [];
+  let cursor = 0;
+  let remaining = items.length;
+  let waiters: Array<() => void> = [];
+
+  const pick = (): { host: string; item: T } | null => {
+    for (let k = 0; k < hosts.length; k++) {
+      const i = (cursor + k) % hosts.length;
+      const h = hosts[i] as string;
+      const q = queues.get(h) as T[];
+      if (!busy.has(h) && q.length > 0) {
+        cursor = (i + 1) % hosts.length;
+        remaining--;
+        return { host: h, item: q.shift() as T };
+      }
+    }
+    return null;
+  };
+  const wakeAll = () => {
+    const w = waiters;
+    waiters = [];
+    for (const f of w) f();
+  };
+
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      if (remaining === 0) return;
+      if (opts.deadline !== undefined && now() >= opts.deadline) return;
+      const next = pick();
+      if (!next) {
+        // 남은 항목의 호스트가 모두 처리 중 → 하나가 끝날 때까지 대기
+        await new Promise<void>((r) => waiters.push(r));
+        continue;
+      }
+      busy.add(next.host);
+      try {
+        results.push({ item: next.item, result: await fn(next.item) });
+      } finally {
+        busy.delete(next.host);
+        wakeAll();
+      }
+    }
+  };
+
+  const n = Math.min(Math.max(1, concurrency), Math.max(1, hosts.length));
+  await Promise.all(Array.from({ length: n }, worker));
+  return { results, skipped: [...queues.values()].flat() };
+}
+
+export interface RetryInfo {
+  retried_at: string;
+  reached_level: 0 | 1 | 2;
+  http_status: number | null;
+  error_type: string | null;
+  latency_ms: number | null;
+  per_host_concurrency: 1;
+}
+
+export interface RetryKey {
+  scan_run_id: string;
+  target_id: string;
+  remote_url: string;
+}
+
+/**
+ * 기존 관찰 행의 metadata.retry 에 재시도 결과를 덧붙인다. 이미 retry 가 있으면 바꾸지 않는다(false 반환).
+ * 함수가 멱등이라 네트워크·5xx 실패는 재시도해도 안전하다.
+ */
+export async function attachRetry(cfg: SupabaseConfig, key: RetryKey, retry: RetryInfo, deps: InsertDeps = {}): Promise<boolean> {
+  const f = deps.fetchImpl ?? fetch;
+  const sleep = deps.sleep ?? defaultSleep;
+  const maxAttempts = deps.maxAttempts ?? 3;
+  const endpoint = `${cfg.url.replace(/\/+$/, '')}/rest/v1/rpc/scanner_attach_retry`;
+  const body = JSON.stringify({ p_run: key.scan_run_id, p_target: key.target_id, p_remote_url: key.remote_url, p_retry: retry });
+  for (let attempt = 1; ; attempt++) {
+    let res: Response | null = null;
+    try {
+      res = await f(endpoint, {
+        method: 'POST',
+        headers: supabaseHeaders(cfg.key, { 'Content-Type': 'application/json', Accept: 'application/json' }),
+        body,
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      res = null;
+    }
+    if (res && res.ok) {
+      const v: unknown = await res.json();
+      return v === true;
+    }
+    const retryable = !res || res.status >= 500 || res.status === 429 || res.status === 408;
+    if (!retryable || attempt >= maxAttempts) {
+      throw new Error(`attach retry failed: HTTP ${res?.status ?? 'network'}`);
+    }
+    await sleep(1000 * 2 ** (attempt - 1));
+  }
+}
+
 export const EXPORT_COLUMNS = [
   'id',
   'scan_run_id',

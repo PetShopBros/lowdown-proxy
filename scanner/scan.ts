@@ -5,6 +5,9 @@
 // 선택: DRY_RUN=1 또는 --dry-run, SCAN_LIMIT=<N> 또는 --limit=<N>, SCAN_CONCURRENCY=<N, 기본 8>, REGISTRY_URL
 //       COHORT_VERSION(기본 2026-10-07-v1), COHORT_SIZE(기본 2000)
 //       SKIP_IF_DONE=1 — 예비 실행용. 오늘(UTC) 관찰이 코호트 절반 이상 있으면 아무것도 하지 않고 끝낸다
+//       RETRY_FAILED=0 — 직후 재시도 끄기(기본 켜짐). RETRY_DELAY_SEC(기본 60), RETRY_BUDGET_SEC(기본 720)
+// 직후 재시도: 메인 probe 후 일시적일 수 있는 실패(timeout/연결 실패/408/429/5xx)만 호스트당 1건씩 다시 시도해
+//         같은 행의 metadata.retry 에 덧붙인다. 첫 시도 값은 바꾸지 않는다. 시간 예산을 넘긴 행은 retry 없이 남긴다.
 // 코호트: 해당 버전의 scanner_cohort 가 비어 있으면(Day 0) Registry 의 probe 가능 target 을 SHA-256 순으로 COHORT_SIZE 개 확정·저장하고,
 //         이후에는 저장된 같은 대상만 관찰한다(remote URL 만 매번 최신 Registry 값). dry-run 은 저장하지 않는다.
 // target_id 는 기존 Lowdown 표기와 맞춰 `mcp:` + Registry 이름 (예: mcp:io.github.user/server)
@@ -12,23 +15,27 @@
 import { randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import {
+  attachRetry,
   DEFAULT_COHORT_SIZE,
   DEFAULT_COHORT_VERSION,
   DEFAULT_REGISTRY_URL,
   countObservationsSince,
   fetchCohort,
   fetchRegistryTargets,
+  hostOf,
   insertCohortGaps,
   insertObservations,
+  isRetryable,
   MAX_COHORT_SIZE,
   planCohortJobs,
   probeRemote,
+  runPerHostRoundRobin,
   runPool,
   saveCohort,
   selectCohort,
   utcDayStart,
 } from './lib.ts';
-import type { CohortGapRow, ObservationRow } from './lib.ts';
+import type { CohortGapRow, ObservationRow, ProbeResult, RetryInfo } from './lib.ts';
 
 function fail(message: string): never {
   console.error(`::error::${message}`);
@@ -39,6 +46,14 @@ function requireEnv(name: string): string {
   const v = process.env[name]?.trim();
   if (!v) fail(`환경변수 ${name} 가 없습니다. GitHub Secrets 설정을 확인하세요.`);
   return v;
+}
+
+function envSeconds(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const n = Number.parseInt(raw, 10);
+  if (!(n >= 0)) throw new Error(`${name} 값이 올바르지 않습니다: ${raw}`);
+  return n;
 }
 
 function count<T extends string | number | null>(values: T[]): Array<[string, number]> {
@@ -224,7 +239,16 @@ async function main(): Promise<void> {
     }
   }
 
-  const summary = summarize(all, runId, { dry_run: dryRun, inserted, ...cohortInfo, ...stats });
+  // 4) 직후 재시도 (실패해도 본 데이터에는 영향 없음)
+  let retryStats: Record<string, number | string> = {};
+  try {
+    retryStats = await retryFailed(all, { supabase, concurrency });
+  } catch (e) {
+    console.error(`retry 단계 실패(관찰 데이터는 저장 완료): ${e instanceof Error ? e.message : 'unknown'}`);
+    retryStats = { retry: 'error' };
+  }
+
+  const summary = summarize(all, runId, { dry_run: dryRun, inserted, ...cohortInfo, ...stats, ...retryStats });
   console.log(summary);
   if (dryRun) {
     console.log('sample rows:');
@@ -232,6 +256,77 @@ async function main(): Promise<void> {
   }
   const summaryFile = process.env.GITHUB_STEP_SUMMARY;
   if (summaryFile) appendFileSync(summaryFile, `${summary}\n`);
+}
+
+async function retryFailed(
+  rows: ObservationRow[],
+  opts: { supabase: { url: string; key: string } | undefined; concurrency: number },
+): Promise<Record<string, number | string>> {
+  if (process.env.RETRY_FAILED?.trim() === '0') return { retry: 'off' };
+  const candidates = rows.filter((r) => isRetryable(r) && typeof r.metadata.remote_url === 'string');
+  if (candidates.length === 0) return { retry_candidates: 0 };
+  const delaySec = envSeconds('RETRY_DELAY_SEC', 60);
+  const budgetSec = envSeconds('RETRY_BUDGET_SEC', 720);
+  console.log(`retry: ${candidates.length} candidates, wait ${delaySec}s, budget ${budgetSec}s`);
+  await new Promise<void>((r) => setTimeout(r, delaySec * 1000));
+
+  const deadline = Date.now() + budgetSec * 1000;
+  const { results, skipped } = await runPerHostRoundRobin(
+    candidates,
+    (r) => hostOf(r.metadata.remote_url as string),
+    opts.concurrency,
+    async (r): Promise<RetryInfo> => {
+      const retriedAt = new Date().toISOString();
+      let p: Pick<ProbeResult, 'reached_level' | 'http_status' | 'error_type' | 'latency_ms'>;
+      try {
+        p = await probeRemote(
+          { type: r.transport, url: r.metadata.remote_url as string },
+          { registryVersion: String(r.metadata.registry_version ?? ''), index: Number(r.metadata.remote_index ?? 0) },
+        );
+      } catch {
+        p = { reached_level: 0, http_status: null, error_type: 'network_error', latency_ms: null };
+      }
+      return {
+        retried_at: retriedAt,
+        reached_level: p.reached_level,
+        http_status: p.http_status,
+        error_type: p.error_type,
+        latency_ms: p.latency_ms,
+        per_host_concurrency: 1,
+      };
+    },
+    { deadline },
+  );
+
+  const recovered = results.filter(({ item, result }) => result.reached_level > item.reached_level).length;
+  let attached = 0;
+  let attachFailed = 0;
+  if (opts.supabase) {
+    const cfg = opts.supabase;
+    await runPool(results, 4, async ({ item, result }) => {
+      try {
+        const ok = await attachRetry(
+          cfg,
+          { scan_run_id: item.scan_run_id, target_id: item.target_id, remote_url: item.metadata.remote_url as string },
+          result,
+        );
+        if (ok) attached++;
+      } catch (e) {
+        attachFailed++;
+        if (attachFailed <= 3) console.error(`retry 저장 실패(계속 진행): ${e instanceof Error ? e.message : 'unknown'}`);
+      }
+    });
+  }
+  const out = {
+    retry_candidates: candidates.length,
+    retry_done: results.length,
+    retry_recovered: recovered,
+    retry_skipped_budget: skipped.length,
+    retry_attached: attached,
+    retry_attach_failed: attachFailed,
+  };
+  console.log('retry', JSON.stringify(out));
+  return out;
 }
 
 main().catch((e: unknown) => {

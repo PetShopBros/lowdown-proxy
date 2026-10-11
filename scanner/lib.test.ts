@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import {
+  attachRetry,
   canonicalJson,
   classifyNetworkError,
   countObservationsSince,
@@ -17,15 +18,18 @@ import {
   fetchMonthRows,
   fetchRegistryTargets,
   hashTools,
+  hostOf,
   httpsPost,
   insertCohortGaps,
   insertObservations,
   isBlockedIp,
+  isRetryable,
   monthRanges,
   parseSafeUrl,
   planCohortJobs,
   probeRemote,
   rowsToCsv,
+  runPerHostRoundRobin,
   runPool,
   saveCohort,
   selectCohort,
@@ -33,7 +37,7 @@ import {
   TransportError,
   utcDayStart,
 } from './lib.ts';
-import type { ObservationRow, PostFn, PostResult } from './lib.ts';
+import type { ObservationRow, PostFn, PostResult, RetryInfo } from './lib.ts';
 
 // ───────────── SSRF ─────────────
 describe('SSRF', () => {
@@ -715,5 +719,118 @@ describe('export & utils', () => {
     assert.deepEqual(out, [2, 4, 6, 8, 10, 12, 14]);
     assert.ok(peak <= 3);
     assert.deepEqual(await runPool([], 3, async (x) => x), []);
+  });
+});
+
+// ───────────── 직후 재시도 ─────────────
+describe('직후 재시도', () => {
+  test('재시도 대상: 일시적 연결 실패와 408/429/5xx 만', () => {
+    for (const e of ['timeout', 'conn_reset', 'conn_refused', 'network_error']) {
+      assert.equal(isRetryable({ error_type: e, http_status: null }), true, e);
+    }
+    // tools/list 타임아웃(level 1)도 error_type=timeout 이라 포함
+    assert.equal(isRetryable({ error_type: 'timeout', http_status: 200 }), true);
+    for (const e of ['dns', 'tls', 'blocked_url', 'invalid_response']) {
+      assert.equal(isRetryable({ error_type: e, http_status: null }), false, e);
+    }
+    for (const s of [408, 429, 500, 502, 503, 521, 530]) assert.equal(isRetryable({ error_type: null, http_status: s }), true, String(s));
+    for (const s of [200, 301, 400, 401, 403, 404, 405, 410]) assert.equal(isRetryable({ error_type: null, http_status: s }), false, String(s));
+    assert.equal(isRetryable({ error_type: null, http_status: null }), false);
+  });
+
+  test('hostOf', () => {
+    assert.equal(hostOf('https://Gateway.Pipeworx.io/moralis/mcp'), 'gateway.pipeworx.io');
+    assert.equal(hostOf('https://a.example:8443/x'), 'a.example:8443');
+    assert.equal(hostOf('not a url'), 'not a url');
+  });
+
+  test('호스트당 동시 1건, 호스트 간 병렬, 전부 처리', async () => {
+    const items = ['a1', 'a2', 'a3', 'b1', 'b2', 'c1'];
+    const active = new Map<string, number>();
+    let maxPerHost = 0;
+    let maxTotal = 0;
+    let total = 0;
+    const { results, skipped } = await runPerHostRoundRobin(items, (s) => s[0] as string, 8, async (s) => {
+      const h = s[0] as string;
+      active.set(h, (active.get(h) ?? 0) + 1);
+      total++;
+      maxPerHost = Math.max(maxPerHost, active.get(h) as number);
+      maxTotal = Math.max(maxTotal, total);
+      await new Promise((r) => setTimeout(r, 5));
+      active.set(h, (active.get(h) as number) - 1);
+      total--;
+      return s.toUpperCase();
+    });
+    assert.equal(maxPerHost, 1);
+    assert.equal(maxTotal, 3); // 호스트 3개 → 최대 3건 동시
+    assert.deepEqual(results.map((r) => r.result).sort(), items.map((s) => s.toUpperCase()).sort());
+    assert.deepEqual(skipped, []);
+  });
+
+  test('호스트를 번갈아 처리 (concurrency 1)', async () => {
+    const order: string[] = [];
+    await runPerHostRoundRobin(['a1', 'a2', 'a3', 'b1', 'b2'], (s) => s[0] as string, 1, async (s) => {
+      order.push(s);
+    });
+    assert.deepEqual(order, ['a1', 'b1', 'a2', 'b2', 'a3']);
+  });
+
+  test('시간 예산 이후에는 새 항목을 시작하지 않음', async () => {
+    let t = 0;
+    const { results, skipped } = await runPerHostRoundRobin(
+      ['a1', 'a2', 'a3', 'b1'],
+      (s) => s[0] as string,
+      1,
+      async (s) => {
+        t += 10;
+        return s;
+      },
+      { deadline: 20, now: () => t },
+    );
+    assert.deepEqual(results.map((r) => r.item), ['a1', 'b1']);
+    assert.deepEqual(skipped.sort(), ['a2', 'a3']);
+  });
+
+  test('빈 목록', async () => {
+    const r = await runPerHostRoundRobin([], () => 'x', 4, async () => 1);
+    assert.deepEqual(r, { results: [], skipped: [] });
+  });
+
+  const retry: RetryInfo = { retried_at: '2026-10-12T01:30:00.000Z', reached_level: 2, http_status: 200, error_type: null, latency_ms: 300, per_host_concurrency: 1 };
+  const key = { scan_run_id: '00000000-0000-0000-0000-000000000001', target_id: 'mcp:io.github.x/y', remote_url: 'https://h.example/mcp' };
+
+  test('attachRetry: RPC 호출 형식과 결과', async () => {
+    let seen: { url: string; init: RequestInit } | null = null;
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      seen = { url, init };
+      return new Response('true', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as unknown as typeof fetch;
+    const ok = await attachRetry({ url: 'https://db.example/', key: 'sb_secret_x' }, key, retry, { fetchImpl });
+    assert.equal(ok, true);
+    assert.ok(seen);
+    const s = seen as { url: string; init: RequestInit };
+    assert.equal(s.url, 'https://db.example/rest/v1/rpc/scanner_attach_retry');
+    assert.equal(s.init.method, 'POST');
+    assert.deepEqual(JSON.parse(String(s.init.body)), { p_run: key.scan_run_id, p_target: key.target_id, p_remote_url: key.remote_url, p_retry: retry });
+    assert.equal((s.init.headers as Record<string, string>).apikey, 'sb_secret_x');
+  });
+
+  test('attachRetry: 이미 retry 가 있으면 false', async () => {
+    const fetchImpl = (async () => new Response('false', { status: 200 })) as unknown as typeof fetch;
+    assert.equal(await attachRetry({ url: 'https://db.example', key: 'sb_secret_x' }, key, retry, { fetchImpl }), false);
+  });
+
+  test('attachRetry: 5xx 는 재시도 후 성공, 4xx 는 즉시 실패', async () => {
+    let n = 0;
+    const flaky = (async () => (++n < 2 ? new Response('x', { status: 503 }) : new Response('true', { status: 200 }))) as unknown as typeof fetch;
+    assert.equal(await attachRetry({ url: 'https://db.example', key: 'k' }, key, retry, { fetchImpl: flaky, sleep: async () => {} }), true);
+    assert.equal(n, 2);
+    let m = 0;
+    const denied = (async () => {
+      m++;
+      return new Response('{"message":"permission denied"}', { status: 401 });
+    }) as unknown as typeof fetch;
+    await assert.rejects(attachRetry({ url: 'https://db.example', key: 'k' }, key, retry, { fetchImpl: denied, sleep: async () => {} }), /HTTP 401/);
+    assert.equal(m, 1);
   });
 });
