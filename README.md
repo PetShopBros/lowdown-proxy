@@ -39,6 +39,27 @@ Wrap any MCP server in your client config:
 }
 ```
 
+## Lookup tools for agents (MCP server)
+
+The same package ships an MCP server (stdio) that lets an agent query Lowdown directly:
+
+```jsonc
+{
+  "mcpServers": {
+    "lowdown": { "command": "npx", "args": ["-y", "-p", "lowdown-proxy", "lowdown-mcp"] }
+  }
+}
+```
+
+| Tool | What it returns |
+|---|---|
+| `get_lowdown` | Interactions reported for a target and, for MCP Registry servers, the Scanner observations (see [Scanner observations](#scanner-observations)) |
+| `compare_tools` | 2 to 5 targets side by side, ordered by reported success rate; Scanner data is not used for the ordering |
+| `record_interaction` | Records the outcome of using a tool or service |
+| `get_node_stats` | Contribution stats of your node |
+
+The same data is available over HTTP without installing anything: see [Public API](#public-api), the [OpenAPI document](https://lowdown-proxy.vercel.app/openapi.json), and [`llms.txt`](https://lowdown-proxy.vercel.app/llms.txt). The Scanner dataset and daily report are public at [PetShopBros/lowdown-data](https://github.com/PetShopBros/lowdown-data) (CC BY 4.0).
+
 ## Options
 
 | Flag | Description | Default |

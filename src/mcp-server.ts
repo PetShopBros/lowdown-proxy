@@ -1,25 +1,38 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { createRequire } from "node:module";
 import { z } from "zod";
 
 import { getNodeId } from "./node-identity.js";
 
 const BASE_URL = process.env.LOWDOWN_API_URL ?? "https://lowdown-proxy.vercel.app";
 const NODE_ID = getNodeId();
+// dist/mcp-server.js 기준 ../package.json (npm 패키지에 항상 포함됨)
+const PKG_VERSION: string = (() => {
+  try {
+    return (createRequire(import.meta.url)("../package.json") as { version: string }).version;
+  } catch {
+    return "0.0.0";
+  }
+})();
 
 const server = new McpServer({
   name: "lowdown",
-  version: "0.1.0",
+  version: PKG_VERSION,
 });
 
 // ── 1. get_lowdown ──────────────────────────────────────────────
 server.tool(
   "get_lowdown",
-  "Get the interaction history and reputation of an agent, tool, or service. " +
-  "Call this before choosing between providers to make an informed decision.",
+  "Look up what Lowdown has recorded about an agent, tool, or service. " +
+  "Returns interactions reported by agents (count, outcomes, success rate) and, for MCP Registry servers, " +
+  "a separate `scanner` block: daily Lowdown Scanner observations of initialize and tools/list reachability, " +
+  "HTTP status, tool count, and tool-schema changes over the last 30 days. " +
+  "Scanner data is observation, not a score. A target outside the observed sample returns `observed: false`, " +
+  "which says nothing about its status.",
   {
     target: z.string().describe(
-      "Identifier of the agent/tool/service. e.g. 'mcp:vendor/tool-name' or 'agent:some-agent-id'"
+      "MCP Registry name with the mcp: prefix (e.g. 'mcp:io.github.user/server'), a short name, or an id such as 'agent:some-agent-id'"
     ),
   },
   async ({ target }) => {
@@ -67,8 +80,10 @@ latency_ms: z.number().optional().describe("How long it took in milliseconds"),
 // ── 3. compare_tools ────────────────────────────────────────────
 server.tool(
   "compare_tools",
-  "Compare multiple tools or agents by their recorded interaction data. " +
-  "Returns a ranked list with success rates and confidence levels.",
+  "Compare 2 to 5 tools or agents by the interactions reported to Lowdown. " +
+  "Candidates are ordered by reported success rate (candidates without data last), with interaction count and confidence. " +
+  "Scanner observations are not used for the ordering. " +
+  "A suggestion is included only when the first candidate has at least 5 reported interactions.",
   {
     candidates: z.array(z.string()).min(2).max(5).describe(
       "List of tool/agent identifiers to compare"

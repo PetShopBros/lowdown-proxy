@@ -32,10 +32,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .from("interactions")
       .select("*", { count: "exact", head: true });
 
+    // 노드 수 = node_stats 행 수 (interactions 행 수가 아님)
     const { count: totalNodes } = await supabase
-      .from("interactions")
-      .select("node_id", { count: "exact", head: true })
-      .not("node_id", "is", null);
+      .from("node_stats")
+      .select("node_id", { count: "exact", head: true });
 
     if (!nodeData) {
       return res.status(200).json({
