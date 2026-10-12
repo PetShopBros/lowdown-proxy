@@ -15,6 +15,7 @@ import {
   csvEscape,
   extractRpcMessage,
   fetchCohort,
+  fetchFallbackJobs,
   fetchMonthRows,
   fetchRegistryTargets,
   hashTools,
@@ -832,5 +833,101 @@ describe('직후 재시도', () => {
     }) as unknown as typeof fetch;
     await assert.rejects(attachRetry({ url: 'https://db.example', key: 'k' }, key, retry, { fetchImpl: denied, sleep: async () => {} }), /HTTP 401/);
     assert.equal(m, 1);
+  });
+});
+
+// ───────────── Registry 장애 대비 ─────────────
+describe('Registry 장애 대비', () => {
+  test('페이지 재시도 6회, 대기 2·4·8·16·32초', async () => {
+    let n = 0;
+    const waits: number[] = [];
+    const dead = (async () => {
+      n++;
+      throw new Error('net');
+    }) as unknown as typeof fetch;
+    await assert.rejects(
+      fetchRegistryTargets({ fetchImpl: dead, sleep: async (ms) => void waits.push(ms) }),
+      /page 1 failed \(HTTP network\)/,
+    );
+    assert.equal(n, 6);
+    assert.deepEqual(waits, [2000, 4000, 8000, 16000, 32000]);
+  });
+
+  test('시간 상한을 넘기면 다음 페이지를 요청하지 않고 실패', async () => {
+    let calls = 0;
+    let t = 0;
+    const f = (async () => {
+      calls++;
+      t += 100;
+      return new Response(JSON.stringify({ servers: [{ server: { name: `x/${calls}`, version: '1' } }], metadata: { nextCursor: `c${calls}` } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    await assert.rejects(fetchRegistryTargets({ fetchImpl: f, sleep: async () => {}, deadline: 250, now: () => t }), /time budget exceeded after 3 pages/);
+    assert.equal(calls, 3);
+  });
+
+  test('시간 상한을 넘길 재시도 대기는 하지 않음', async () => {
+    let n = 0;
+    const waits: number[] = [];
+    const dead = (async () => {
+      n++;
+      return new Response('x', { status: 503 });
+    }) as unknown as typeof fetch;
+    await assert.rejects(
+      fetchRegistryTargets({ fetchImpl: dead, sleep: async (ms) => void waits.push(ms), deadline: 5000, now: () => 0 }),
+      /HTTP 503/,
+    );
+    assert.deepEqual(waits, [2000, 4000]); // 8초 대기는 상한(5초)을 넘으므로 하지 않고 실패
+    assert.equal(n, 3);
+  });
+
+  const FB_CFG = { url: 'https://db.example/', key: 'sb_secret_x' };
+  const RUN = '00000000-0000-0000-0000-0000000000aa';
+  function fbRows(n: number) {
+    const rows: Array<Record<string, unknown>> = [];
+    for (let i = 1; i <= n; i++) {
+      rows.push({
+        id: i,
+        target_id: `mcp:io.github.t/s${i}`,
+        transport: 'streamable-http',
+        observed_at: `2026-10-11T23:0${i % 10}:00Z`,
+        metadata: { remote_url: `https://h${i}.example/mcp`, remote_index: 0, registry_version: `1.${i}` },
+      });
+    }
+    return rows;
+  }
+  function fbFetch(rows: Array<Record<string, unknown>>, seen: string[] = []) {
+    return (async (url: string) => {
+      seen.push(url);
+      const u = new URL(url);
+      if (u.searchParams.get('order') === 'id.desc') {
+        return new Response(JSON.stringify(rows.length ? [{ scan_run_id: RUN, observed_at: '2026-10-11T23:02:00Z' }] : []), { status: 200 });
+      }
+      const gt = Number((u.searchParams.get('id') ?? 'gt.0').slice(3));
+      const limit = Number(u.searchParams.get('limit'));
+      return new Response(JSON.stringify(rows.filter((r) => Number(r.id) > gt).slice(0, limit)), { status: 200 });
+    }) as unknown as typeof fetch;
+  }
+
+  test('fetchFallbackJobs: 직전 실행 행으로 작업 목록, 페이지네이션, 중복·코호트 밖 제외', async () => {
+    const rows = fbRows(5);
+    rows.push({ ...rows[0], id: 6 }); // 같은 대상·주소 중복
+    rows.push({ id: 7, target_id: 'mcp:outside/x', transport: 'streamable-http', observed_at: '2026-10-11T23:09:00Z', metadata: { remote_url: 'https://o.example/mcp' } });
+    rows.push({ id: 8, target_id: 'mcp:io.github.t/s1', transport: 'streamable-http', observed_at: '2026-10-11T23:09:30Z', metadata: {} }); // 주소 없음
+    const seen: string[] = [];
+    const cohortIds = rows.slice(0, 5).map((r) => String(r.target_id)).concat(['mcp:io.github.t/s1']);
+    const fb = await fetchFallbackJobs(FB_CFG, { minRows: 4, cohortIds }, { fetchImpl: fbFetch(rows, seen), pageSize: 3 });
+    assert.equal(fb.sourceRunId, RUN);
+    assert.equal(fb.sourceRows, 8);
+    assert.equal(fb.jobs.length, 5);
+    assert.deepEqual(fb.jobs[0], { name: 'io.github.t/s1', version: '1.1', remote: { type: 'streamable-http', url: 'https://h1.example/mcp' }, index: 0 });
+    assert.ok(seen.some((u) => u.includes('scan_run_id=eq.' + RUN) && u.includes('id=gt.3')), 'keyset 페이지네이션');
+    assert.ok(seen.every((u) => u.startsWith('https://db.example/rest/v1/scanner_observations?')));
+  });
+
+  test('fetchFallbackJobs: 직전 실행이 부분 실행이거나 관찰이 없으면 대체하지 않음', async () => {
+    await assert.rejects(fetchFallbackJobs(FB_CFG, { minRows: 10 }, { fetchImpl: fbFetch(fbRows(3)) }), /only 3 rows/);
+    await assert.rejects(fetchFallbackJobs(FB_CFG, { minRows: 1 }, { fetchImpl: fbFetch([]) }), /no previous observations/);
+    const err = (async () => new Response('x', { status: 503 })) as unknown as typeof fetch;
+    await assert.rejects(fetchFallbackJobs(FB_CFG, { minRows: 1 }, { fetchImpl: err }), /HTTP 503/);
   });
 });

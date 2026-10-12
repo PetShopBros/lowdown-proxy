@@ -595,7 +595,13 @@ export interface RegistryDeps {
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   pageSize?: number;
+  /** 무한 페이지 방지 상한. Registry 가 커져도 걸리지 않게 넉넉히(2026-10 기준 약 425 페이지). */
   maxPages?: number;
+  /** 페이지당 시도 횟수(기본 6: 대기 2·4·8·16·32초) */
+  maxAttempts?: number;
+  /** 이 시각(ms) 이후에는 다음 페이지를 요청하지 않고 실패 → 호출 측이 직전 관찰 주소로 대체 */
+  deadline?: number;
+  now?: () => number;
 }
 
 export async function fetchRegistryTargets(
@@ -605,7 +611,9 @@ export async function fetchRegistryTargets(
   const f = deps.fetchImpl ?? fetch;
   const sleep = deps.sleep ?? defaultSleep;
   const pageSize = deps.pageSize ?? 100;
-  const maxPages = deps.maxPages ?? 500;
+  const maxPages = deps.maxPages ?? 2000;
+  const maxAttempts = deps.maxAttempts ?? 6;
+  const now = deps.now ?? Date.now;
 
   const stats: RegistryStats = {
     pages: 0,
@@ -624,6 +632,9 @@ export async function fetchRegistryTargets(
 
   for (;;) {
     if (stats.pages >= maxPages) throw new Error(`registry: exceeded maxPages=${maxPages}`);
+    if (deps.deadline !== undefined && now() > deps.deadline) {
+      throw new Error(`registry: time budget exceeded after ${stats.pages} pages`);
+    }
     // version=latest: 서버별 최신 버전만 (없으면 모든 버전이 와서 페이지 수가 수 배로 늘어남)
     const qs = new URLSearchParams({ limit: String(pageSize), version: 'latest' });
     if (cursor) qs.set('cursor', cursor);
@@ -643,8 +654,13 @@ export async function fetchRegistryTargets(
         // 네트워크 오류 — 재시도
       }
       const retryable = status === 0 || status >= 500 || status === 429;
-      if (!retryable || attempt >= 3) throw new Error(`registry: page ${stats.pages + 1} failed (HTTP ${status || 'network'})`);
-      await sleep(1000 * 2 ** (attempt - 1));
+      const wait = 1000 * 2 ** attempt;
+      // 시간 상한 안에서만 재시도한다(넘기면 호출 측이 직전 관찰 주소로 대체)
+      const outOfTime = deps.deadline !== undefined && now() + wait > deps.deadline;
+      if (!retryable || attempt >= maxAttempts || outOfTime) {
+        throw new Error(`registry: page ${stats.pages + 1} failed (HTTP ${status || 'network'})`);
+      }
+      await sleep(wait);
     }
 
     const page = data as { servers?: unknown; metadata?: { nextCursor?: unknown } } | null;
@@ -1011,6 +1027,99 @@ export async function countObservationsSince(cfg: SupabaseConfig, sinceIso: stri
   const total = /\/(\d+)\s*$/.exec(res.headers.get('content-range') ?? '')?.[1];
   if (total === undefined) throw new Error('observation count failed: no content-range total');
   return Number.parseInt(total, 10);
+}
+
+// ─────────────────────────────────────────────
+// Registry 목록을 못 받은 날의 대체: 직전 관찰 실행의 원격 주소로 같은 코호트를 관찰한다.
+//   코호트는 고정이고 주소는 거의 바뀌지 않으므로, Registry(또는 그 경로)의 일시 장애가 관찰 결측으로 번지지 않게 한다.
+//   이렇게 만든 행에는 metadata.registry_fallback 등을 남겨, 그날 Registry 변화가 반영되지 않았다는 사실을 기록한다.
+// ─────────────────────────────────────────────
+
+export interface FallbackJobs {
+  jobs: CohortJob[];
+  sourceRunId: string;
+  sourceObservedAt: string;
+  sourceRows: number;
+}
+
+/**
+ * 가장 최근 Scanner 실행의 행에서 (대상, 원격 주소) 작업 목록을 만든다.
+ * 그 실행의 행이 minRows 미만이면(부분 실행) 대체하지 않고 throw — 반쪽 목록으로 관찰하지 않는다.
+ */
+export async function fetchFallbackJobs(
+  cfg: SupabaseConfig,
+  opts: { minRows: number; cohortIds?: readonly string[] },
+  deps: { fetchImpl?: typeof fetch; pageSize?: number } = {},
+): Promise<FallbackJobs> {
+  const f = deps.fetchImpl ?? fetch;
+  const pageSize = deps.pageSize ?? 1000;
+  const base = `${cfg.url.replace(/\/+$/, '')}/rest/v1/scanner_observations`;
+  const get = async (qs: URLSearchParams): Promise<Array<Record<string, unknown>>> => {
+    let res: Response;
+    try {
+      res = await f(`${base}?${qs.toString()}`, {
+        headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      throw new Error('fallback: read failed (network)');
+    }
+    if (!res.ok) throw new Error(`fallback: read failed (HTTP ${res.status})`);
+    const body: unknown = await res.json();
+    if (!Array.isArray(body)) throw new Error('fallback: unexpected response');
+    return body as Array<Record<string, unknown>>;
+  };
+
+  const latest = await get(new URLSearchParams({ select: 'scan_run_id,observed_at', source: 'eq.scanner', order: 'id.desc', limit: '1' }));
+  const runId = typeof latest[0]?.scan_run_id === 'string' ? latest[0].scan_run_id : '';
+  if (!runId) throw new Error('fallback: no previous observations');
+
+  const rows: Array<Record<string, unknown>> = [];
+  let lastId = 0;
+  for (;;) {
+    const page = await get(
+      new URLSearchParams({
+        select: 'id,target_id,transport,observed_at,metadata',
+        scan_run_id: `eq.${runId}`,
+        id: `gt.${lastId}`,
+        order: 'id.asc',
+        limit: String(pageSize),
+      }),
+    );
+    rows.push(...page);
+    if (page.length < pageSize) break;
+    lastId = Number(page[page.length - 1]?.id ?? 0);
+    if (!(lastId > 0)) throw new Error('fallback: pagination failed');
+  }
+  if (rows.length < opts.minRows) {
+    throw new Error(`fallback: previous run ${runId} has only ${rows.length} rows (< ${opts.minRows}), not using it`);
+  }
+
+  const cohort = opts.cohortIds ? new Set(opts.cohortIds) : null;
+  const seen = new Set<string>();
+  const jobs: CohortJob[] = [];
+  let sourceObservedAt = '';
+  for (const r of rows) {
+    const targetId = typeof r.target_id === 'string' ? r.target_id : '';
+    const meta = (r.metadata ?? {}) as Record<string, unknown>;
+    const url = typeof meta.remote_url === 'string' ? meta.remote_url : '';
+    if (!targetId.startsWith('mcp:') || !url) continue;
+    if (cohort && !cohort.has(targetId)) continue;
+    const key = `${targetId} ${url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const at = typeof r.observed_at === 'string' ? r.observed_at : '';
+    if (at > sourceObservedAt) sourceObservedAt = at;
+    jobs.push({
+      name: targetId.slice('mcp:'.length),
+      version: typeof meta.registry_version === 'string' ? meta.registry_version : '',
+      remote: { type: typeof r.transport === 'string' ? r.transport : 'streamable-http', url },
+      index: Number(meta.remote_index ?? 0) || 0,
+    });
+  }
+  if (jobs.length === 0) throw new Error('fallback: previous run has no usable remotes');
+  jobs.sort((a, b) => (a.name === b.name ? a.index - b.index : a.name < b.name ? -1 : 1));
+  return { jobs, sourceRunId: runId, sourceObservedAt, sourceRows: rows.length };
 }
 
 // ─────────────────────────────────────────────
