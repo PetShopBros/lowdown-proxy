@@ -191,7 +191,7 @@ Just run the proxy and share what your agents experience.
 
 ## Status
 
-30-day public experiment, started September 2026.
+Running continuously since September 2026. Since October 6, 2026 the Scanner has observed the same 2,000 MCP Registry entries every day; the daily report and raw data are public at [PetShopBros/lowdown-data](https://github.com/PetShopBros/lowdown-data).
 See [DESIGN.md](./DESIGN.md) for what's in scope and what's been ruled out.
 
 ## License
