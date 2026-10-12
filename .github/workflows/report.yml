@@ -1,21 +1,23 @@
 name: report
 
-# 1단계: 수동 실행 전용 (집계·Markdown 생성·커밋이 안정적인지 2~3회 확인용)
-# 2단계: 검증 후 scanner.yml 에 `needs: scan` job 으로 연결 (Scanner 성공 시에만 일일 갱신)
+# 수동 실행 3회 검증 완료(10/10~10/11) → scanner.yml 의 report job(needs: scan)이 호출한다(workflow_call).
+# Scanner 가 실제로 관찰을 저장한 실행 뒤에만 갱신된다. 수동 실행도 계속 가능.
 
 on:
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
-
-# lowdown-data 에 쓰는 워크플로(report, backup)는 같은 그룹으로 직렬화한다
-concurrency:
-  group: lowdown-data-push
-  cancel-in-progress: false
+  issues: write # 실패 시 이슈 생성(알림)
 
 jobs:
   report:
+    # lowdown-data 에 쓰는 작업(report, backup)은 같은 그룹으로 직렬화한다.
+    # scanner.yml 에서 호출(workflow_call)될 때도 적용되도록 워크플로가 아니라 job 에 둔다.
+    concurrency:
+      group: lowdown-data-push
+      cancel-in-progress: false
     # ubuntu-latest 는 2026-10-19부터 26.04로 바뀐다. 검증 전까지 24.04 고정.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -52,3 +54,12 @@ jobs:
           git commit -m "report: REPORT.md $(date -u +%F)"
           git pull --rebase
           git push
+
+      - name: Open issue on failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "report 실패 $(date -u +%F)" \
+            --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

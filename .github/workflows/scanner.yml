@@ -30,6 +30,8 @@ jobs:
     # ubuntu-latest 는 2026-10-19부터 26.04로 바뀐다. 검증 전까지 24.04 고정.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      scanned: ${{ steps.run.outputs.scanned }}
     steps:
       - uses: actions/checkout@v4
 
@@ -38,6 +40,7 @@ jobs:
           node-version: '24'
 
       - name: Run scanner
+        id: run
         run: node scanner/scan.ts
         env:
           LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
@@ -55,3 +58,10 @@ jobs:
           gh issue create --repo "${{ github.repository }}" \
             --title "scanner 실패 $(date -u +%F) (${{ github.event.schedule }})" \
             --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  # 관찰을 실제로 저장한 실행 뒤에만 REPORT.md 갱신(예비 실행이 건너뛴 날, dry-run 은 제외)
+  report:
+    needs: scan
+    if: needs.scan.outputs.scanned == '1'
+    uses: ./.github/workflows/report.yml
+    secrets: inherit

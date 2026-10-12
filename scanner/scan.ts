@@ -256,6 +256,9 @@ async function main(): Promise<void> {
   }
   const summaryFile = process.env.GITHUB_STEP_SUMMARY;
   if (summaryFile) appendFileSync(summaryFile, `${summary}\n`);
+  // 전체 관찰을 실제로 저장했을 때만 report job 이 돈다(scanner.yml: needs.scan.outputs.scanned). 샘플(limit)·dry-run·건너뛴 예비 실행은 제외
+  const outputFile = process.env.GITHUB_OUTPUT;
+  if (outputFile && !dryRun && !limit && inserted > 0) appendFileSync(outputFile, 'scanned=1\n');
 }
 
 async function retryFailed(
