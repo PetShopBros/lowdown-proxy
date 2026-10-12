@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 import { runProxy } from "./proxy.js";
 
-// 사용법: npx lowdown-proxy [--actor <id>] [--target <label>] [--source organic|seeded|synthetic] -- <command> [args...]
+// 사용법:
+//   npx lowdown-proxy                      → 인자 없음: Lowdown 조회용 MCP 서버(stdio) 시작 (Registry 설치 경로)
+//   npx lowdown-proxy [--actor <id>] [--target <label>] [--source organic|seeded|synthetic] -- <command> [args...]
+//                                          → MCP 서버를 감싸는 기록 프록시
 function parseArgs(argv: string[]) {
   const dashIndex = argv.indexOf("--");
   if (dashIndex === -1) {
     console.error(
       "사용법: lowdown-proxy [--actor <id>] [--target <label>] [--source organic|seeded|synthetic] -- <command> [args...]\n" +
-      "예시:   lowdown-proxy -- npx some-mcp-server"
+      "예시:   lowdown-proxy -- npx some-mcp-server\n" +
+      "인자 없이 실행하면 Lowdown 조회용 MCP 서버가 시작됩니다."
     );
     process.exit(1);
   }
@@ -34,5 +38,10 @@ function parseArgs(argv: string[]) {
   };
 }
 
-const opts = parseArgs(process.argv.slice(2));
-runProxy(opts);
+const argv = process.argv.slice(2);
+if (argv.length === 0) {
+  // MCP Registry 는 이 패키지를 인자 없이 실행한다 → 조회 도구(get_lowdown 등)를 제공하는 MCP 서버로 동작
+  await import("./mcp-server.js");
+} else {
+  runProxy(parseArgs(argv));
+}
