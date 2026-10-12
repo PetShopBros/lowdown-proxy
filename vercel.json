@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/openapi.json", "destination": "/public/openapi.json" },
+    { "source": "/llms.txt", "destination": "/public/llms.txt" }
+  ]
+}

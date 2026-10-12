@@ -2,8 +2,12 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Lowdown API",
-    "description": "Query and record AI agent/tool interaction reputation data.",
-    "version": "0.1.3"
+    "description": "Lowdown records two kinds of data, kept separate: (1) interactions that agents report after using a tool or service, and (2) Lowdown Scanner observations of MCP Registry servers — a time-series record of the gap between what the official MCP Registry declares and what is actually observed. It records what changed and when; it does not score, grade, or rank servers. Public dataset and daily report: https://github.com/PetShopBros/lowdown-data",
+    "version": "0.1.14",
+    "license": {
+      "name": "Scanner data: CC BY 4.0",
+      "url": "https://creativecommons.org/licenses/by/4.0/"
+    }
   },
   "servers": [
     {
@@ -14,21 +18,35 @@
     "/api/reputation/{target}": {
       "get": {
         "operationId": "getReputation",
-        "summary": "Get reputation of an agent, tool, or service",
-        "description": "Returns interaction history, success rate, and confidence level for the given target. Supports fuzzy matching — short names like 'brave-search' resolve automatically.",
+        "summary": "Get recorded interactions and Scanner observations for an agent, tool, or service",
+        "description": "Returns interaction counts and outcomes reported by agents, and — for MCP Registry servers — a separate `scanner` block with what Lowdown Scanner observed (initialize + tools/list reachability, HTTP status, tool count, schema changes). Short names like 'brave-search' resolve when they match one target.",
         "parameters": [
           {
             "name": "target",
             "in": "path",
             "required": true,
-            "schema": { "type": "string" },
+            "schema": {
+              "type": "string"
+            },
             "description": "Identifier of the target. e.g. 'mcp:modelcontextprotocol/brave-search' or just 'brave-search'"
+          },
+          {
+            "name": "task_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Limit interaction figures to one task type. Scanner data is not returned for task-filtered requests."
           },
           {
             "name": "ref",
             "in": "query",
             "required": false,
-            "schema": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$" },
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,64}$"
+            },
             "description": "Optional referral tag used to measure where lookups come from."
           }
         ],
@@ -40,42 +58,144 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "target": { "type": "string" },
-                    "interactions": { "type": "integer" },
-                    "success_rate": { "type": "number" },
-                    "confidence": { "type": "string", "enum": ["low", "medium", "high"] },
-                    "avg_latency_ms": { "type": "number" },
-                    "review_count": { "type": "integer" },
-                    "avg_rating": { "type": "number" },
+                    "target": {
+                      "type": "string"
+                    },
+                    "interactions": {
+                      "type": "integer"
+                    },
+                    "success_rate": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Share of reported interactions with outcome success. null when there are no interactions."
+                    },
+                    "confidence": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "low",
+                        "medium",
+                        "high"
+                      ],
+                      "description": "Based on the number of reported interactions (none = 0, low < 10, medium < 100, high >= 100)."
+                    },
+                    "avg_latency_ms": {
+                      "type": "number"
+                    },
+                    "reviews": {
+                      "type": "integer"
+                    },
+                    "avg_rating": {
+                      "type": "number"
+                    },
+                    "review_conversion_rate": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "failure_breakdown": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "integer"
+                      },
+                      "description": "Counts of reported failure types."
+                    },
+                    "message": {
+                      "type": "string"
+                    },
                     "scanner": {
                       "type": "object",
                       "description": "Observations by Lowdown Scanner (initialize + tools/list only; no tool calls). Separate from interaction data; not included in success_rate. When the target is outside the Scanner's fixed set of 2,000 daily-observed MCP Registry entries, this block contains only `observed: false` and a note; absence of data says nothing about the target's status.",
                       "properties": {
-                        "observed": { "type": "boolean", "description": "false when no Scanner observation exists for this target." },
-                        "note": { "type": "string" },
-                        "target": { "type": "string" },
-                        "last_observed_at": { "type": "string", "format": "date-time" },
-                        "observations_30d": { "type": "integer" },
-                        "remotes_observed": { "type": "integer" },
+                        "observed": {
+                          "type": "boolean",
+                          "description": "false when no Scanner observation exists for this target."
+                        },
+                        "note": {
+                          "type": "string"
+                        },
+                        "target": {
+                          "type": "string"
+                        },
+                        "last_observed_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "observations_30d": {
+                          "type": "integer"
+                        },
+                        "remotes_observed": {
+                          "type": "integer"
+                        },
                         "latest": {
                           "type": "object",
                           "properties": {
-                            "reached_level": { "type": "integer", "enum": [0, 1, 2], "description": "0 = initialize failed, 1 = initialize ok, 2 = initialize + tools/list ok" },
-                            "http_status": { "type": ["integer", "null"] },
-                            "error_type": { "type": ["string", "null"] },
-                            "latency_ms": { "type": ["integer", "null"] },
-                            "tool_count": { "type": ["integer", "null"] },
-                            "schema_hash": { "type": ["string", "null"] },
-                            "server_version": { "type": ["string", "null"] }
+                            "reached_level": {
+                              "type": "integer",
+                              "enum": [
+                                0,
+                                1,
+                                2
+                              ],
+                              "description": "0 = initialize failed, 1 = initialize ok, 2 = initialize + tools/list ok"
+                            },
+                            "http_status": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "error_type": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "latency_ms": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "tool_count": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "schema_hash": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "server_version": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
                           }
                         },
-                        "schema_versions_30d": { "type": "integer" },
-                        "status_distribution_30d": { "type": "object", "additionalProperties": { "type": "integer" } }
+                        "schema_versions_30d": {
+                          "type": "integer"
+                        },
+                        "status_distribution_30d": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "integer"
+                          }
+                        }
                       }
                     },
                     "scanner_candidates": {
                       "type": "array",
-                      "items": { "type": "string" },
+                      "items": {
+                        "type": "string"
+                      },
                       "description": "Returned instead of `scanner` when a short name matches several scanned servers."
                     }
                   }
@@ -96,15 +216,64 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["actor", "target", "target_type", "task_type", "outcome"],
+                "required": [
+                  "actor",
+                  "target",
+                  "target_type",
+                  "task_type",
+                  "outcome"
+                ],
                 "properties": {
-                  "actor": { "type": "string", "description": "Your agent/system identifier" },
-                  "target": { "type": "string", "description": "Identifier of what you used" },
-                  "target_type": { "type": "string", "enum": ["agent", "tool", "service", "human"] },
-                  "task_type": { "type": "string", "description": "e.g. 'web_search', 'code_gen'" },
-                  "outcome": { "type": "string", "enum": ["success", "partial", "failure"] },
-                  "latency_ms": { "type": "integer" },
-                  "source": { "type": "string", "enum": ["organic", "seeded", "synthetic"] }
+                  "actor": {
+                    "type": "string",
+                    "description": "Your agent/system identifier"
+                  },
+                  "target": {
+                    "type": "string",
+                    "description": "Identifier of what you used"
+                  },
+                  "target_type": {
+                    "type": "string",
+                    "enum": [
+                      "agent",
+                      "tool",
+                      "service",
+                      "human"
+                    ]
+                  },
+                  "task_type": {
+                    "type": "string",
+                    "description": "e.g. 'web_search', 'code_gen'"
+                  },
+                  "outcome": {
+                    "type": "string",
+                    "enum": [
+                      "success",
+                      "partial",
+                      "failure"
+                    ]
+                  },
+                  "latency_ms": {
+                    "type": "integer"
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": [
+                      "organic",
+                      "seeded",
+                      "synthetic"
+                    ]
+                  },
+                  "failure_type": {
+                    "type": "string",
+                    "enum": [
+                      "invalid_arguments",
+                      "timeout",
+                      "server_error",
+                      "tool_error",
+                      "unknown"
+                    ]
+                  }
                 }
               }
             }
@@ -118,7 +287,151 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "ok": { "type": "boolean" }
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listInteractions",
+        "summary": "List interactions recorded by one actor",
+        "parameters": [
+          {
+            "name": "actor",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Interactions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/node/{node_id}": {
+      "get": {
+        "operationId": "getNodeStats",
+        "summary": "Contribution stats of a lowdown-proxy node",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Node id created by lowdown-proxy (~/.lowdown/node.json), e.g. ld_..."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Node stats",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "node_id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "unknown"
+                      ]
+                    },
+                    "contribution": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "interactions": {
+                          "type": "integer"
+                        },
+                        "targets_observed": {
+                          "type": "integer"
+                        },
+                        "active_days": {
+                          "type": "integer"
+                        },
+                        "first_seen": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "last_seen": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    },
+                    "network": {
+                      "type": "object",
+                      "properties": {
+                        "total_nodes": {
+                          "type": "integer"
+                        },
+                        "total_interactions": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "rank": {
+                      "type": "object",
+                      "properties": {
+                        "percentile": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "message": {
+                      "type": "string"
+                    }
                   }
                 }
               }

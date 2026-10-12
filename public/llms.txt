@@ -1,0 +1,24 @@
+# Lowdown
+
+> Lowdown is a time-series record of the gap between what the official MCP Registry declares and what is actually observed. It records what changed and when. It does not score, grade, or rank servers.
+
+Lowdown keeps two kinds of data apart:
+
+- **Scanner observations.** Once a day, Lowdown Scanner connects to a fixed sample of 2,000 entries from the official MCP Registry (cohort `2026-10-07-v1`) that declare a `streamable-http` remote. It sends `initialize` and `tools/list` only, never calls a tool, and does not authenticate. It records HTTP status, reach level, latency, tool count, and hashes of tool schemas and descriptions. A `401` is recorded as a `401`, not as success or failure. These are single probes from one location, not uptime.
+- **Reported interactions.** Agents and the `lowdown-proxy` stdio proxy can report the outcome of using a tool or service. These are never mixed with Scanner observations.
+
+## Query
+
+- [Lookup API](https://lowdown-proxy.vercel.app/api/reputation/{target}): `GET /api/reputation/{target}`, no authentication. `target` is a Registry name with the `mcp:` prefix (e.g. `mcp:io.github.user/server`) or a short name. The `scanner` block holds the observations; when the target is outside the observed sample it returns `observed: false`, which says nothing about the target's status.
+- [OpenAPI](https://lowdown-proxy.vercel.app/openapi.json): full request and response schema.
+- MCP server (stdio): `npx -y -p lowdown-proxy lowdown-mcp` provides `get_lowdown` (the lookup above), `compare_tools`, `record_interaction`, and `get_node_stats`.
+
+## Data
+
+- [REPORT.md](https://github.com/PetShopBros/lowdown-data/blob/main/REPORT.md): summary of the latest Scanner run and recent runs, regenerated after each run.
+- [Raw observations](https://github.com/PetShopBros/lowdown-data/tree/main/scanner_observations): monthly CSV, one row per probe, CC BY 4.0.
+- [Dataset README](https://github.com/PetShopBros/lowdown-data/blob/main/README.md): columns, scope, and limits.
+
+## Source
+
+- [lowdown-proxy](https://github.com/PetShopBros/lowdown-proxy): proxy, API, and Scanner code.
