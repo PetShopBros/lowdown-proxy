@@ -46,12 +46,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const supabase = getSupabase();
     if (supabase) {
-      await supabase.from("discovery_hits").insert({
+      // supabase-js 는 실패해도 throw 하지 않고 error 를 돌려준다 → 직접 확인해 로그에 남긴다
+      const { error } = await supabase.from("discovery_hits").insert({
         path: `/${file}`,
         method: req.method,
         user_agent: header(req, "user-agent", 300),
         referer: header(req, "referer", 300),
       } as never);
+      if (error) console.error("discovery_hits insert failed", error.message);
     }
   } catch (err) {
     console.error("discovery_hits insert failed", err);

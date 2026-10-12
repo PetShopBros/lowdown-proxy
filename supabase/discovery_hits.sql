@@ -16,3 +16,8 @@ alter table discovery_hits enable row level security;
 -- 확인용:
 -- select date_trunc('day', created_at)::date as day, path, left(user_agent, 80) as ua, count(*)
 -- from discovery_hits group by 1, 2, 3 order by 1 desc, 4 desc;
+
+-- API(Vercel)의 LOWDOWN_SUPABASE_KEY 가 anon 키라서 RLS 가 켜진 테이블에 쓰려면 insert 허용 규칙이 필요하다.
+-- 쓰기만 허용하고 읽기(select)는 허용하지 않는다 → 외부에서 방문 기록을 조회할 수 없다.
+drop policy if exists discovery_hits_insert on discovery_hits;
+create policy discovery_hits_insert on discovery_hits for insert to anon, authenticated with check (true);
