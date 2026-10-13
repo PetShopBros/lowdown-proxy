@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { runProxy } from "./proxy.js";
+import { LogWatcher } from "./log-watch.js";
 
 // 사용법:
 //   npx lowdown-proxy                      → 인자 없음: Lowdown 조회용 MCP 서버(stdio) 시작 (Registry 설치 경로)
@@ -28,6 +29,9 @@ function parseArgs(argv: string[]) {
     const i = flags.indexOf(name);
     return i !== -1 && flags[i + 1] ? flags[i + 1] : fallback;
   };
+  const getAll = (name: string) =>
+    flags.flatMap((f, i) => (f === name && flags[i + 1] ? [flags[i + 1]] : []));
+  const watchLogs = getAll("--watch-log");
 
   return {
     actor: getFlag("--actor", "anonymous"),
@@ -35,6 +39,7 @@ function parseArgs(argv: string[]) {
     source: getFlag("--source", "organic") as "organic" | "seeded" | "synthetic",
     command: commandParts[0],
     args: commandParts.slice(1),
+    logWatcher: watchLogs.length ? new LogWatcher(watchLogs, getFlag("--log-pattern", "")) : undefined,
   };
 }
 

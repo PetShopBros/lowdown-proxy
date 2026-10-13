@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { recordInteraction, type InteractionRecord } from "./supabase.js";
 import { getNodeId } from "./node-identity.js";
+import { annotateToolResult, type LogWatcher } from "./log-watch.js";
 
 interface PendingCall {
   method: string;
@@ -15,6 +16,7 @@ interface ProxyOptions {
   actor: string;      // 이 프록시를 호출하는 클라이언트를 식별할 라벨
   targetLabel: string; // 이 프록시가 감싸는 MCP 서버를 식별할 라벨 (target)
   source: "organic" | "seeded" | "synthetic";
+  logWatcher?: LogWatcher;
 }
 
 /**
@@ -59,7 +61,19 @@ export function runProxy(opts: ProxyOptions): void {
   // 응답을 가로채서 pending과 매칭되면 interaction 기록, 그대로 통과시킴
   const serverReader = createInterface({ input: child.stdout });
   serverReader.on("line", (line) => {
-    process.stdout.write(line + "\n");
+    let out = line;
+    if (opts.logWatcher) {
+      try {
+        const m = JSON.parse(line);
+        if (m?.id !== undefined && pending.get(m.id)?.method === "tools/call") {
+          const annotated = annotateToolResult(m, opts.logWatcher);
+          if (annotated) out = JSON.stringify(annotated);
+        }
+      } catch {
+        // passthrough
+      }
+    }
+    process.stdout.write(out + "\n");
 
     try {
       const msg = JSON.parse(line);
