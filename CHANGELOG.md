@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.16] - 2026-10-13
+
+### Added
+- `--watch-log <file>` (repeatable) and `--log-pattern <regex>`: after each `tools/call`, new matching lines from the app logs are appended to the result as one text item. Lines written before the proxy started are not reported; each line is reported once. Last 20 lines per log, 300 characters each, common secret formats masked. Log content stays local and is never recorded.
+
 ## [Unreleased] - v0.4 Scanner
 
 ### Added

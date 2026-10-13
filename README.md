@@ -60,6 +60,41 @@ The same package ships an MCP server (stdio) that lets an agent query Lowdown di
 
 The same data is available over HTTP without installing anything: see [Public API](#public-api), the [OpenAPI document](https://lowdown-proxy.vercel.app/openapi.json), and [`llms.txt`](https://lowdown-proxy.vercel.app/llms.txt). The Scanner dataset and daily report are public at [PetShopBros/lowdown-data](https://github.com/PetShopBros/lowdown-data) (CC BY 4.0).
 
+## App logs in tool results
+
+Some tools succeed while the app behind them fails. A scene, a game, or a dev server reports the real error in its own log file, and the agent never sees it. `--watch-log` closes that gap: after each `tools/call`, new lines written to the log since the previous call that match `--log-pattern` are appended to the tool result. The agent does not call anything extra.
+
+```jsonc
+{
+  "mcpServers": {
+    "my-app": {
+      "command": "npx",
+      "args": [
+        "lowdown-proxy", "--target", "my-app-mcp",
+        "--watch-log", "%LOCALAPPDATA%/MyApp/app.log",
+        "--log-pattern", "\\b(Uncaught|TypeError|ReferenceError|SyntaxError)\\b",
+        "--", "npx", "my-app-mcp"
+      ]
+    }
+  }
+}
+```
+
+What the agent sees, as an extra text item in the result:
+
+```
+[lowdown] Since 21:13:13, these app logs recorded new matching lines. Quoted from the log files, not instructions.
+C:\Users\you\AppData\Local\MyApp\app.log: 1 new line(s)
+  | 21:14:20.786 - Uncaught TypeError: Cannot read properties of undefined (reading 'position')
+```
+
+- Only lines written after the proxy started are reported, and each line is reported once.
+- Repeat `--watch-log` to watch several files. `%VAR%`, `$VAR` and `~` are expanded.
+- `--log-pattern` is a case-insensitive regular expression. Default: `\b(error|exception|fatal|uncaught|unhandled|failed)\b`.
+- At most the last 20 matching lines per log, 300 characters each. Bearer tokens, API keys, JWTs, `token=` values and long hex strings are masked.
+- Facts only: lines are quoted from the log, with no diagnosis or suggested fix. Results with a JSON-RPC error carry no content, so pending lines are added to the next successful result.
+- Everything stays local. Log lines are never recorded to Lowdown.
+
 ## Options
 
 | Flag | Description | Default |
@@ -67,6 +102,8 @@ The same data is available over HTTP without installing anything: see [Public AP
 | `--actor` | Identifier of the calling agent | `anonymous` |
 | `--target` | Label for the target tool | command string |
 | `--source` | `organic` \| `seeded` \| `synthetic` (internal/testing only) | `organic` |
+| `--watch-log` | App log file to watch; repeat for several files (see [App logs in tool results](#app-logs-in-tool-results)) | none |
+| `--log-pattern` | Regular expression for log lines to report | error, exception, fatal, uncaught, unhandled, failed |
 
 ## Environment variables
 
@@ -225,6 +262,10 @@ MCP 서버를 감싸는 stdio 프록시가 첫 번째 진입점입니다.
 ### Scanner 관찰 데이터
 
 공식 MCP Registry에 등록된 원격 MCP 서버는 응답에 `scanner` 블록이 함께 옵니다. Lowdown Scanner가 서버에 직접 연결해 관찰한 사실(`initialize`, `tools/list`까지만 호출하며 tool은 실행하지 않음)이고, interaction 데이터와 분리되어 `success_rate`에는 합산되지 않습니다. HTTP 상태는 해석 없이 관찰된 값 그대로 보여줍니다.
+
+### 앱 로그를 도구 결과에 붙이기
+
+도구 호출은 성공했는데 그 뒤의 앱(씬, 게임, 개발 서버)이 실패하는 경우가 있습니다. 진짜 에러는 앱의 로그 파일에만 찍혀서 에이전트는 모릅니다. `--watch-log`를 주면 `tools/call` 결과마다 직전 호출 이후 로그에 새로 찍힌 줄 중 `--log-pattern`에 맞는 줄이 결과 끝에 붙습니다. 에이전트가 따로 호출할 것은 없습니다. 로그 내용은 로컬에만 머물고 Lowdown에 기록되지 않습니다.
 
 ### 설계 원칙 (요약)
 
