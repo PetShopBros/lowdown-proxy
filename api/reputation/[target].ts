@@ -33,7 +33,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (taskType) {
       const { data: rows } = await supabase
         .from("interactions")
-        .select("outcome, latency_ms, failure_type")
+        .select(TASK_COLUMNS)
         .eq("target", target)
         .eq("task_type", taskType);
 
@@ -49,38 +49,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (fuzzyTargets) {
           const { data: fuzzyRows } = await supabase
             .from("interactions")
-            .select("outcome, latency_ms, failure_type")
+            .select(TASK_COLUMNS)
             .eq("target", (fuzzyTargets as any).target)
             .eq("task_type", taskType);
 
           if (fuzzyRows && fuzzyRows.length > 0) {
-            const success = fuzzyRows.filter((r: any) => r.outcome === "success").length;
-            const latencies = fuzzyRows.map((r: any) => r.latency_ms).filter(Boolean);
-            const failureBreakdown = buildFailureBreakdown(fuzzyRows);
-            data = {
-              target: (fuzzyTargets as any).target,
-              interactions: fuzzyRows.length,
-              success_rate: success / fuzzyRows.length,
-              avg_latency_ms: latencies.length
-                ? Math.round(latencies.reduce((a: number, b: number) => a + b, 0) / latencies.length)
-                : null,
-              failure_breakdown: failureBreakdown,
-            };
+            data = summarizeRows((fuzzyTargets as any).target, fuzzyRows);
           }
         }
       } else {
-        const success = rows.filter((r: any) => r.outcome === "success").length;
-        const latencies = rows.map((r: any) => r.latency_ms).filter(Boolean);
-        const failureBreakdown = buildFailureBreakdown(rows);
-        data = {
-          target,
-          interactions: rows.length,
-          success_rate: success / rows.length,
-          avg_latency_ms: latencies.length
-            ? Math.round(latencies.reduce((a: number, b: number) => a + b, 0) / latencies.length)
-            : null,
-          failure_breakdown: failureBreakdown,
-        };
+        data = summarizeRows(target, rows);
       }
     } else {
       // 기존 reputation_summary 뷰 조회
@@ -134,11 +112,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // confidence 계산 (interactions 수 기반)
+    // confidence 계산 (성공률 분모 = rated_interactions 기반. 0.1.17 이전 뷰에는 없어서 interactions 로 대체)
     const interactions = Number(data.interactions ?? 0);
+    const rated = Number(data.rated_interactions ?? interactions);
     const confidence =
-      interactions >= 100 ? "high" :
-      interactions >= 10  ? "medium" : "low";
+      rated === 0 ? "none" :
+      rated >= 100 ? "high" :
+      rated >= 10  ? "medium" : "low";
 
     const nodeId = (req.headers["x-lowdown-node-id"] as string) ?? null;
 
@@ -148,7 +128,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       task_type: taskType ?? undefined,
       target_type: data.target_type,
       interactions,
-      success_rate: data.success_rate,
+      rated_interactions: rated,
+      success_rate: rated === 0 ? null : data.success_rate,
+      ...(data.rated_interactions !== undefined ? {
+        protocol_requests: Number(data.protocol_requests ?? 0),
+        rejected_requests: Number(data.rejected_requests ?? 0),
+        by_source: {
+          organic: Number(data.organic_count ?? 0),
+          seeded: Number(data.seeded_count ?? 0),
+          synthetic: Number(data.synthetic_count ?? 0),
+        },
+        success_rate_basis: SUCCESS_RATE_BASIS,
+      } : {}),
       avg_latency_ms: data.avg_latency_ms ?? undefined,
       ...(data.failure_breakdown ? { failure_breakdown: data.failure_breakdown } : {}),
       ...(taskType ? {} : {
@@ -209,6 +200,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.error(err);
     return res.status(500).json({ error: "Internal server error" });
   }
+}
+
+// ── 성공률 기준 (supabase/2026-10-15_interactions_p0.sql 의 reputation_summary 와 같은 규칙) ──
+const TASK_COLUMNS = "outcome, latency_ms, failure_type, source, request_kind, error_layer, task_type";
+const LEGACY_PROTOCOL_TASKS = new Set(["initialize", "tools/list", "prompts/list", "resources/list", "resources/templates/list", "ping"]);
+const SUCCESS_RATE_BASIS =
+  "success_rate counts organic tool calls and agent reports only. Protocol requests (initialize, tools/list, ...), " +
+  "rejected requests (invalid arguments, unknown method), and seeded or synthetic records are excluded and counted separately.";
+
+function isProtocolRow(r: any): boolean {
+  return r.request_kind === "protocol" || (r.request_kind == null && LEGACY_PROTOCOL_TASKS.has(r.task_type));
+}
+
+export function isRatedRow(r: any): boolean {
+  return (r.source ?? "organic") === "organic" && !isProtocolRow(r) && r.error_layer !== "request";
+}
+
+export function summarizeRows(target: string, rows: any[]) {
+  const ratedRows = rows.filter(isRatedRow);
+  const success = ratedRows.filter((r) => r.outcome === "success").length;
+  const latencies = ratedRows.map((r) => r.latency_ms).filter(Boolean);
+  const count = (pred: (r: any) => boolean) => rows.filter(pred).length;
+  return {
+    target,
+    interactions: rows.length,
+    rated_interactions: ratedRows.length,
+    success_rate: ratedRows.length ? Math.round((success / ratedRows.length) * 1000) / 1000 : null,
+    avg_latency_ms: latencies.length
+      ? Math.round(latencies.reduce((a: number, b: number) => a + b, 0) / latencies.length)
+      : null,
+    failure_breakdown: buildFailureBreakdown(ratedRows),
+    protocol_requests: count(isProtocolRow),
+    rejected_requests: count((r) => r.error_layer === "request"),
+    organic_count: count((r) => (r.source ?? "organic") === "organic"),
+    seeded_count: count((r) => r.source === "seeded"),
+    synthetic_count: count((r) => r.source === "synthetic"),
+  };
 }
 
 function buildFailureBreakdown(rows: any[]): Record<string, number> | null {

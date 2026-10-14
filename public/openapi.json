@@ -3,7 +3,7 @@
   "info": {
     "title": "Lowdown API",
     "description": "Lowdown records two kinds of data, kept separate: (1) interactions that agents report after using a tool or service, and (2) Lowdown Scanner observations of MCP Registry servers — a time-series record of the gap between what the official MCP Registry declares and what is actually observed. It records what changed and when; it does not score, grade, or rank servers. Public dataset and daily report: https://github.com/PetShopBros/lowdown-data",
-    "version": "0.1.14",
+    "version": "0.1.17",
     "license": {
       "name": "Scanner data: CC BY 4.0",
       "url": "https://creativecommons.org/licenses/by/4.0/"
@@ -64,12 +64,41 @@
                     "interactions": {
                       "type": "integer"
                     },
+                    "rated_interactions": {
+                      "type": "integer",
+                      "description": "Denominator of success_rate."
+                    },
+                    "protocol_requests": {
+                      "type": "integer",
+                      "description": "initialize, tools/list, ping and other non-tool requests (not in success_rate)."
+                    },
+                    "rejected_requests": {
+                      "type": "integer",
+                      "description": "Requests rejected as malformed, unknown tool, or invalid arguments (not in success_rate)."
+                    },
+                    "by_source": {
+                      "type": "object",
+                      "properties": {
+                        "organic": {
+                          "type": "integer"
+                        },
+                        "seeded": {
+                          "type": "integer"
+                        },
+                        "synthetic": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "success_rate_basis": {
+                      "type": "string"
+                    },
                     "success_rate": {
                       "type": [
                         "number",
                         "null"
                       ],
-                      "description": "Share of reported interactions with outcome success. null when there are no interactions."
+                      "description": "Share of successes among rated interactions: organic tool calls and agent reports. Protocol requests, rejected requests, and seeded or synthetic records are excluded. null when there are none."
                     },
                     "confidence": {
                       "type": "string",
@@ -79,7 +108,7 @@
                         "medium",
                         "high"
                       ],
-                      "description": "Based on the number of reported interactions (none = 0, low < 10, medium < 100, high >= 100)."
+                      "description": "Based on rated_interactions (none = 0, low < 10, medium < 100, high >= 100)."
                     },
                     "avg_latency_ms": {
                       "type": "number"
@@ -226,11 +255,13 @@
                 "properties": {
                   "actor": {
                     "type": "string",
-                    "description": "Your agent/system identifier"
+                    "description": "Your agent/system identifier",
+                    "maxLength": 200
                   },
                   "target": {
                     "type": "string",
-                    "description": "Identifier of what you used"
+                    "description": "Identifier of what you used",
+                    "maxLength": 200
                   },
                   "target_type": {
                     "type": "string",
@@ -243,7 +274,8 @@
                   },
                   "task_type": {
                     "type": "string",
-                    "description": "e.g. 'web_search', 'code_gen'"
+                    "description": "e.g. 'web_search', 'code_gen'",
+                    "maxLength": 200
                   },
                   "outcome": {
                     "type": "string",
@@ -254,7 +286,9 @@
                     ]
                   },
                   "latency_ms": {
-                    "type": "integer"
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3600000
                   },
                   "source": {
                     "type": "string",
@@ -262,17 +296,53 @@
                       "organic",
                       "seeded",
                       "synthetic"
-                    ]
+                    ],
+                    "description": "organic (default) for real use; synthetic for tests, including intentional failure tests."
                   },
                   "failure_type": {
                     "type": "string",
                     "enum": [
                       "invalid_arguments",
+                      "protocol_error",
                       "timeout",
                       "server_error",
                       "tool_error",
                       "unknown"
                     ]
+                  },
+                  "request_kind": {
+                    "type": "string",
+                    "enum": [
+                      "tool_call",
+                      "protocol",
+                      "reported"
+                    ],
+                    "description": "Default reported. The proxy sends tool_call / protocol."
+                  },
+                  "error_layer": {
+                    "type": "string",
+                    "enum": [
+                      "request",
+                      "server",
+                      "tool"
+                    ],
+                    "description": "request = the request itself was rejected (malformed, unknown tool, invalid arguments); not counted in success_rate."
+                  },
+                  "node_id": {
+                    "type": "string",
+                    "pattern": "^ld_[0-9a-f]{12}$"
+                  },
+                  "server_version": {
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  "schema_hash": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8,64}$"
+                  },
+                  "recorder_version": {
+                    "type": "string",
+                    "maxLength": 32
                   }
                 }
               }
@@ -294,6 +364,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "More than 120 records per minute for this node_id (or actor)."
           }
         }
       },

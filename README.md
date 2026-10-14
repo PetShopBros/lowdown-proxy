@@ -100,19 +100,34 @@ C:\Users\you\AppData\Local\MyApp\app.log: 1 new line(s)
 | Flag | Description | Default |
 |---|---|---|
 | `--actor` | Identifier of the calling agent | `anonymous` |
-| `--target` | Label for the target tool | command string |
+| `--target` | Label for the target tool | package or file name from the command (never the full command line) |
 | `--source` | `organic` \| `seeded` \| `synthetic` (internal/testing only) | `organic` |
+| `--test` | Record this session as `synthetic` — use it for intentional failure tests so they are not counted against the server | off |
 | `--watch-log` | App log file to watch; repeat for several files (see [App logs in tool results](#app-logs-in-tool-results)) | none |
 | `--log-pattern` | Regular expression for log lines to report | error, exception, fatal, uncaught, unhandled, failed |
 
-## Environment variables
+## Recording
 
-Required for recording. The proxy works as a pure pass-through without them.
+From 0.1.17 the proxy records through the public API (`POST /api/interactions`). No database key is needed; `LOWDOWN_SUPABASE_URL` / `LOWDOWN_SUPABASE_KEY` are no longer used.
 
-```bash
-export LOWDOWN_SUPABASE_URL="https://xxxx.supabase.co"
-export LOWDOWN_SUPABASE_KEY="..."
-```
+| Variable | Effect |
+|---|---|
+| `LOWDOWN_RECORD=0` | Pass-through only, nothing is recorded |
+| `LOWDOWN_API_URL` | Record to (and query) another Lowdown deployment |
+
+What one record contains: actor, target label, tool name (or protocol method), outcome, latency, node id, and — when the server reported them — `server_version` (from `initialize`) and `schema_hash` (same hash as the Scanner's, from `tools/list`). Arguments and results are never recorded.
+
+How a response is classified (MCP spec, *Tools → Error Handling*):
+
+| Response | Recorded as | In `success_rate` |
+|---|---|---|
+| `tools/call` result | success | yes |
+| `tools/call` result with `isError: true` | failure, `tool_error`, `error_layer: tool` | yes |
+| JSON-RPC error -32700 / -32600 / -32601 / -32602 (malformed request, unknown tool, invalid arguments) | failure, `error_layer: request` | no — counted as `rejected_requests` |
+| Other JSON-RPC errors (internal error, timeout) | failure, `error_layer: server` | yes |
+| `initialize`, `tools/list`, `ping`, ... | `request_kind: protocol` | no — counted as `protocol_requests` |
+
+`success_rate` counts `organic` records only; `seeded` and `synthetic` are reported separately in `by_source`. Every record carries `recorder_version`, so records made before 0.1.17 (which counted `isError` results as success) can be told apart.
 
 ## Public API
 
@@ -141,10 +156,16 @@ Basic response (no node):
 {
   "target": "brave-search",
   "interactions": 30,
+  "rated_interactions": 30,
   "success_rate": 0.933,
+  "protocol_requests": 0,
+  "rejected_requests": 0,
+  "by_source": { "organic": 30, "seeded": 0, "synthetic": 0 },
   "confidence": "medium"
 }
 ```
+
+`interactions` is every record for the target; `rated_interactions` is the denominator of `success_rate`, and `confidence` is based on it.
 
 Contributor response (with node):
 
@@ -266,6 +287,17 @@ MCP 서버를 감싸는 stdio 프록시가 첫 번째 진입점입니다.
 ### 앱 로그를 도구 결과에 붙이기
 
 도구 호출은 성공했는데 그 뒤의 앱(씬, 게임, 개발 서버)이 실패하는 경우가 있습니다. 진짜 에러는 앱의 로그 파일에만 찍혀서 에이전트는 모릅니다. `--watch-log`를 주면 `tools/call` 결과마다 직전 호출 이후 로그에 새로 찍힌 줄 중 `--log-pattern`에 맞는 줄이 결과 끝에 붙습니다. 에이전트가 따로 호출할 것은 없습니다. 로그 내용은 로컬에만 머물고 Lowdown에 기록되지 않습니다.
+
+### 기록 방식 (0.1.17~)
+
+프록시는 공개 API(`POST /api/interactions`)로 기록합니다. DB 키가 필요 없고 `LOWDOWN_SUPABASE_URL` / `LOWDOWN_SUPABASE_KEY`는 더 이상 쓰지 않습니다. `LOWDOWN_RECORD=0`이면 기록 없이 패스스루만 합니다.
+
+- `tools/call` 결과의 `isError: true`는 실패(`tool_error`)로 기록합니다.
+- 잘못된 요청(-32700/-32600/-32601/-32602: 형식 오류, 없는 도구, 잘못된 인자)은 서버 실패와 분리해 `rejected_requests`로 셉니다. `success_rate`에는 들어가지 않습니다.
+- `initialize`, `tools/list` 같은 비도구 요청은 `protocol_requests`로 따로 셉니다.
+- `success_rate`는 `organic` 기록만 계산합니다. `seeded` / `synthetic`은 `by_source`로 따로 보여줍니다. 일부러 실패시키는 테스트는 `--test`로 실행하면 `synthetic`으로 남습니다.
+- 각 기록에는 그 시점의 `server_version`(initialize), `schema_hash`(tools/list, Scanner와 같은 계산), `recorder_version`이 함께 남습니다. 인자와 결과 내용은 기록하지 않습니다.
+- `--target`을 주지 않으면 명령줄 전체가 아니라 패키지·파일 이름 하나만 라벨로 씁니다.
 
 ### 설계 원칙 (요약)
 

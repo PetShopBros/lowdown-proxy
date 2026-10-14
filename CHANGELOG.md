@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.17] - 2026-10-15
+
+### Changed
+- The proxy records through the public API (`POST /api/interactions`) instead of writing to the database directly. No database key is needed; `LOWDOWN_SUPABASE_URL` / `LOWDOWN_SUPABASE_KEY` are ignored (a one-time notice is printed if the key is still set). `LOWDOWN_RECORD=0` disables recording.
+- Response classification follows the MCP spec (*Tools → Error Handling*): a `tools/call` result with `isError: true` is now a failure (`tool_error`). Earlier versions recorded it as success.
+- Malformed requests, unknown tools and invalid arguments (-32700/-32600/-32601/-32602) are recorded with `error_layer: request` and kept out of `success_rate`; other JSON-RPC errors are `error_layer: server`.
+- Requests other than `tools/call` (`initialize`, `tools/list`, `ping`, ...) are recorded as `request_kind: protocol` and kept out of `success_rate`.
+- Without `--target`, the label is the package or file name from the command, not the full command line (arguments may contain keys or paths).
+- `GET /api/reputation/:target`: `success_rate` now counts organic tool calls and agent reports only. New fields `rated_interactions` (its denominator; `confidence` is based on it), `protocol_requests`, `rejected_requests`, `by_source`, `success_rate_basis`. `interactions` is still the total record count. Values for existing targets can change.
+- `compare_tools` ranks and gates suggestions by `rated_interactions`.
+
+### Added
+- Each record carries `server_version` (from `initialize`), `schema_hash` (from `tools/list`, same hash as the Scanner), and `recorder_version`.
+- `--test`: records the session as `synthetic`, for intentional failure tests.
+- `POST /api/interactions` accepts `node_id`, `request_kind`, `error_layer`, `server_version`, `schema_hash`, `recorder_version`; validates lengths and formats; at most 120 records per minute per `node_id` (or `actor`).
+- `supabase/2026-10-15_interactions_p0.sql` (columns, checks, `reputation_summary` rules) and `supabase/2026-10-15_interactions_rls.sql` (`interactions` becomes server-only).
+
+### Security
+- Server-side keys moved to secret keys; tables written only by the server have RLS on with no public access.
+
 ## [0.1.16] - 2026-10-13
 
 ### Added

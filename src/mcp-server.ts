@@ -25,8 +25,9 @@ const server = new McpServer({
 server.tool(
   "get_lowdown",
   "Look up what Lowdown has recorded about an agent, tool, or service. " +
-  "Returns interactions reported by agents (count, outcomes, success rate) and, for MCP Registry servers, " +
-  "a separate `scanner` block: daily Lowdown Scanner observations of initialize and tools/list reachability, " +
+  "Returns recorded interactions (count, outcomes, success rate). The success rate counts organic tool calls and " +
+  "agent reports only; protocol requests, rejected requests, and seeded or synthetic records are counted separately. " +
+  "For MCP Registry servers it also returns a separate `scanner` block: daily Lowdown Scanner observations of initialize and tools/list reachability, " +
   "HTTP status, tool count, and tool-schema changes over the last 30 days. " +
   "Scanner data is observation, not a score. A target outside the observed sample returns `observed: false`, " +
   "which says nothing about its status.",
@@ -51,24 +52,32 @@ server.tool(
 server.tool(
   "record_interaction",
   "Record an interaction with an agent, tool, or service after using it. " +
-  "Helps build the shared reputation dataset for the community.",
+  "Helps build the shared reputation dataset for the community. " +
+  "If the call was an intentional negative test (e.g. deliberately invalid input), set source to 'synthetic' " +
+  "so it is not counted as a failure of the target.",
   {
     actor: z.string().describe("Your agent/system identifier"),
     target: z.string().describe("Identifier of what you used"),
     target_type: z.enum(["agent", "tool", "service", "human"]),
     task_type: z.string().describe("What kind of task was performed. e.g. 'web_search', 'code_gen'"),
     outcome: z.enum(["success", "partial", "failure"]),
-failure_type: z.enum(["invalid_arguments", "timeout", "server_error", "tool_error", "unknown"])
-  .optional()
-  .describe("Required when outcome is failure. Distinguish tool failure vs argument error."),
-latency_ms: z.number().optional().describe("How long it took in milliseconds"),
-    source: z.enum(["organic", "seeded", "synthetic"]).optional(),
+    failure_type: z.enum(["invalid_arguments", "timeout", "server_error", "tool_error", "unknown"])
+      .optional()
+      .describe("Required when outcome is failure. Distinguish tool failure vs argument error."),
+    latency_ms: z.number().optional().describe("How long it took in milliseconds"),
+    source: z.enum(["organic", "seeded", "synthetic"]).optional()
+      .describe("organic (default) for real use; synthetic for tests, including intentional failure tests"),
   },
   async ({ actor, target, target_type, task_type, outcome, failure_type, latency_ms, source }) => {
     const res = await fetch(`${BASE_URL}/api/interactions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actor, target, target_type, task_type, outcome, failure_type, latency_ms, source }),
+      body: JSON.stringify({
+        actor, target, target_type, task_type, outcome, failure_type, latency_ms, source,
+        request_kind: "reported",
+        node_id: NODE_ID,
+        recorder_version: PKG_VERSION,
+      }),
     });
     const data = await res.json() as any;
     return {
@@ -83,7 +92,7 @@ server.tool(
   "Compare 2 to 5 tools or agents by the interactions reported to Lowdown. " +
   "Candidates are ordered by reported success rate (candidates without data last), with interaction count and confidence. " +
   "Scanner observations are not used for the ordering. " +
-  "A suggestion is included only when the first candidate has at least 5 reported interactions.",
+  "A suggestion is included only when the first candidate has at least 5 rated interactions.",
   {
     candidates: z.array(z.string()).min(2).max(5).describe(
       "List of tool/agent identifiers to compare"
@@ -127,7 +136,7 @@ server.tool(
       .map((r, i) => {
         const rate = r.success_rate !== null ? `${(Number(r.success_rate) * 100).toFixed(0)}%` : "no data";
         const latency = r.avg_latency_ms ? `, latency: ${r.avg_latency_ms}ms` : "";
-        return `${i + 1}. ${r.target} — success: ${rate}, interactions: ${r.interactions}, confidence: ${r.confidence}${latency}`;
+        return `${i + 1}. ${r.target} — success: ${rate}, rated interactions: ${ratedCount(r)}, confidence: ${r.confidence}${latency}`;
       })
       .join("\n");
 
@@ -135,13 +144,13 @@ server.tool(
     const best = ranked[0];
     let recommendation: { target: string; reason: string } | null = null;
 
-    if (best?.interactions >= 5 && best?.success_rate !== null) {
+    if (ratedCount(best) >= 5 && best?.success_rate !== null && best?.success_rate !== undefined) {
       const rate = `${(Number(best.success_rate) * 100).toFixed(0)}%`;
       const latencyNote = best.avg_latency_ms ? ` with avg latency ${best.avg_latency_ms}ms` : "";
       const taskNote = task_type ? ` for ${task_type}` : "";
       recommendation = {
         target: best.target,
-        reason: `Highest success rate${taskNote} (${rate}) across ${best.interactions} observations${latencyNote}.`,
+        reason: `Highest success rate${taskNote} (${rate}) across ${ratedCount(best)} rated interactions${latencyNote}.`,
       };
     }
 
@@ -175,6 +184,11 @@ server.tool(
     };
   }
 );
+
+// success_rate 의 분모(organic 도구 호출·보고). 0.1.17 이전 API 응답에는 없으므로 interactions 로 대체.
+function ratedCount(r: any): number {
+  return Number(r?.rated_interactions ?? r?.interactions ?? 0);
+}
 
 // ── 서버 시작 ───────────────────────────────────────────────────
 const transport = new StdioServerTransport();
