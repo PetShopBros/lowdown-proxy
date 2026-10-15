@@ -16,6 +16,18 @@ on:
         description: '샘플 개수 (비우면 전체)'
         type: string
         default: ''
+      cohort_version:
+        description: '코호트 버전 (비우면 기본 2026-10-07-v1)'
+        type: string
+        default: ''
+      cohort_size:
+        description: '코호트 크기 (비우면 기본 2000)'
+        type: string
+        default: ''
+      cohort_base:
+        description: '확장 기준 코호트 (예: 2026-10-07-v1, 비우면 확장 안 함)'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -29,7 +41,8 @@ jobs:
   scan:
     # ubuntu-latest 는 2026-10-19부터 26.04로 바뀐다. 검증 전까지 24.04 고정.
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 5,000개 드라이런 시간 측정 전까지 여유 있게. 측정 후 실측 + 여유분으로 다시 정한다.
+    timeout-minutes: 60
     outputs:
       scanned: ${{ steps.run.outputs.scanned }}
     steps:
@@ -49,6 +62,9 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           SCAN_LIMIT: ${{ inputs.limit }}
           SKIP_IF_DONE: ${{ github.event.schedule == '17 13 * * *' && '1' || '' }}
+          COHORT_VERSION: ${{ inputs.cohort_version }}
+          COHORT_SIZE: ${{ inputs.cohort_size }}
+          COHORT_BASE: ${{ inputs.cohort_base }}
 
       - name: Open issue on failure
         if: failure() && github.event_name == 'schedule'

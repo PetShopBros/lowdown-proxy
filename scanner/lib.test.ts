@@ -13,6 +13,7 @@ import {
   classifyNetworkError,
   countObservationsSince,
   csvEscape,
+  extendCohort,
   extractRpcMessage,
   fetchCohort,
   fetchFallbackJobs,
@@ -37,6 +38,7 @@ import {
   scannerCommit,
   selectCohort,
   supabaseHeaders,
+  topHosts,
   TransportError,
   utcDayStart,
 } from './lib.ts';
@@ -949,5 +951,36 @@ describe('scanner 버전 정보', () => {
       throw new TransportError('timeout', 'timeout');
     });
     assert.equal(r.metadata.scanner_version, SCANNER_VERSION);
+  });
+});
+
+describe('확장 코호트 (v2 = v1 전부 + 추가분)', () => {
+  const ids = Array.from({ length: 50 }, (_, i) => `mcp:io.example/s${i}`);
+  test('base 전부 포함, 추가분은 base 밖에서 SHA-256 순서, 총 size 개', () => {
+    const base = selectCohort(ids, 10);
+    const v2 = extendCohort(base, ids, 25);
+    assert.equal(v2.length, 25);
+    assert.equal(new Set(v2).size, 25);
+    for (const id of base) assert.ok(v2.includes(id));
+    assert.deepEqual(v2.slice(10), selectCohort(ids.filter((id) => !base.includes(id)), 15));
+  });
+  test('Registry 에서 사라진 base 멤버도 유지', () => {
+    const base = ['mcp:gone/one', ...selectCohort(ids, 4)];
+    const v2 = extendCohort(base, ids, 10);
+    assert.ok(v2.includes('mcp:gone/one'));
+    assert.equal(v2.length, 10);
+  });
+  test('후보 순서와 무관하게 결정적', () => {
+    const base = selectCohort(ids, 5);
+    assert.deepEqual(extendCohort(base, ids, 20), extendCohort(base, [...ids].reverse(), 20));
+  });
+  test('빈 base, base > size 는 실패', () => {
+    assert.throws(() => extendCohort([], ids, 10));
+    assert.throws(() => extendCohort(ids, ids, 10));
+  });
+  test('topHosts: 호스트별 개수 내림차순, 잘못된 URL 은 invalid', () => {
+    const r = topHosts(['https://a.com/1', 'https://b.com/x', 'https://a.com/2', 'not a url'], 2);
+    assert.deepEqual(r, [['a.com', 2], ['b.com', 1]]);
+    assert.deepEqual(topHosts(['nope'], 5), [['invalid', 1]]);
   });
 });

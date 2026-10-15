@@ -836,6 +836,34 @@ export function selectCohort(targetIds: string[], size: number): string[] {
     .map((x) => x.id);
 }
 
+/**
+ * 기존 코호트(base)를 전부 포함한 확장 코호트. base 멤버는 지금 Registry 에 없어도 빠지지 않는다(시계열 유지).
+ * 추가분은 base 밖 후보에서 같은 SHA-256 순서로 size - base 개.
+ */
+export function extendCohort(baseIds: readonly string[], candidateIds: readonly string[], size: number): string[] {
+  const base = [...new Set(baseIds)];
+  if (base.length === 0) throw new Error('extendCohort: base 코호트가 비어 있습니다');
+  if (base.length > size) throw new Error(`extendCohort: base(${base.length}) 가 size(${size}) 보다 큽니다`);
+  const baseSet = new Set(base);
+  const extra = selectCohort(candidateIds.filter((id) => !baseSet.has(id)), size - base.length);
+  return [...base, ...extra];
+}
+
+/** 작업 목록의 호스트별 원격 수 상위 n 개 (쏠림 확인용). 파싱 불가 URL 은 'invalid' */
+export function topHosts(urls: readonly string[], n = 5): Array<[string, number]> {
+  const m = new Map<string, number>();
+  for (const u of urls) {
+    let h = 'invalid';
+    try {
+      h = new URL(u).hostname;
+    } catch {
+      // 그대로 invalid
+    }
+    m.set(h, (m.get(h) ?? 0) + 1);
+  }
+  return [...m.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, n);
+}
+
 export interface CohortDeps {
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;

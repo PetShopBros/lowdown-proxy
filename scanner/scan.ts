@@ -4,6 +4,8 @@
 // 필수 환경변수(dry-run 이면 불필요): LOWDOWN_SUPABASE_URL, LOWDOWN_SCANNER_KEY(scanner 전용 service key), LOWDOWN_NODE_ID
 // 선택: DRY_RUN=1 또는 --dry-run, SCAN_LIMIT=<N> 또는 --limit=<N>, SCAN_CONCURRENCY=<N, 기본 8>, REGISTRY_URL
 //       COHORT_VERSION(기본 2026-10-07-v1), COHORT_SIZE(기본 2000)
+//       COHORT_BASE — 확장 코호트의 기준 버전(예: 2026-10-07-v1). 설정하면 Day 0 에 base 전부 + 추가분으로 만들고,
+//         base 멤버 행에는 metadata.cohort_versions = [base, version] 을 남겨 base 시계열을 이어 볼 수 있게 한다.
 //       SKIP_IF_DONE=1 — 예비 실행용. 오늘(UTC) 관찰이 코호트 절반 이상 있으면 아무것도 하지 않고 끝낸다
 //       REGISTRY_BUDGET_SEC(기본 480) — Registry 목록 받기 시간 상한. 넘기거나 실패하면 직전 관찰 실행의 원격 주소로 같은 코호트를 관찰
 //         (행에 metadata.registry_fallback=true, registry_snapshot_run, registry_snapshot_at 기록)
@@ -22,6 +24,8 @@ import {
   DEFAULT_COHORT_VERSION,
   DEFAULT_REGISTRY_URL,
   countObservationsSince,
+  extendCohort,
+  topHosts,
   fetchCohort,
   fetchFallbackJobs,
   fetchRegistryTargets,
@@ -106,6 +110,10 @@ async function main(): Promise<void> {
   const cohortSizeRaw = process.env.COHORT_SIZE?.trim() || String(DEFAULT_COHORT_SIZE);
   const cohortSize = Number.parseInt(cohortSizeRaw, 10);
   if (!(cohortSize >= 1 && cohortSize <= MAX_COHORT_SIZE)) fail(`COHORT_SIZE 는 1~${MAX_COHORT_SIZE} 사이여야 합니다: ${cohortSizeRaw}`);
+  const cohortBase = process.env.COHORT_BASE?.trim() || '';
+  if (cohortBase && !/^[A-Za-z0-9._-]{1,64}$/.test(cohortBase)) fail(`COHORT_BASE 값이 올바르지 않습니다: ${cohortBase}`);
+  if (cohortBase && cohortBase === cohortVersion) fail('COHORT_BASE 는 COHORT_VERSION 과 달라야 합니다.');
+  const t0 = Date.now();
 
   // Supabase 설정: 실제 실행은 필수, dry-run 은 있으면 저장된 코호트를 읽기만 한다(쓰지 않음)
   let supabase: { url: string; key: string } | undefined;
@@ -164,17 +172,33 @@ async function main(): Promise<void> {
     console.log(`::warning::Registry 목록 받기 실패 → 직전 관찰 주소로 대체 시도: ${registryError}`);
   }
 
+  const registrySec = Math.round((Date.now() - t0) / 1000);
+
   // 2) 코호트 확정/로드 → probe 작업 목록
   let cohortIds: string[] = [];
   let cohortCreated = false;
   let cohortSource = 'none';
+  // 확장 코호트: base 멤버 목록(행마다 소속 표시용). 읽기 실패·빈 base 는 중단 — base 없이 새 코호트를 만들지 않는다
+  let baseIds = new Set<string>();
+  if (cohortBase) {
+    if (!cohortReadCfg) fail('COHORT_BASE 를 쓰려면 DB 읽기 설정(LOWDOWN_SUPABASE_URL, LOWDOWN_SCANNER_KEY)이 필요합니다.');
+    baseIds = new Set(await fetchCohort(cohortReadCfg, cohortBase));
+    if (baseIds.size === 0) fail(`COHORT_BASE ${cohortBase} 코호트가 비어 있습니다.`);
+    console.log(`cohort base ${cohortBase}: ${baseIds.size} targets`);
+  }
   if (cohortReadCfg) {
     cohortIds = await fetchCohort(cohortReadCfg, cohortVersion); // 읽기 실패 시 throw — 조용히 새 코호트를 만들지 않는다
     cohortSource = 'stored';
   }
+  if (cohortIds.length > 0 && cohortBase) {
+    const stored = new Set(cohortIds);
+    const missingBase = [...baseIds].filter((id) => !stored.has(id)).length;
+    if (missingBase > 0) fail(`저장된 ${cohortVersion} 에 ${cohortBase} 멤버 ${missingBase}개가 없습니다. 코호트 구성이 설계와 다릅니다.`);
+  }
   if (cohortIds.length === 0) {
     if (!registry) fail(`코호트가 없고 Registry 목록도 받지 못했습니다: ${registryError}`);
-    cohortIds = selectCohort(registry.targets.map((t) => `mcp:${t.name}`), cohortSize);
+    const candidates = registry.targets.map((t) => `mcp:${t.name}`);
+    cohortIds = cohortBase ? extendCohort([...baseIds], candidates, cohortSize) : selectCohort(candidates, cohortSize);
     cohortCreated = true;
     cohortSource = supabase ? 'created' : 'preview';
     if (supabase) {
@@ -215,6 +239,7 @@ async function main(): Promise<void> {
   const gapReasonCounts = Object.fromEntries(count(plan.gaps.map((g) => g.reason)));
   const cohortInfo = {
     cohort_version: cohortVersion,
+    cohort_base: cohortBase ? `${cohortBase} (${baseIds.size})` : 'none',
     cohort_source: cohortSource,
     cohort_created: cohortCreated,
     cohort_size: cohortIds.length,
@@ -236,7 +261,11 @@ async function main(): Promise<void> {
   }
 
   if (limit) jobs = jobs.slice(0, limit);
-  console.log(`probing ${jobs.length} remotes (concurrency=${concurrency})`);
+  const hostTop = topHosts(jobs.map((j) => j.remote.url));
+  console.log(`probing ${jobs.length} remotes (concurrency=${concurrency}) top_hosts=${JSON.stringify(hostTop)}`);
+  // base 멤버는 [base, version], 추가분은 [version]. 행의 cohort_version 은 이번 실행의 코호트(version)
+  const cohortVersionsOf = (targetId: string): string[] => (baseIds.has(targetId) ? [cohortBase, cohortVersion] : [cohortVersion]);
+  const tProbe = Date.now();
 
   // 3) 청크 단위 probe → 즉시 저장 (중간 실패해도 앞선 데이터 보존)
   const CHUNK = 80;
@@ -256,7 +285,7 @@ async function main(): Promise<void> {
           observed_at: observedAt,
           source: 'scanner',
           ...p,
-          metadata: { ...p.metadata, ...runMeta },
+          metadata: { ...p.metadata, ...runMeta, ...(cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {}) },
         };
       } catch (e) {
         console.error(`unexpected probe error for ${job.name}: ${e instanceof Error ? e.message : 'unknown'}`);
@@ -272,7 +301,7 @@ async function main(): Promise<void> {
           reached_level: 0,
           latency_ms: null,
           error_type: 'network_error',
-          metadata: { remote_url: job.remote.url, remote_index: job.index, registry_version: job.version, scanner_version: SCANNER_VERSION, internal_error: true, ...runMeta },
+          metadata: { remote_url: job.remote.url, remote_index: job.index, registry_version: job.version, scanner_version: SCANNER_VERSION, internal_error: true, ...runMeta, ...(cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {}) },
         };
       }
     });
@@ -283,7 +312,10 @@ async function main(): Promise<void> {
     }
   }
 
+  const probeSec = Math.round((Date.now() - tProbe) / 1000);
+
   // 4) 직후 재시도 (실패해도 본 데이터에는 영향 없음)
+  const tRetry = Date.now();
   let retryStats: Record<string, number | string> = {};
   try {
     retryStats = await retryFailed(all, { supabase, concurrency });
@@ -292,9 +324,14 @@ async function main(): Promise<void> {
     retryStats = { retry: 'error' };
   }
 
+  const retrySec = Math.round((Date.now() - tRetry) / 1000);
+  const totalSec = Math.round((Date.now() - t0) / 1000);
   const summary = summarize(all, runId, {
     dry_run: dryRun,
     inserted,
+    elapsed_sec: `total ${totalSec} (registry ${registrySec}, probe ${probeSec}, retry ${retrySec})`,
+    top_hosts: JSON.stringify(hostTop),
+    est_bytes: `${all.length} rows × ~976 B ≈ ${((all.length * 976) / 1e6).toFixed(2)} MB`,
     scanner_version: SCANNER_VERSION,
     scanner_commit: commit ?? 'none',
     registry_fetched_at: registryFetchedAt ?? 'none (fallback)',
