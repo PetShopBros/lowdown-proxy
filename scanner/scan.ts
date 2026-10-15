@@ -6,6 +6,9 @@
 //       COHORT_VERSION(기본 2026-10-07-v1), COHORT_SIZE(기본 2000)
 //       COHORT_BASE — 확장 코호트의 기준 버전(예: 2026-10-07-v1). 설정하면 Day 0 에 base 전부 + 추가분으로 만들고,
 //         base 멤버 행에는 metadata.cohort_versions = [base, version] 을 남겨 base 시계열을 이어 볼 수 있게 한다.
+//       COHORT_HOST_CAP=<N> — 확장 코호트 Day 0 선정 시 호스트당 대상 상한(base 멤버를 먼저 센다). 0/미설정 = 상한 없음
+//       PLAN_ONLY=1 또는 --plan-only — Registry 수신 + 선정 계산만 하고 끝낸다(probe·저장 없음). COHORT_BASE 필요
+//         PLAN_CAPS(기본 0,3,5,10) 의 상한별로 추가분 수·미달·상한 탈락·고유 호스트·상위 호스트 비중을 출력한다
 //       SKIP_IF_DONE=1 — 예비 실행용. 오늘(UTC) 관찰이 코호트 절반 이상 있으면 아무것도 하지 않고 끝낸다
 //       REGISTRY_BUDGET_SEC(기본 480) — Registry 목록 받기 시간 상한. 넘기거나 실패하면 직전 관찰 실행의 원격 주소로 같은 코호트를 관찰
 //         (행에 metadata.registry_fallback=true, registry_snapshot_run, registry_snapshot_at 기록)
@@ -24,7 +27,10 @@ import {
   DEFAULT_COHORT_VERSION,
   DEFAULT_REGISTRY_URL,
   countObservationsSince,
+  capHost,
   extendCohort,
+  extendCohortCapped,
+  hostConcentration,
   topHosts,
   fetchCohort,
   fetchFallbackJobs,
@@ -97,7 +103,8 @@ function summarize(rows: ObservationRow[], runId: string, extra: Record<string, 
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const dryRun = process.env.DRY_RUN === '1' || args.includes('--dry-run');
+  const planOnlyFlag = process.env.PLAN_ONLY === '1' || args.includes('--plan-only');
+  const dryRun = process.env.DRY_RUN === '1' || args.includes('--dry-run') || planOnlyFlag; // plan-only 는 쓰지 않으므로 dry-run 으로 취급
   const limitArg = args.find((a) => a.startsWith('--limit='))?.slice('--limit='.length);
   const limitRaw = (limitArg ?? process.env.SCAN_LIMIT)?.trim();
   const limit = limitRaw ? Number.parseInt(limitRaw, 10) : undefined;
@@ -113,6 +120,12 @@ async function main(): Promise<void> {
   const cohortBase = process.env.COHORT_BASE?.trim() || '';
   if (cohortBase && !/^[A-Za-z0-9._-]{1,64}$/.test(cohortBase)) fail(`COHORT_BASE 값이 올바르지 않습니다: ${cohortBase}`);
   if (cohortBase && cohortBase === cohortVersion) fail('COHORT_BASE 는 COHORT_VERSION 과 달라야 합니다.');
+  const hostCapRaw = process.env.COHORT_HOST_CAP?.trim() || '0';
+  const hostCap = Number.parseInt(hostCapRaw, 10);
+  if (!(hostCap >= 0) || String(hostCap) !== hostCapRaw) fail(`COHORT_HOST_CAP 값이 올바르지 않습니다: ${hostCapRaw}`);
+  if (hostCap > 0 && !cohortBase) fail('COHORT_HOST_CAP 은 COHORT_BASE(확장 코호트)와 함께만 씁니다.');
+  const planOnly = planOnlyFlag;
+  if (planOnly && !cohortBase) fail('PLAN_ONLY 는 COHORT_BASE 가 필요합니다.');
   const t0 = Date.now();
 
   // Supabase 설정: 실제 실행은 필수, dry-run 은 있으면 저장된 코호트를 읽기만 한다(쓰지 않음)
@@ -186,6 +199,19 @@ async function main(): Promise<void> {
     if (baseIds.size === 0) fail(`COHORT_BASE ${cohortBase} 코호트가 비어 있습니다.`);
     console.log(`cohort base ${cohortBase}: ${baseIds.size} targets`);
   }
+  // 대상 → 원격 호스트 목록 (호스트 상한·집중도 계산용). 지금 Registry 기준
+  const hostsOf = new Map<string, string[]>();
+  if (registry) {
+    for (const t of registry.targets) {
+      hostsOf.set(`mcp:${t.name}`, [...new Set(t.remotes.map((r) => capHost(r.url)).filter((h): h is string => h !== null))]);
+    }
+  }
+
+  if (planOnly) {
+    if (!registry) fail(`PLAN_ONLY: Registry 목록을 받지 못했습니다: ${registryError}`);
+    runPlanOnly({ baseIds: [...baseIds], candidates: registry.targets.map((t) => `mcp:${t.name}`), size: cohortSize, hostsOf, cohortBase });
+    return;
+  }
   if (cohortReadCfg) {
     cohortIds = await fetchCohort(cohortReadCfg, cohortVersion); // 읽기 실패 시 throw — 조용히 새 코호트를 만들지 않는다
     cohortSource = 'stored';
@@ -198,7 +224,14 @@ async function main(): Promise<void> {
   if (cohortIds.length === 0) {
     if (!registry) fail(`코호트가 없고 Registry 목록도 받지 못했습니다: ${registryError}`);
     const candidates = registry.targets.map((t) => `mcp:${t.name}`);
-    cohortIds = cohortBase ? extendCohort([...baseIds], candidates, cohortSize) : selectCohort(candidates, cohortSize);
+    if (cohortBase && hostCap > 0) {
+      const capped = extendCohortCapped([...baseIds], candidates, cohortSize, hostCap, hostsOf);
+      if (capped.shortfall > 0) fail(`호스트 상한 ${hostCap} 으로 ${cohortSize}개를 채우지 못했습니다 (미달 ${capped.shortfall}). 상한을 넘겨 채우지 않습니다.`);
+      console.log(`cohort host cap ${hostCap}: added ${capped.added}, skipped_by_cap ${capped.skippedByCap}`);
+      cohortIds = capped.ids;
+    } else {
+      cohortIds = cohortBase ? extendCohort([...baseIds], candidates, cohortSize) : selectCohort(candidates, cohortSize);
+    }
     cohortCreated = true;
     cohortSource = supabase ? 'created' : 'preview';
     if (supabase) {
@@ -240,6 +273,7 @@ async function main(): Promise<void> {
   const cohortInfo = {
     cohort_version: cohortVersion,
     cohort_base: cohortBase ? `${cohortBase} (${baseIds.size})` : 'none',
+    cohort_host_cap: hostCap > 0 ? hostCap : 'none',
     cohort_source: cohortSource,
     cohort_created: cohortCreated,
     cohort_size: cohortIds.length,
@@ -349,6 +383,48 @@ async function main(): Promise<void> {
   // 전체 관찰을 실제로 저장했을 때만 report job 이 돈다(scanner.yml: needs.scan.outputs.scanned). 샘플(limit)·dry-run·건너뛴 예비 실행은 제외
   const outputFile = process.env.GITHUB_OUTPUT;
   if (outputFile && !dryRun && !limit && inserted > 0) appendFileSync(outputFile, 'scanned=1\n');
+}
+
+function pct(x: number): string {
+  return `${(x * 100).toFixed(1)}%`;
+}
+
+/** 선정 계산만: 상한별 비교표를 출력한다. probe·DB 쓰기 없음. 같은 입력을 역순으로 넣어 재현성도 확인한다. */
+function runPlanOnly(o: { baseIds: string[]; candidates: string[]; size: number; hostsOf: Map<string, string[]>; cohortBase: string }): void {
+  const capsRaw = process.env.PLAN_CAPS?.trim() || '0,3,5,10';
+  const caps = capsRaw.split(',').map((x) => Number.parseInt(x.trim(), 10));
+  if (caps.some((c) => !(c >= 0))) fail(`PLAN_CAPS 값이 올바르지 않습니다: ${capsRaw}`);
+
+  const baseInRegistry = o.baseIds.filter((id) => o.hostsOf.has(id)).length;
+  const b = hostConcentration(o.baseIds, o.hostsOf);
+  const lines = [
+    `## Lowdown Scanner plan-only (선정 계산만, probe·저장 없음)`,
+    ``,
+    `- base: ${o.cohortBase} ${o.baseIds.length} (지금 Registry 에 있는 멤버 ${baseInRegistry}, 없는 멤버는 할당량에 세지 않음)`,
+    `- candidates (probe 가능 대상): ${o.candidates.length}`,
+    `- target size: ${o.size} (추가분 ${o.size - o.baseIds.length})`,
+    `- base 집중도: 고유 호스트 ${b.uniqueHosts}, 상위1 ${pct(b.top1Share)}, 상위3 ${pct(b.top3Share)}, top ${JSON.stringify(b.top)}`,
+    ``,
+    `| cap | added | shortfall | skipped_by_cap | v2 unique hosts | v2 top1 | v2 top3 | extras unique hosts | extras top1 | reproducible |`,
+    `|---|---|---|---|---|---|---|---|---|---|`,
+  ];
+  const tops: string[] = [];
+  for (const cap of caps) {
+    const r = extendCohortCapped(o.baseIds, o.candidates, o.size, cap, o.hostsOf);
+    const again = extendCohortCapped(o.baseIds, [...o.candidates].reverse(), o.size, cap, o.hostsOf);
+    const same = r.ids.length === again.ids.length && r.ids.every((id, i) => id === again.ids[i]);
+    const v2 = hostConcentration(r.ids, o.hostsOf);
+    const extras = hostConcentration(r.ids.slice(o.baseIds.length), o.hostsOf);
+    lines.push(
+      `| ${cap === 0 ? '0 (없음)' : cap} | ${r.added} | ${r.shortfall} | ${r.skippedByCap} | ${v2.uniqueHosts} | ${pct(v2.top1Share)} | ${pct(v2.top3Share)} | ${extras.uniqueHosts} | ${pct(extras.top1Share)} | ${same} |`,
+    );
+    tops.push(`- cap ${cap} v2 top5: ${JSON.stringify(v2.top)}`);
+  }
+  lines.push('', ...tops, '');
+  const out = lines.join('\n');
+  console.log(out);
+  const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+  if (summaryFile) appendFileSync(summaryFile, `${out}\n`);
 }
 
 async function retryFailed(

@@ -28,6 +28,10 @@ on:
         description: '확장 기준 코호트 (예: 2026-10-07-v1, 비우면 확장 안 함)'
         type: string
         default: ''
+      plan_only:
+        description: '선정 계산만 (probe·저장 없음, COHORT_BASE 필요)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -65,6 +69,7 @@ jobs:
           COHORT_VERSION: ${{ inputs.cohort_version }}
           COHORT_SIZE: ${{ inputs.cohort_size }}
           COHORT_BASE: ${{ inputs.cohort_base }}
+          PLAN_ONLY: ${{ inputs.plan_only && '1' || '' }}
 
       - name: Open issue on failure
         if: failure() && github.event_name == 'schedule'

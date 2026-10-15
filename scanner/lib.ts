@@ -849,6 +849,87 @@ export function extendCohort(baseIds: readonly string[], candidateIds: readonly 
   return [...base, ...extra];
 }
 
+/**
+ * 호스트 상한용 정규화: URL 의 hostname(소문자, 포트 제외, 끝 점 제거). 파싱 불가면 null.
+ * 등록 도메인으로 묶지 않는다(a.workers.dev 와 b.workers.dev 는 별개). 호스트 ≠ 운영자.
+ */
+export function capHost(rawUrl: string): string | null {
+  try {
+    const h = new URL(rawUrl).hostname.toLowerCase().replace(/\.+$/, '');
+    return h || null;
+  } catch {
+    return null;
+  }
+}
+
+export interface CappedCohort {
+  ids: string[];
+  /** 추가분으로 뽑힌 수 */
+  added: number;
+  /** size 를 채우지 못한 수 (상한을 넘겨 채우지 않는다) */
+  shortfall: number;
+  /** 상한 때문에 건너뛴 후보 수 */
+  skippedByCap: number;
+}
+
+/**
+ * 호스트 상한을 둔 확장 코호트. base 는 전부 유지하고, base 멤버의 호스트를 할당량에 먼저 센다.
+ * 추가분은 base 밖 후보를 SHA-256 순서로 보며, 그 후보의 모든 원격 호스트가 cap 미만일 때만 넣는다
+ * (원격이 여러 개면 각 호스트에 1씩). cap <= 0 이면 상한 없음(= extendCohort 와 같은 결과).
+ * hostsOf 에 없는 base 멤버(지금 Registry 에 없음)는 할당량에 세지 않는다.
+ */
+export function extendCohortCapped(
+  baseIds: readonly string[],
+  candidateIds: readonly string[],
+  size: number,
+  cap: number,
+  hostsOf: ReadonlyMap<string, readonly string[]>,
+): CappedCohort {
+  const base = [...new Set(baseIds)];
+  if (base.length === 0) throw new Error('extendCohortCapped: base 코호트가 비어 있습니다');
+  if (base.length > size) throw new Error(`extendCohortCapped: base(${base.length}) 가 size(${size}) 보다 큽니다`);
+  const baseSet = new Set(base);
+  const used = new Map<string, number>();
+  const take = (hosts: readonly string[]) => {
+    for (const h of new Set(hosts)) used.set(h, (used.get(h) ?? 0) + 1);
+  };
+  for (const id of base) take(hostsOf.get(id) ?? []);
+
+  const need = size - base.length;
+  const ordered = selectCohort(candidateIds.filter((id) => !baseSet.has(id)), Number.MAX_SAFE_INTEGER);
+  const extra: string[] = [];
+  let skippedByCap = 0;
+  for (const id of ordered) {
+    if (extra.length >= need) break;
+    const hosts = [...new Set(hostsOf.get(id) ?? [])];
+    if (cap > 0 && hosts.some((h) => (used.get(h) ?? 0) >= cap)) {
+      skippedByCap++;
+      continue;
+    }
+    extra.push(id);
+    take(hosts);
+  }
+  return { ids: [...base, ...extra], added: extra.length, shortfall: need - extra.length, skippedByCap };
+}
+
+/** 코호트의 호스트 집중도. 대상 하나가 여러 호스트에 원격을 두면 각 호스트에 1씩 센다. */
+export function hostConcentration(
+  ids: readonly string[],
+  hostsOf: ReadonlyMap<string, readonly string[]>,
+  topN = 5,
+): { uniqueHosts: number; withHosts: number; top: Array<[string, number]>; top1Share: number; top3Share: number } {
+  const m = new Map<string, number>();
+  let withHosts = 0;
+  for (const id of ids) {
+    const hosts = [...new Set(hostsOf.get(id) ?? [])];
+    if (hosts.length > 0) withHosts++;
+    for (const h of hosts) m.set(h, (m.get(h) ?? 0) + 1);
+  }
+  const sorted = [...m.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  const share = (k: number) => (withHosts === 0 ? 0 : sorted.slice(0, k).reduce((s, [, n]) => s + n, 0) / withHosts);
+  return { uniqueHosts: m.size, withHosts, top: sorted.slice(0, topN), top1Share: share(1), top3Share: share(3) };
+}
+
 /** 작업 목록의 호스트별 원격 수 상위 n 개 (쏠림 확인용). 파싱 불가 URL 은 'invalid' */
 export function topHosts(urls: readonly string[], n = 5): Array<[string, number]> {
   const m = new Map<string, number>();

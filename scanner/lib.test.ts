@@ -10,16 +10,19 @@ import { after, before, describe, test } from 'node:test';
 import {
   attachRetry,
   canonicalJson,
+  capHost,
   classifyNetworkError,
   countObservationsSince,
   csvEscape,
   extendCohort,
+  extendCohortCapped,
   extractRpcMessage,
   fetchCohort,
   fetchFallbackJobs,
   fetchMonthRows,
   fetchRegistryTargets,
   hashTools,
+  hostConcentration,
   hostOf,
   httpsPost,
   insertCohortGaps,
@@ -982,5 +985,57 @@ describe('확장 코호트 (v2 = v1 전부 + 추가분)', () => {
     const r = topHosts(['https://a.com/1', 'https://b.com/x', 'https://a.com/2', 'not a url'], 2);
     assert.deepEqual(r, [['a.com', 2], ['b.com', 1]]);
     assert.deepEqual(topHosts(['nope'], 5), [['invalid', 1]]);
+  });
+});
+
+describe('호스트 상한 코호트', () => {
+  // 후보 60개: spam.host 에 30개, 나머지는 각자 다른 호스트
+  const ids = Array.from({ length: 60 }, (_, i) => `mcp:io.example/s${i}`);
+  const hostsOf = new Map<string, string[]>(ids.map((id, i) => [id, [i < 30 ? 'spam.host' : `h${i}.example.com`]]));
+  test('capHost: 소문자, 포트 제외, 끝 점 제거, 공용 도메인 하위는 별개, 잘못된 URL 은 null', () => {
+    assert.equal(capHost('https://API.Example.com:8443/mcp'), 'api.example.com');
+    assert.equal(capHost('https://a.example.com./mcp'), 'a.example.com');
+    assert.notEqual(capHost('https://a.workers.dev/x'), capHost('https://b.workers.dev/x'));
+    assert.equal(capHost('not a url'), null);
+  });
+  test('cap 0 은 extendCohort 와 같은 결과', () => {
+    const base = selectCohort(ids, 10);
+    assert.deepEqual(extendCohortCapped(base, ids, 40, 0, hostsOf).ids, extendCohort(base, ids, 40));
+  });
+  test('base 멤버를 할당량에 먼저 센다: base 에 이미 cap 이상이면 추가분에서 0개', () => {
+    const base = ids.slice(0, 5); // spam.host 5개
+    const r = extendCohortCapped(base, ids, 30, 3, hostsOf);
+    const spamExtras = r.ids.slice(5).filter((id) => hostsOf.get(id)?.[0] === 'spam.host');
+    assert.equal(spamExtras.length, 0);
+    assert.equal(r.ids.length, 30);
+    assert.equal(r.shortfall, 0);
+  });
+  test('상한 때문에 못 채우면 shortfall 로 남기고 넘겨 채우지 않는다', () => {
+    const base = ids.slice(30, 31);
+    const r = extendCohortCapped(base, ids, 60, 1, hostsOf);
+    assert.equal(r.added, 30); // spam 1 + 나머지 29
+    assert.equal(r.shortfall, 29);
+    assert.ok(r.skippedByCap > 0);
+  });
+  test('원격이 여러 호스트면 각 호스트에 1씩, 하나라도 꽉 차면 건너뜀', () => {
+    const m = new Map<string, string[]>([
+      ['mcp:a', ['x.com']],
+      ['mcp:b', ['x.com', 'y.com']],
+      ['mcp:c', ['y.com']],
+    ]);
+    const r = extendCohortCapped(['mcp:a'], ['mcp:a', 'mcp:b', 'mcp:c'], 3, 1, m);
+    assert.ok(!r.ids.includes('mcp:b'));
+    assert.ok(r.ids.includes('mcp:c'));
+  });
+  test('결정적: 후보 순서와 무관', () => {
+    const base = selectCohort(ids, 5);
+    assert.deepEqual(extendCohortCapped(base, ids, 25, 2, hostsOf).ids, extendCohortCapped(base, [...ids].reverse(), 25, 2, hostsOf).ids);
+  });
+  test('hostConcentration: 고유 호스트, 상위 비중', () => {
+    const c = hostConcentration(ids, hostsOf, 2);
+    assert.equal(c.uniqueHosts, 31);
+    assert.equal(c.withHosts, 60);
+    assert.equal(c.top[0]?.[0], 'spam.host');
+    assert.equal(c.top1Share, 0.5);
   });
 });
