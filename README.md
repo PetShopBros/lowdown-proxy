@@ -1,5 +1,7 @@
 # lowdown-proxy
 
+[![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/petshopbros/lowdown-proxy)
+
 Agents should not have to trust anyone they've never interacted with.
 
 `lowdown-proxy` records interactions between AI agents, tools, and services — and makes
