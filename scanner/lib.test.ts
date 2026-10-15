@@ -33,6 +33,8 @@ import {
   runPerHostRoundRobin,
   runPool,
   saveCohort,
+  SCANNER_VERSION,
+  scannerCommit,
   selectCohort,
   supabaseHeaders,
   TransportError,
@@ -929,5 +931,23 @@ describe('Registry 장애 대비', () => {
     await assert.rejects(fetchFallbackJobs(FB_CFG, { minRows: 1 }, { fetchImpl: fbFetch([]) }), /no previous observations/);
     const err = (async () => new Response('x', { status: 503 })) as unknown as typeof fetch;
     await assert.rejects(fetchFallbackJobs(FB_CFG, { minRows: 1 }, { fetchImpl: err }), /HTTP 503/);
+  });
+});
+
+describe('scanner 버전 정보', () => {
+  test('GITHUB_SHA 40자 → 앞 12자(소문자)', () => {
+    assert.equal(scannerCommit('0123456789ABCDEF0123456789abcdef01234567'), '0123456789ab');
+  });
+  test('없거나 형식이 아니면 null (로컬 실행)', () => {
+    assert.equal(scannerCommit(undefined), null);
+    assert.equal(scannerCommit(''), null);
+    assert.equal(scannerCommit('abc123'), null);
+    assert.equal(scannerCommit('g'.repeat(40)), null);
+  });
+  test('probe 메타데이터에 현재 SCANNER_VERSION 기록', async () => {
+    const r = await probeRemote({ type: 'streamable-http', url: 'https://example.com/mcp' }, { registryVersion: '1.0.0', index: 0 }, async () => {
+      throw new TransportError('timeout', 'timeout');
+    });
+    assert.equal(r.metadata.scanner_version, SCANNER_VERSION);
   });
 });

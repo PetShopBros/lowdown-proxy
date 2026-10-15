@@ -35,6 +35,8 @@ import {
   runPerHostRoundRobin,
   runPool,
   saveCohort,
+  SCANNER_VERSION,
+  scannerCommit,
   selectCohort,
   utcDayStart,
 } from './lib.ts';
@@ -142,19 +144,23 @@ async function main(): Promise<void> {
 
   const runId = randomUUID();
   const registryUrl = process.env.REGISTRY_URL?.trim() || DEFAULT_REGISTRY_URL;
-  console.log(`scan_run_id=${runId} dry_run=${dryRun} registry=${registryUrl}`);
+  const commit = scannerCommit();
+  console.log(`scan_run_id=${runId} dry_run=${dryRun} registry=${registryUrl} scanner_version=${SCANNER_VERSION} scanner_commit=${commit ?? 'none'}`);
 
   // 1) Registry 수집. 실패·시간 초과면 2) 이후에서 직전 관찰 실행의 원격 주소로 대체한다(결측 방지).
   let registry: Awaited<ReturnType<typeof fetchRegistryTargets>> | null = null;
   let registryError = '';
+  let registryFetchedAt: string | null = null; // Registry 목록을 다 받은 시각. 대체(fallback) 실행은 null → registry_snapshot_at 을 본다
   try {
     const budgetSec = envSeconds('REGISTRY_BUDGET_SEC', 480);
     registry = await fetchRegistryTargets({ baseUrl: registryUrl, deadline: Date.now() + budgetSec * 1000 });
+    registryFetchedAt = new Date().toISOString();
     console.log('registry stats', JSON.stringify(registry.stats));
     if (registry.targets.length === 0) throw new Error('registry: 0 probeable targets (응답 형식 변경 가능성)');
   } catch (e) {
     registryError = e instanceof Error ? e.message : 'registry failed';
     registry = null;
+    registryFetchedAt = null;
     console.log(`::warning::Registry 목록 받기 실패 → 직전 관찰 주소로 대체 시도: ${registryError}`);
   }
 
@@ -197,6 +203,13 @@ async function main(): Promise<void> {
     stats = { registry_fallback: true, registry_error: registryError, snapshot_run: fb.sourceRunId, snapshot_rows: fb.sourceRows };
     console.log(`::warning::직전 관찰 실행 ${fb.sourceRunId} (${fb.sourceObservedAt}) 의 원격 주소 ${fb.jobs.length}개로 관찰합니다.`);
   }
+  // 모든 관찰 행에 붙는 실행 정보: 어떤 코드(commit)가, 언제 받은 Registry 목록으로 관찰했는지
+  const runMeta: Record<string, unknown> = {
+    cohort_version: cohortVersion,
+    scanner_commit: commit,
+    registry_fetched_at: registryFetchedAt,
+    ...fallbackMeta,
+  };
   let jobs = plan.jobs;
   if (jobs.length === 0) fail('코호트에서 probe 할 remote 가 0개입니다 (Registry 와 코호트가 맞지 않음).');
   const gapReasonCounts = Object.fromEntries(count(plan.gaps.map((g) => g.reason)));
@@ -243,7 +256,7 @@ async function main(): Promise<void> {
           observed_at: observedAt,
           source: 'scanner',
           ...p,
-          metadata: { ...p.metadata, cohort_version: cohortVersion, ...fallbackMeta },
+          metadata: { ...p.metadata, ...runMeta },
         };
       } catch (e) {
         console.error(`unexpected probe error for ${job.name}: ${e instanceof Error ? e.message : 'unknown'}`);
@@ -259,7 +272,7 @@ async function main(): Promise<void> {
           reached_level: 0,
           latency_ms: null,
           error_type: 'network_error',
-          metadata: { remote_url: job.remote.url, remote_index: job.index, registry_version: job.version, internal_error: true, cohort_version: cohortVersion, ...fallbackMeta },
+          metadata: { remote_url: job.remote.url, remote_index: job.index, registry_version: job.version, scanner_version: SCANNER_VERSION, internal_error: true, ...runMeta },
         };
       }
     });
@@ -279,7 +292,16 @@ async function main(): Promise<void> {
     retryStats = { retry: 'error' };
   }
 
-  const summary = summarize(all, runId, { dry_run: dryRun, inserted, ...cohortInfo, ...stats, ...retryStats });
+  const summary = summarize(all, runId, {
+    dry_run: dryRun,
+    inserted,
+    scanner_version: SCANNER_VERSION,
+    scanner_commit: commit ?? 'none',
+    registry_fetched_at: registryFetchedAt ?? 'none (fallback)',
+    ...cohortInfo,
+    ...stats,
+    ...retryStats,
+  });
   console.log(summary);
   if (dryRun) {
     console.log('sample rows:');

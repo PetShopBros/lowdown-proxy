@@ -9,10 +9,19 @@ import { request as httpsRequest } from 'node:https';
 import { BlockList, isIP } from 'node:net';
 import type { LookupFunction } from 'node:net';
 
-export const SCANNER_VERSION = '0.1.0';
+// 관찰 결과의 의미가 바뀌는 수정(probe 판정·저장 필드·코호트 규칙)마다 올린다. CHANGELOG 의 Scanner 항목과 맞춘다.
+//   0.1.0 — 2026-10-06 최초 / 0.2.0 — 2026-10-16 scanner_commit·registry_fetched_at 기록 시작
+//   (0.1.0 기간에도 재시도·대체·사유 분리가 추가됐으므로 그 기간 행의 정확한 코드는 알 수 없다)
+export const SCANNER_VERSION = '0.2.0';
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 export const USER_AGENT = `lowdown-scanner/${SCANNER_VERSION}`;
 export const DEFAULT_REGISTRY_URL = 'https://registry.modelcontextprotocol.io';
+
+/** 실행 중인 코드의 git commit (GitHub Actions 의 GITHUB_SHA). 앞 12자. 형식이 아니면 null(로컬 실행 등) */
+export function scannerCommit(sha: string | undefined = process.env.GITHUB_SHA): string | null {
+  const s = sha?.trim().toLowerCase() ?? '';
+  return /^[0-9a-f]{40}$/.test(s) ? s.slice(0, 12) : null;
+}
 
 // ─────────────────────────────────────────────
 // SSRF 방어
