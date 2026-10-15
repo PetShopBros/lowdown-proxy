@@ -585,6 +585,48 @@ export interface RegistryGapInfo {
   hasProbeableRemote: boolean;
 }
 
+/**
+ * 시장판 1단계(Registry 비교 기록)용: 이름별 선언 요약. probe 여부와 무관하게 모든 항목.
+ * 설명문 원문은 저장하지 않고 해시만(등록자 문자열을 옮기지 않음).
+ */
+export interface RegistryDeclaration {
+  version: string;
+  status: string | null;
+  /** 원격 선언 "type url" 을 정렬해 줄바꿈으로 이은 것. 없으면 '' */
+  remotesKey: string;
+  /** 패키지 선언 "registryType identifier version transport" 정렬·줄바꿈. 없으면 '' */
+  packagesKey: string;
+  /** 설명문 SHA-256 앞 16자. 없으면 '' */
+  descHash: string;
+  /** 원격 주소들의 capHost (정렬, 중복 제거) */
+  hosts: string[];
+}
+
+function declarationOf(s: Record<string, unknown>, status: string | undefined): RegistryDeclaration {
+  const remotes = (Array.isArray(s.remotes) ? (s.remotes as unknown[]) : [])
+    .map((r) => r as { type?: unknown; url?: unknown } | null)
+    .filter((r): r is { type: string; url: string } => !!r && typeof r.type === 'string' && typeof r.url === 'string');
+  const packages = (Array.isArray(s.packages) ? (s.packages as unknown[]) : [])
+    .map((p) => p as Record<string, unknown> | null)
+    .filter((p): p is Record<string, unknown> => !!p && typeof p === 'object')
+    .map((p) => {
+      const t = p.transport as { type?: unknown } | undefined;
+      return [p.registryType ?? p.registry_type ?? '', p.identifier ?? p.name ?? '', p.version ?? '', t?.type ?? '']
+        .map((x) => (typeof x === 'string' ? x : ''))
+        .join(' ');
+    });
+  const desc = typeof s.description === 'string' ? s.description : '';
+  const hosts = [...new Set(remotes.map((r) => capHost(r.url)).filter((h): h is string => h !== null))].sort();
+  return {
+    version: String(s.version ?? ''),
+    status: status ?? null,
+    remotesKey: [...new Set(remotes.map((r) => `${r.type} ${r.url}`))].sort().join('\n'),
+    packagesKey: [...new Set(packages)].sort().join('\n'),
+    descHash: desc ? sha256(desc).slice(0, 16) : '',
+    hosts,
+  };
+}
+
 export interface RegistryStats {
   pages: number;
   entries: number;
@@ -615,7 +657,12 @@ export interface RegistryDeps {
 
 export async function fetchRegistryTargets(
   deps: RegistryDeps = {},
-): Promise<{ targets: RegistryTarget[]; stats: RegistryStats; registryInfo: Map<string, RegistryGapInfo> }> {
+): Promise<{
+  targets: RegistryTarget[];
+  stats: RegistryStats;
+  registryInfo: Map<string, RegistryGapInfo>;
+  declarations: Map<string, RegistryDeclaration>;
+}> {
   const base = (deps.baseUrl ?? DEFAULT_REGISTRY_URL).replace(/\/+$/, '');
   const f = deps.fetchImpl ?? fetch;
   const sleep = deps.sleep ?? defaultSleep;
@@ -636,6 +683,7 @@ export async function fetchRegistryTargets(
   };
   const byName = new Map<string, RegistryTarget>();
   const registryInfo = new Map<string, RegistryGapInfo>();
+  const declarations = new Map<string, RegistryDeclaration>();
   const seenKeys = new Set<string>();
   let cursor: string | undefined;
 
@@ -690,6 +738,8 @@ export async function fetchRegistryTargets(
       const metaStatus = typeof meta?.status === 'string' ? meta.status : undefined;
       const metaIsLatest = typeof meta?.isLatest === 'boolean' ? meta.isLatest : undefined;
       const version = String(s.version ?? '');
+      // 같은 이름이 여러 번 오면(버전 여러 개) isLatest 인 쪽을 우선, 없으면 처음 것
+      if (!declarations.has(s.name) || metaIsLatest === true) declarations.set(s.name, declarationOf(s, metaStatus));
 
       if (!(metaStatus === 'active' && metaIsLatest === true)) {
         registryInfo.set(s.name, { version, status: metaStatus, isLatest: metaIsLatest, hasAnyRemotes: false, hasProbeableRemote: false });
@@ -733,7 +783,7 @@ export async function fetchRegistryTargets(
     cursor = next;
   }
 
-  return { targets: [...byName.values()], stats, registryInfo };
+  return { targets: [...byName.values()], stats, registryInfo, declarations };
 }
 
 // ─────────────────────────────────────────────

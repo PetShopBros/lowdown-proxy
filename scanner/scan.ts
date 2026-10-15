@@ -7,6 +7,8 @@
 //       COHORT_BASE — 확장 코호트의 기준 버전(예: 2026-10-07-v1). 설정하면 Day 0 에 base 전부 + 추가분으로 만들고,
 //         base 멤버 행에는 metadata.cohort_versions = [base, version] 을 남겨 base 시계열을 이어 볼 수 있게 한다.
 //       COHORT_HOST_CAP=<N> — 확장 코호트 Day 0 선정 시 호스트당 대상 상한(base 멤버를 먼저 센다). 0/미설정 = 상한 없음
+//       REGISTRY_DIFF=1 — 시장판 1단계: 관찰 뒤 Registry 선언 변화를 registry_state/registry_changes 에 기록(probe 없음).
+//         첫 실행은 baseline(이벤트 없음). fallback 날은 건너뜀. dry-run 은 읽고 계산만 한다. 실패해도 관찰 데이터와 무관
 //       PLAN_ONLY=1 또는 --plan-only — Registry 수신 + 선정 계산만 하고 끝낸다(probe·저장 없음). COHORT_BASE 필요
 //         PLAN_CAPS(기본 0,3,5,10) 의 상한별로 추가분 수·미달·상한 탈락·고유 호스트·상위 호스트 비중을 출력한다
 //       SKIP_IF_DONE=1 — 예비 실행용. 오늘(UTC) 관찰이 코호트 절반 이상 있으면 아무것도 하지 않고 끝낸다
@@ -50,6 +52,7 @@ import {
   selectCohort,
   utcDayStart,
 } from './lib.ts';
+import { diffRegistry, fetchRegistryState, insertRegistryChanges, upsertRegistryState } from './registry-diff.ts';
 import type { CohortGap, CohortGapRow, CohortJob, ObservationRow, ProbeResult, RetryInfo } from './lib.ts';
 
 function fail(message: string): never {
@@ -359,6 +362,44 @@ async function main(): Promise<void> {
   }
 
   const retrySec = Math.round((Date.now() - tRetry) / 1000);
+
+  // 5) 시장판 1단계: Registry 비교 기록 (관찰과 독립. 실패해도 계속)
+  let diffStats: Record<string, string | number> = {};
+  if (process.env.REGISTRY_DIFF?.trim() === '1') {
+    const tDiff = Date.now();
+    if (!registry) {
+      diffStats = { registry_diff: 'skipped (registry fallback)' };
+    } else if (!cohortReadCfg) {
+      diffStats = { registry_diff: 'skipped (no db config)' };
+    } else {
+      try {
+        const prev = await fetchRegistryState(cohortReadCfg);
+        const d = diffRegistry(prev, registry.declarations, { now: registryFetchedAt ?? new Date().toISOString(), scanRunId: runId });
+        let written = 'dry-run (not written)';
+        if (supabase && d.mode !== 'skipped') {
+          // 이벤트 먼저: 상태 갱신이 실패하면 다음 실행에서 같은 변화가 다시 잡힌다(유실보다 중복이 낫다)
+          const ev = await insertRegistryChanges(supabase, d.events);
+          const st = await upsertRegistryState(supabase, d.upserts);
+          written = `events ${ev}, state ${st}`;
+        }
+        const newHosts = topHosts(d.events.filter((e) => e.kind === 'new').flatMap((e) => e.hosts.map((h) => `https://${h}/`)));
+        diffStats = {
+          registry_diff: d.mode + (d.skipReason ? ` (${d.skipReason})` : ''),
+          registry_state_prev: prev.length,
+          registry_declarations: registry.declarations.size,
+          registry_diff_counts: JSON.stringify(d.counts),
+          registry_diff_new_top_hosts: JSON.stringify(newHosts),
+          registry_diff_written: written,
+          registry_diff_sec: Math.round((Date.now() - tDiff) / 1000),
+        };
+        if (dryRun) for (const e of d.events.slice(0, 5)) console.log('registry change sample', JSON.stringify(e));
+      } catch (e) {
+        console.error(`registry diff 실패(관찰 데이터는 저장 완료): ${e instanceof Error ? e.message : 'unknown'}`);
+        diffStats = { registry_diff: 'error' };
+      }
+    }
+    console.log('registry diff', JSON.stringify(diffStats));
+  }
   const totalSec = Math.round((Date.now() - t0) / 1000);
   const summary = summarize(all, runId, {
     dry_run: dryRun,
@@ -372,6 +413,7 @@ async function main(): Promise<void> {
     ...cohortInfo,
     ...stats,
     ...retryStats,
+    ...diffStats,
   });
   console.log(summary);
   if (dryRun) {

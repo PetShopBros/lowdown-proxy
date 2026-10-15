@@ -32,6 +32,10 @@ on:
         description: '선정 계산만 (probe·저장 없음, COHORT_BASE 필요)'
         type: boolean
         default: false
+      registry_diff:
+        description: 'Registry 비교 기록 (시장판 1단계)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -70,6 +74,7 @@ jobs:
           COHORT_SIZE: ${{ inputs.cohort_size }}
           COHORT_BASE: ${{ inputs.cohort_base }}
           PLAN_ONLY: ${{ inputs.plan_only && '1' || '' }}
+          REGISTRY_DIFF: ${{ inputs.registry_diff && '1' || '' }}
 
       - name: Open issue on failure
         if: failure() && github.event_name == 'schedule'
