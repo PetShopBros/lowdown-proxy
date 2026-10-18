@@ -156,7 +156,10 @@ async function main(): Promise<void> {
     const since = utcDayStart(new Date());
     try {
       const done = await countObservationsSince(supabase, since);
-      if (done >= Math.ceil(cohortSize / 2)) {
+      // 확장 코호트(COHORT_BASE)로 바뀌는 날: 그날 본 실행은 이전 크기(v1 2,000)로 끝났을 수 있다.
+      // 새 크기의 절반으로 비교하면 이미 끝난 날에 예비 실행이 확장 코호트를 하루 앞당겨 다시 돌리므로, 작은 쪽 기준으로 본다.
+      const skipThreshold = Math.ceil((cohortBase ? Math.min(cohortSize, DEFAULT_COHORT_SIZE) : cohortSize) / 2);
+      if (done >= skipThreshold) {
         console.log(`skip: ${since} 이후 관찰 ${done}행 — 오늘 본 실행이 이미 끝남`);
         return;
       }
