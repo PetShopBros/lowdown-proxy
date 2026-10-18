@@ -54,7 +54,7 @@ jobs:
     # ubuntu-latest 는 2026-10-19부터 26.04로 바뀐다. 검증 전까지 24.04 고정.
     runs-on: ubuntu-24.04
     # 5,000개 드라이런 시간 측정 전까지 여유 있게. 측정 후 실측 + 여유분으로 다시 정한다.
-    timeout-minutes: 60
+    timeout-minutes: 45
     outputs:
       scanned: ${{ steps.run.outputs.scanned }}
     steps:
@@ -74,12 +74,12 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           SCAN_LIMIT: ${{ inputs.limit }}
           SKIP_IF_DONE: ${{ github.event.schedule == '17 13 * * *' && '1' || '' }}
-          COHORT_VERSION: ${{ inputs.cohort_version }}
-          COHORT_SIZE: ${{ inputs.cohort_size }}
-          COHORT_BASE: ${{ inputs.cohort_base }}
+          COHORT_VERSION: ${{ inputs.cohort_version || '2026-10-19-v2' }}
+          COHORT_SIZE: ${{ inputs.cohort_size || '5000' }}
+          COHORT_BASE: ${{ inputs.cohort_base || '2026-10-07-v1' }}
           PLAN_ONLY: ${{ inputs.plan_only && '1' || '' }}
           REGISTRY_DIFF: ${{ (github.event_name == 'schedule' || inputs.registry_diff) && '1' || '' }}
-          COHORT_HOST_CAP: ${{ inputs.cohort_host_cap }}
+          COHORT_HOST_CAP: ${{ inputs.cohort_host_cap || '3' }}
 
       - name: Open issue on failure
         if: failure() && github.event_name == 'schedule'
