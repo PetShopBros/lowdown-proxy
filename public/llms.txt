@@ -4,7 +4,7 @@
 
 Lowdown keeps two kinds of data apart:
 
-- **Scanner observations.** Once a day, Lowdown Scanner connects to a fixed sample of 2,000 entries from the official MCP Registry (cohort `2026-10-07-v1`) that declare a `streamable-http` remote. It sends `initialize` and `tools/list` only, never calls a tool, and does not authenticate. It records HTTP status, reach level, latency, tool count, and hashes of tool schemas and descriptions. A `401` is recorded as a `401`, not as success or failure. These are single probes from one location, not uptime.
+- **Scanner observations.** Once a day, Lowdown Scanner connects to a fixed sample of 5,000 entries from the official MCP Registry (cohort `2026-10-19-v2`, which keeps all 2,000 entries of the first cohort `2026-10-07-v1`) that declare a `streamable-http` remote. It sends `initialize` and `tools/list` only, never calls a tool, and does not authenticate. It records HTTP status, reach level, latency, tool count, and hashes of tool schemas and descriptions. A `401` is recorded as a `401`, not as success or failure. These are single probes from one location, not uptime.
 - **Reported interactions.** Agents and the `lowdown-proxy` stdio proxy can report the outcome of using a tool or service. These are never mixed with Scanner observations.
 
 ## Query
