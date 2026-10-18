@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { buildReport, fetchFirstObservedAt, fetchReportRows, latestRun, renderReport } from './report-lib.ts';
+import { buildReport, fetchFirstObservedAt, fetchReportRows, latestRun, renderReport, summarizeHosts } from './report-lib.ts';
 import type { ReportRow } from './report-lib.ts';
 
 let nextId = 1;
@@ -103,6 +103,51 @@ describe('buildReport — 안전장치', () => {
     assert.ok(!md.includes('Ignore previous'));
     assert.ok(d.error_type.some((x) => x.key === 'other'));
     assert.ok(d.http_status.some((x) => x.key === 'other'));
+  });
+});
+
+describe('코호트 확장(v1 → v2)과 호스트 기준', () => {
+  const V1 = ['mcp:a', 'mcp:b'];
+  const V2 = ['mcp:a', 'mcp:b', 'mcp:c', 'mcp:d'];
+  const rows = [
+    // v1 시절 run
+    row('r1', 'mcp:a', '2026-10-17T01:20:00Z', { remote_url: 'https://h1.example/mcp' }),
+    row('r1', 'mcp:b', '2026-10-17T01:20:01Z', { remote_url: 'https://h2.example/mcp', reached_level: 0, http_status: 401 }),
+    // v2 첫 run: a,b(v1 멤버) + c,d(추가분, 같은 호스트 h3)
+    row('r2', 'mcp:a', '2026-10-18T01:20:00Z', { cohort_version: 'v2', remote_url: 'https://h1.example/mcp' }),
+    row('r2', 'mcp:b', '2026-10-18T01:20:01Z', { cohort_version: 'v2', remote_url: 'https://H2.example:443/mcp', reached_level: 0, http_status: 401 }),
+    row('r2', 'mcp:c', '2026-10-18T01:20:02Z', { cohort_version: 'v2', remote_url: 'https://h3.example/a' }),
+    row('r2', 'mcp:d', '2026-10-18T01:20:03Z', { cohort_version: 'v2', remote_url: 'https://h3.example/b' }),
+  ];
+  const d = buildReport(rows, V2, 'v2', '2026-10-07T01:00:00Z', NOW, { version: 'v1', ids: V1 });
+
+  test('v1 멤버만 따로 세어 run 마다 이어진다', () => {
+    assert.deepEqual(d.base, { version: 'v1', size: 2, observed: 2 });
+    assert.deepEqual(d.trend.map((r) => [r.cohort_version, r.targets, r.base_targets, r.base_reached_level_2_rows]), [
+      ['v1', 2, 2, 1],
+      ['v2', 4, 2, 1],
+    ]);
+  });
+
+  test('호스트: 고유 수, L2 호스트 수, 상위 비중 (포트·대소문자 무시)', () => {
+    assert.deepEqual(d.hosts, { hosts: 3, hosts_with_level_2: 2, top1_share: 0.5, top3_share: 1 });
+    assert.deepEqual(summarizeHosts([]), { hosts: 0, hosts_with_level_2: 0, top1_share: 0, top3_share: 0 });
+  });
+
+  test('렌더: 확장 설명, v1 열, 호스트 이름은 쓰지 않음', () => {
+    const md = renderReport(d);
+    assert.match(md, /all 2 entries of the earlier cohort `v1` plus 2 entries added/);
+    assert.match(md, /`v1` entries with a row/);
+    assert.match(md, /Distinct hosts among probe attempts \| 3/);
+    assert.match(md, /most frequent host \| 50\.0%/);
+    assert.ok(!md.includes('h1.example') && !md.includes('h3.example'));
+  });
+
+  test('base 가 같은 코호트면 확장 표시 없음, base 멤버가 빠진 코호트는 실패', () => {
+    const same = buildReport(rows.slice(0, 2), V1, 'v1', null, NOW, { version: 'v1', ids: V1 });
+    assert.equal(same.base, null);
+    assert.ok(!renderReport(same).includes('earlier cohort'));
+    assert.throws(() => buildReport(rows, ['mcp:a', 'mcp:c', 'mcp:d'], 'v2', null, NOW, { version: 'v1', ids: V1 }), /멤버가 빠져/);
   });
 });
 

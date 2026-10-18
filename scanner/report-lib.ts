@@ -2,7 +2,7 @@
 // 원칙: 최신 run 을 메모리에서 집계하고, 출력에는 집계값만 쓴다. 개별 서버 이름·점수·순위·판정 라벨은 쓰지 않는다.
 // 분모를 섞지 않는다: 코호트 크기 / 관찰 대상 수 / 관찰 행 수 / 호출하지 않은 행(blocked_url) / 프로브 시도 수.
 
-import { supabaseHeaders } from './lib.ts';
+import { capHost, supabaseHeaders } from './lib.ts';
 import type { SupabaseConfig } from './lib.ts';
 
 export interface ReportRow {
@@ -14,9 +14,12 @@ export interface ReportRow {
   reached_level: number;
   error_type: string | null;
   cohort_version: string | null;
+  /** 호스트 기준 집계용. 공개 문서에는 호스트 이름을 쓰지 않는다. */
+  remote_url?: string | null;
 }
 
-export const REPORT_COLUMNS = 'id,scan_run_id,target_id,observed_at,http_status,reached_level,error_type,cohort_version:metadata->>cohort_version';
+export const REPORT_COLUMNS =
+  'id,scan_run_id,target_id,observed_at,http_status,reached_level,error_type,cohort_version:metadata->>cohort_version,remote_url:metadata->>remote_url';
 /** 최신 run 이 코호트의 이 비율보다 적게 관찰했으면 부분 실행(--limit 수동 실행 등)으로 보고 리포트를 만들지 않는다. */
 export const MIN_RUN_COVERAGE = 0.5;
 export const TREND_RUNS = 7;
@@ -85,6 +88,25 @@ export interface RunSummary {
   not_called: number;
   probe_attempts: number;
   reached_level_2_rows: number;
+  /** run 의 코호트 버전(최빈값) */
+  cohort_version: string | null;
+  /** 이전 코호트(base) 멤버만 센 값. base 가 없으면 null */
+  base_targets: number | null;
+  base_reached_level_2_rows: number | null;
+}
+
+export interface HostSummary {
+  /** 프로브 시도의 고유 hostname 수 (운영자 수가 아님) */
+  hosts: number;
+  hosts_with_level_2: number;
+  /** 프로브 시도 중 가장 많은 hostname 1개 / 3개가 차지하는 비율(0~1) */
+  top1_share: number;
+  top3_share: number;
+}
+
+export interface BaseCohort {
+  version: string;
+  ids: readonly string[];
 }
 
 export interface Distribution {
@@ -98,6 +120,9 @@ export interface ReportData {
   first_observed_at: string | null;
   cohort_version: string;
   cohort_size: number;
+  /** 코호트를 넓힌 경우 이전 코호트(연속 비교용). 같은 코호트면 null */
+  base: { version: string; size: number; observed: number } | null;
+  hosts: HostSummary;
   latest: RunSummary;
   cohort_unobserved: number;
   reached_level: Record<'0' | '1' | '2', number>;
@@ -126,9 +151,17 @@ function bounds(rows: readonly ReportRow[]): { min: string; max: string } {
   return { min, max };
 }
 
-export function summarizeRun(runId: string, rows: readonly ReportRow[]): RunSummary {
+function modeVersion(rows: readonly ReportRow[]): string | null {
+  const counts = new Map<string, number>();
+  for (const r of rows) if (r.cohort_version) counts.set(r.cohort_version, (counts.get(r.cohort_version) ?? 0) + 1);
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+  return top?.[0] ?? null;
+}
+
+export function summarizeRun(runId: string, rows: readonly ReportRow[], baseIds?: ReadonlySet<string>): RunSummary {
   const b = bounds(rows);
   const notCalled = rows.filter((r) => r.error_type === 'blocked_url').length;
+  const baseRows = baseIds ? rows.filter((r) => baseIds.has(r.target_id)) : null;
   return {
     run_id: runId,
     started_at: b.min,
@@ -138,7 +171,27 @@ export function summarizeRun(runId: string, rows: readonly ReportRow[]): RunSumm
     not_called: notCalled,
     probe_attempts: rows.length - notCalled,
     reached_level_2_rows: rows.filter((r) => r.reached_level === 2).length,
+    cohort_version: modeVersion(rows),
+    base_targets: baseRows ? new Set(baseRows.map((r) => r.target_id)).size : null,
+    base_reached_level_2_rows: baseRows ? baseRows.filter((r) => r.reached_level === 2).length : null,
   };
+}
+
+/** 프로브 시도 행의 hostname 집계. 호스트 이름 자체는 내보내지 않는다. */
+export function summarizeHosts(attempts: readonly ReportRow[]): HostSummary {
+  const total = new Map<string, number>();
+  const level2 = new Set<string>();
+  let counted = 0;
+  for (const r of attempts) {
+    const h = typeof r.remote_url === 'string' ? capHost(r.remote_url) : null;
+    if (!h) continue;
+    counted++;
+    total.set(h, (total.get(h) ?? 0) + 1);
+    if (r.reached_level === 2) level2.add(h);
+  }
+  const sorted = [...total.values()].sort((a, b) => b - a);
+  const share = (k: number) => (counted ? sorted.slice(0, k).reduce((x, y) => x + y, 0) / counted : 0);
+  return { hosts: total.size, hosts_with_level_2: level2.size, top1_share: share(1), top3_share: share(3) };
 }
 
 /** 가장 최근에 관찰이 끝난 run 과 그 run 의 코호트 버전(최빈값). 행이 없으면 null. */
@@ -149,10 +202,7 @@ export function latestRun(rows: readonly ReportRow[]): { runId: string; rows: Re
     if (!best || max > best.max) best = { runId, rows: g, max };
   }
   if (!best) return null;
-  const counts = new Map<string, number>();
-  for (const r of best.rows) if (r.cohort_version) counts.set(r.cohort_version, (counts.get(r.cohort_version) ?? 0) + 1);
-  const top = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
-  return { runId: best.runId, rows: best.rows, cohortVersion: top?.[0] ?? null };
+  return { runId: best.runId, rows: best.rows, cohortVersion: modeVersion(best.rows) };
 }
 
 // 외부(원격 서버·DB)에서 온 문자열이 공개 문서에 그대로 나가지 않도록 허용 형식만 통과시킨다.
@@ -178,12 +228,17 @@ export function buildReport(
   cohortVersion: string,
   firstObservedAt: string | null,
   now: Date,
+  baseCohort?: BaseCohort,
 ): ReportData {
   const latest = latestRun(rows);
   if (!latest) throw new Error('관찰 행이 없어 리포트를 만들 수 없습니다.');
   if (cohortIds.length === 0) throw new Error(`코호트 ${cohortVersion} 가 비어 있습니다.`);
   const cohort = new Set(cohortIds);
-  const summary = summarizeRun(latest.runId, latest.rows);
+  // 코호트를 넓힌 경우에만 이전 코호트로 연속 비교. base 멤버가 현재 코호트에 다 있어야 한다(넓힌 것이지 바꾼 것이 아님).
+  const base = baseCohort && baseCohort.version !== cohortVersion && baseCohort.ids.length > 0 ? baseCohort : undefined;
+  if (base && base.ids.some((id) => !cohort.has(id))) throw new Error(`코호트 ${cohortVersion} 에 이전 코호트 ${base.version} 멤버가 빠져 있습니다.`);
+  const baseIds = base ? new Set(base.ids) : undefined;
+  const summary = summarizeRun(latest.runId, latest.rows, baseIds);
   if (summary.targets < Math.ceil(cohort.size * MIN_RUN_COVERAGE)) {
     throw new Error(`최신 run 이 코호트의 ${Math.round(MIN_RUN_COVERAGE * 100)}% 미만만 관찰했습니다 (${summary.targets}/${cohort.size}). 부분 실행으로 보고 리포트를 만들지 않습니다.`);
   }
@@ -199,7 +254,7 @@ export function buildReport(
     if (r.reached_level === 0 || r.reached_level === 1 || r.reached_level === 2) reached[String(r.reached_level) as '0' | '1' | '2']++;
   }
 
-  const runs = [...groupRuns(rows)].map(([id, g]) => summarizeRun(id, g)).sort((a, b) => a.ended_at.localeCompare(b.ended_at));
+  const runs = [...groupRuns(rows)].map(([id, g]) => summarizeRun(id, g, baseIds)).sort((a, b) => a.ended_at.localeCompare(b.ended_at));
 
   return {
     generated_at: now.toISOString(),
@@ -207,6 +262,8 @@ export function buildReport(
     first_observed_at: firstObservedAt,
     cohort_version: cohortVersion,
     cohort_size: cohort.size,
+    base: base ? { version: base.version, size: baseIds!.size, observed: summary.base_targets ?? 0 } : null,
+    hosts: summarizeHosts(attempts),
     latest: summary,
     cohort_unobserved: unobserved,
     reached_level: reached,
@@ -243,6 +300,13 @@ export function renderReport(d: ReportData): string {
   const size = n(d.cohort_size);
   const attempts = d.latest.probe_attempts;
   const period = d.first_observed_at ? `${day(d.first_observed_at)} to ${day(d.data_as_of)} (UTC)` : 'not available';
+  const pct = (v: number): string => `${(v * 100).toFixed(1)}%`;
+  const sample = d.base
+    ? `The ${size} entries are a fixed sample (cohort \`${d.cohort_version}\`): all ${n(d.base.size)} entries of the earlier cohort \`${d.base.version}\` plus ${n(d.cohort_size - d.base.size)} entries added when the sample was extended, selected from the official MCP Registry with a per-host limit (rules in the README) and unchanged since. They are Registry entries, not operators, and they do not represent the whole Registry.`
+    : `The ${size} entries are a fixed sample (cohort \`${d.cohort_version}\`) selected once from the official MCP Registry and unchanged since; they are Registry entries, not operators, and they do not represent the whole Registry.`;
+  const trendHead = ['Run date (UTC)', 'Cohort', 'Observation rows', 'Entries with a row', 'Rows with reached_level 2'];
+  if (d.base) trendHead.push(`\`${d.base.version}\` entries with a row`, `\`${d.base.version}\` rows with reached_level 2`);
+  const dash = (v: number | null): string => (v === null ? '-' : n(v));
 
   const lines = [
     `# Lowdown Scanner Report: MCP Registry reachability observations`,
@@ -251,7 +315,7 @@ export function renderReport(d: ReportData): string {
     `- **Report generated:** ${utc(d.generated_at)}`,
     `- **Observation period:** ${period}`,
     ``,
-    `Lowdown Scanner observes ${size} MCP Registry entries every day and records MCP initialize and tools/list reachability, HTTP status, latency, and tool-count changes. This report summarizes the most recent run. The ${size} entries are a fixed sample (cohort \`${d.cohort_version}\`) selected once from the official MCP Registry and unchanged since; they are Registry entries, not operators, and they do not represent the whole Registry.`,
+    `Lowdown Scanner observes ${size} MCP Registry entries every day and records MCP initialize and tools/list reachability, HTTP status, latency, and tool-count changes. This report summarizes the most recent run. ${sample}`,
     ``,
     `## Scope and limits`,
     ``,
@@ -270,6 +334,7 @@ export function renderReport(d: ReportData): string {
         [`Cohort entries (fixed sample, \`${d.cohort_version}\`)`, size],
         ['Cohort entries with at least one observation row in this run', n(d.cohort_size - d.cohort_unobserved)],
         ['Cohort entries with no observation row in this run', n(d.cohort_unobserved)],
+        ...(d.base ? [[`Entries of the earlier cohort \`${d.base.version}\` with at least one observation row (of ${n(d.base.size)})`, n(d.base.observed)]] : []),
         ['Observation rows in this run (an entry with several remotes has several rows)', n(d.latest.rows)],
         ['Rows where the Scanner did not call the URL (blocked by its safety checks)', n(d.latest.not_called)],
         ['Probe attempts (observation rows minus rows not called)', n(attempts)],
@@ -295,11 +360,30 @@ export function renderReport(d: ReportData): string {
     ``,
     table(['error_type', `Count (of ${n(attempts)})`], d.error_type.map((x) => [x.key, n(x.count)])),
     ``,
-    `## Last ${d.trend.length} runs`,
+    `## Hosts of probe attempts`,
+    ``,
+    `A host is the hostname of a remote URL. Several entries can share one host, and one operator can use several hosts, so host counts are not operator counts. Host names are not listed.`,
     ``,
     table(
-      ['Run date (UTC)', 'Observation rows', 'Entries with a row', 'Rows with reached_level 2'],
-      d.trend.map((r) => [day(r.started_at), n(r.rows), n(r.targets), n(r.reached_level_2_rows)]),
+      ['Measure', 'Value'],
+      [
+        ['Distinct hosts among probe attempts', n(d.hosts.hosts)],
+        ['Distinct hosts with at least one reached_level 2 row', n(d.hosts.hosts_with_level_2)],
+        ['Share of probe attempts on the most frequent host', pct(d.hosts.top1_share)],
+        ['Share of probe attempts on the three most frequent hosts', pct(d.hosts.top3_share)],
+      ],
+    ),
+    ``,
+    `## Last ${d.trend.length} runs`,
+    ``,
+    ...(d.base ? [`Totals change when the cohort changes. To compare across the change, use the \`${d.base.version}\` columns, which count only entries of the earlier cohort.`, ``] : []),
+    table(
+      trendHead,
+      d.trend.map((r) => {
+        const cells = [day(r.started_at), r.cohort_version ? `\`${r.cohort_version}\`` : '-', n(r.rows), n(r.targets), n(r.reached_level_2_rows)];
+        if (d.base) cells.push(dash(r.base_targets), dash(r.base_reached_level_2_rows));
+        return cells;
+      }),
     ),
     ``,
     `## Data`,

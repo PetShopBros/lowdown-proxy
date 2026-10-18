@@ -5,7 +5,7 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fetchCohort } from './lib.ts';
+import { DEFAULT_COHORT_VERSION, fetchCohort } from './lib.ts';
 import { buildReport, fetchFirstObservedAt, fetchReportRows, latestRun, renderReport, WINDOW_DAYS } from './report-lib.ts';
 
 function fail(message: string): never {
@@ -30,12 +30,15 @@ async function main(): Promise<void> {
   if (!latest?.cohortVersion) fail('최신 run 에서 metadata.cohort_version 을 찾을 수 없습니다.');
   const cohortIds = await fetchCohort(cfg, latest.cohortVersion);
   const first = await fetchFirstObservedAt(cfg);
+  // 코호트를 넓힌 뒤에는 처음 코호트(v1) 멤버만 따로 세어 추이를 이어 간다
+  const baseVersion = process.env.REPORT_BASE_COHORT?.trim() || DEFAULT_COHORT_VERSION;
+  const base = baseVersion !== latest.cohortVersion ? { version: baseVersion, ids: await fetchCohort(cfg, baseVersion) } : undefined;
 
-  const data = buildReport(rows, cohortIds, latest.cohortVersion, first, now);
+  const data = buildReport(rows, cohortIds, latest.cohortVersion, first, now, base);
   mkdirSync(outDir, { recursive: true });
   writeFileSync(join(outDir, 'REPORT.md'), renderReport(data));
   console.log(
-    `REPORT.md written: data_as_of=${data.data_as_of} cohort=${data.cohort_version}(${data.cohort_size}) rows=${data.latest.rows} probe_attempts=${data.latest.probe_attempts} unobserved=${data.cohort_unobserved}`,
+    `REPORT.md written: data_as_of=${data.data_as_of} cohort=${data.cohort_version}(${data.cohort_size}) base=${data.base ? `${data.base.version}(${data.base.observed}/${data.base.size})` : 'none'} hosts=${data.hosts.hosts} rows=${data.latest.rows} probe_attempts=${data.latest.probe_attempts} unobserved=${data.cohort_unobserved}`,
   );
 }
 
