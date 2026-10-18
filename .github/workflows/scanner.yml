@@ -74,7 +74,7 @@ jobs:
           COHORT_SIZE: ${{ inputs.cohort_size }}
           COHORT_BASE: ${{ inputs.cohort_base }}
           PLAN_ONLY: ${{ inputs.plan_only && '1' || '' }}
-          REGISTRY_DIFF: ${{ inputs.registry_diff && '1' || '' }}
+          REGISTRY_DIFF: ${{ (github.event_name == 'schedule' || inputs.registry_diff) && '1' || '' }}
 
       - name: Open issue on failure
         if: failure() && github.event_name == 'schedule'
