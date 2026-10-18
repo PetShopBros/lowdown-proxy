@@ -12,7 +12,7 @@ import type { LookupFunction } from 'node:net';
 // 관찰 결과의 의미가 바뀌는 수정(probe 판정·저장 필드·코호트 규칙)마다 올린다. CHANGELOG 의 Scanner 항목과 맞춘다.
 //   0.1.0 — 2026-10-06 최초 / 0.2.0 — 2026-10-16 scanner_commit·registry_fetched_at 기록 시작
 //   (0.1.0 기간에도 재시도·대체·사유 분리가 추가됐으므로 그 기간 행의 정확한 코드는 알 수 없다)
-export const SCANNER_VERSION = '0.2.0';
+export const SCANNER_VERSION = '0.3.0';
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 export const USER_AGENT = `lowdown-scanner/${SCANNER_VERSION}`;
 export const DEFAULT_REGISTRY_URL = 'https://registry.modelcontextprotocol.io';
@@ -585,6 +585,48 @@ export interface RegistryGapInfo {
   hasProbeableRemote: boolean;
 }
 
+/**
+ * 시장판 1단계(Registry 비교 기록)용: 이름별 선언 요약. probe 여부와 무관하게 모든 항목.
+ * 설명문 원문은 저장하지 않고 해시만(등록자 문자열을 옮기지 않음).
+ */
+export interface RegistryDeclaration {
+  version: string;
+  status: string | null;
+  /** 원격 선언 "type url" 을 정렬해 줄바꿈으로 이은 것. 없으면 '' */
+  remotesKey: string;
+  /** 패키지 선언 "registryType identifier version transport" 정렬·줄바꿈. 없으면 '' */
+  packagesKey: string;
+  /** 설명문 SHA-256 앞 16자. 없으면 '' */
+  descHash: string;
+  /** 원격 주소들의 capHost (정렬, 중복 제거) */
+  hosts: string[];
+}
+
+function declarationOf(s: Record<string, unknown>, status: string | undefined): RegistryDeclaration {
+  const remotes = (Array.isArray(s.remotes) ? (s.remotes as unknown[]) : [])
+    .map((r) => r as { type?: unknown; url?: unknown } | null)
+    .filter((r): r is { type: string; url: string } => !!r && typeof r.type === 'string' && typeof r.url === 'string');
+  const packages = (Array.isArray(s.packages) ? (s.packages as unknown[]) : [])
+    .map((p) => p as Record<string, unknown> | null)
+    .filter((p): p is Record<string, unknown> => !!p && typeof p === 'object')
+    .map((p) => {
+      const t = p.transport as { type?: unknown } | undefined;
+      return [p.registryType ?? p.registry_type ?? '', p.identifier ?? p.name ?? '', p.version ?? '', t?.type ?? '']
+        .map((x) => (typeof x === 'string' ? x : ''))
+        .join(' ');
+    });
+  const desc = typeof s.description === 'string' ? s.description : '';
+  const hosts = [...new Set(remotes.map((r) => capHost(r.url)).filter((h): h is string => h !== null))].sort();
+  return {
+    version: String(s.version ?? ''),
+    status: status ?? null,
+    remotesKey: [...new Set(remotes.map((r) => `${r.type} ${r.url}`))].sort().join('\n'),
+    packagesKey: [...new Set(packages)].sort().join('\n'),
+    descHash: desc ? sha256(desc).slice(0, 16) : '',
+    hosts,
+  };
+}
+
 export interface RegistryStats {
   pages: number;
   entries: number;
@@ -615,7 +657,12 @@ export interface RegistryDeps {
 
 export async function fetchRegistryTargets(
   deps: RegistryDeps = {},
-): Promise<{ targets: RegistryTarget[]; stats: RegistryStats; registryInfo: Map<string, RegistryGapInfo> }> {
+): Promise<{
+  targets: RegistryTarget[];
+  stats: RegistryStats;
+  registryInfo: Map<string, RegistryGapInfo>;
+  declarations: Map<string, RegistryDeclaration>;
+}> {
   const base = (deps.baseUrl ?? DEFAULT_REGISTRY_URL).replace(/\/+$/, '');
   const f = deps.fetchImpl ?? fetch;
   const sleep = deps.sleep ?? defaultSleep;
@@ -636,6 +683,7 @@ export async function fetchRegistryTargets(
   };
   const byName = new Map<string, RegistryTarget>();
   const registryInfo = new Map<string, RegistryGapInfo>();
+  const declarations = new Map<string, RegistryDeclaration>();
   const seenKeys = new Set<string>();
   let cursor: string | undefined;
 
@@ -690,6 +738,8 @@ export async function fetchRegistryTargets(
       const metaStatus = typeof meta?.status === 'string' ? meta.status : undefined;
       const metaIsLatest = typeof meta?.isLatest === 'boolean' ? meta.isLatest : undefined;
       const version = String(s.version ?? '');
+      // 같은 이름이 여러 번 오면(버전 여러 개) isLatest 인 쪽을 우선, 없으면 처음 것
+      if (!declarations.has(s.name) || metaIsLatest === true) declarations.set(s.name, declarationOf(s, metaStatus));
 
       if (!(metaStatus === 'active' && metaIsLatest === true)) {
         registryInfo.set(s.name, { version, status: metaStatus, isLatest: metaIsLatest, hasAnyRemotes: false, hasProbeableRemote: false });
@@ -733,7 +783,7 @@ export async function fetchRegistryTargets(
     cursor = next;
   }
 
-  return { targets: [...byName.values()], stats, registryInfo };
+  return { targets: [...byName.values()], stats, registryInfo, declarations };
 }
 
 // ─────────────────────────────────────────────
@@ -834,6 +884,115 @@ export function selectCohort(targetIds: string[], size: number): string[] {
     .sort((a, b) => (a.h < b.h ? -1 : a.h > b.h ? 1 : a.id < b.id ? -1 : 1))
     .slice(0, size)
     .map((x) => x.id);
+}
+
+/**
+ * 기존 코호트(base)를 전부 포함한 확장 코호트. base 멤버는 지금 Registry 에 없어도 빠지지 않는다(시계열 유지).
+ * 추가분은 base 밖 후보에서 같은 SHA-256 순서로 size - base 개.
+ */
+export function extendCohort(baseIds: readonly string[], candidateIds: readonly string[], size: number): string[] {
+  const base = [...new Set(baseIds)];
+  if (base.length === 0) throw new Error('extendCohort: base 코호트가 비어 있습니다');
+  if (base.length > size) throw new Error(`extendCohort: base(${base.length}) 가 size(${size}) 보다 큽니다`);
+  const baseSet = new Set(base);
+  const extra = selectCohort(candidateIds.filter((id) => !baseSet.has(id)), size - base.length);
+  return [...base, ...extra];
+}
+
+/**
+ * 호스트 상한용 정규화: URL 의 hostname(소문자, 포트 제외, 끝 점 제거). 파싱 불가면 null.
+ * 등록 도메인으로 묶지 않는다(a.workers.dev 와 b.workers.dev 는 별개). 호스트 ≠ 운영자.
+ */
+export function capHost(rawUrl: string): string | null {
+  try {
+    const h = new URL(rawUrl).hostname.toLowerCase().replace(/\.+$/, '');
+    return h || null;
+  } catch {
+    return null;
+  }
+}
+
+export interface CappedCohort {
+  ids: string[];
+  /** 추가분으로 뽑힌 수 */
+  added: number;
+  /** size 를 채우지 못한 수 (상한을 넘겨 채우지 않는다) */
+  shortfall: number;
+  /** 상한 때문에 건너뛴 후보 수 */
+  skippedByCap: number;
+}
+
+/**
+ * 호스트 상한을 둔 확장 코호트. base 는 전부 유지하고, base 멤버의 호스트를 할당량에 먼저 센다.
+ * 추가분은 base 밖 후보를 SHA-256 순서로 보며, 그 후보의 모든 원격 호스트가 cap 미만일 때만 넣는다
+ * (원격이 여러 개면 각 호스트에 1씩). cap <= 0 이면 상한 없음(= extendCohort 와 같은 결과).
+ * hostsOf 에 없는 base 멤버(지금 Registry 에 없음)는 할당량에 세지 않는다.
+ */
+export function extendCohortCapped(
+  baseIds: readonly string[],
+  candidateIds: readonly string[],
+  size: number,
+  cap: number,
+  hostsOf: ReadonlyMap<string, readonly string[]>,
+): CappedCohort {
+  const base = [...new Set(baseIds)];
+  if (base.length === 0) throw new Error('extendCohortCapped: base 코호트가 비어 있습니다');
+  if (base.length > size) throw new Error(`extendCohortCapped: base(${base.length}) 가 size(${size}) 보다 큽니다`);
+  const baseSet = new Set(base);
+  const used = new Map<string, number>();
+  const take = (hosts: readonly string[]) => {
+    for (const h of new Set(hosts)) used.set(h, (used.get(h) ?? 0) + 1);
+  };
+  for (const id of base) take(hostsOf.get(id) ?? []);
+
+  const need = size - base.length;
+  const ordered = selectCohort(candidateIds.filter((id) => !baseSet.has(id)), Number.MAX_SAFE_INTEGER);
+  const extra: string[] = [];
+  let skippedByCap = 0;
+  for (const id of ordered) {
+    if (extra.length >= need) break;
+    const hosts = [...new Set(hostsOf.get(id) ?? [])];
+    if (cap > 0 && hosts.some((h) => (used.get(h) ?? 0) >= cap)) {
+      skippedByCap++;
+      continue;
+    }
+    extra.push(id);
+    take(hosts);
+  }
+  return { ids: [...base, ...extra], added: extra.length, shortfall: need - extra.length, skippedByCap };
+}
+
+/** 코호트의 호스트 집중도. 대상 하나가 여러 호스트에 원격을 두면 각 호스트에 1씩 센다. */
+export function hostConcentration(
+  ids: readonly string[],
+  hostsOf: ReadonlyMap<string, readonly string[]>,
+  topN = 5,
+): { uniqueHosts: number; withHosts: number; top: Array<[string, number]>; top1Share: number; top3Share: number } {
+  const m = new Map<string, number>();
+  let withHosts = 0;
+  for (const id of ids) {
+    const hosts = [...new Set(hostsOf.get(id) ?? [])];
+    if (hosts.length > 0) withHosts++;
+    for (const h of hosts) m.set(h, (m.get(h) ?? 0) + 1);
+  }
+  const sorted = [...m.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  const share = (k: number) => (withHosts === 0 ? 0 : sorted.slice(0, k).reduce((s, [, n]) => s + n, 0) / withHosts);
+  return { uniqueHosts: m.size, withHosts, top: sorted.slice(0, topN), top1Share: share(1), top3Share: share(3) };
+}
+
+/** 작업 목록의 호스트별 원격 수 상위 n 개 (쏠림 확인용). 파싱 불가 URL 은 'invalid' */
+export function topHosts(urls: readonly string[], n = 5): Array<[string, number]> {
+  const m = new Map<string, number>();
+  for (const u of urls) {
+    let h = 'invalid';
+    try {
+      h = new URL(u).hostname;
+    } catch {
+      // 그대로 invalid
+    }
+    m.set(h, (m.get(h) ?? 0) + 1);
+  }
+  return [...m.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, n);
 }
 
 export interface CohortDeps {
@@ -1164,13 +1323,14 @@ export interface RoundRobinResult<T, R> {
  * 호스트당 동시 1건, 호스트 간 최대 concurrency 건. 호스트를 번갈아 골라 한 호스트가 시간을 독차지하지 않게 한다.
  * deadline(ms, now() 기준) 이후에는 새 항목을 시작하지 않는다(이미 시작한 항목은 끝까지 기다린다).
  * fn 은 throw 하지 않아야 한다(호출 측에서 감쌀 것).
+ * onResult 는 항목마다 결과 직후 호출된다(중간 저장용). throw 하면 전체가 reject 된다.
  */
 export async function runPerHostRoundRobin<T, R>(
   items: readonly T[],
   keyOf: (item: T) => string,
   concurrency: number,
   fn: (item: T) => Promise<R>,
-  opts: { deadline?: number; now?: () => number } = {},
+  opts: { deadline?: number; now?: () => number; onResult?: (item: T, result: R) => void | Promise<void> } = {},
 ): Promise<RoundRobinResult<T, R>> {
   const now = opts.now ?? Date.now;
   const queues = new Map<string, T[]>();
@@ -1217,12 +1377,16 @@ export async function runPerHostRoundRobin<T, R>(
         continue;
       }
       busy.add(next.host);
+      let result: R;
       try {
-        results.push({ item: next.item, result: await fn(next.item) });
+        result = await fn(next.item);
       } finally {
         busy.delete(next.host);
         wakeAll();
       }
+      results.push({ item: next.item, result });
+      // 호스트를 놓은 뒤 호출 → 저장이 느려도 같은 호스트의 다음 항목은 다른 worker 가 이어받는다
+      if (opts.onResult) await opts.onResult(next.item, result);
     }
   };
 
