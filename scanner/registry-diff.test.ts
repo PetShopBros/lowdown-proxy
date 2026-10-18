@@ -166,3 +166,59 @@ describe('registry diff DB 입출력', () => {
     await assert.rejects(upsertRegistryState(cfg, [state('a')], { fetchImpl: (async () => new Response('bad', { status: 400 })) as typeof fetch }));
   });
 });
+
+describe('registry-backfill --count (전체 버전 집계)', async () => {
+  const { fetchAllVersions, parseEntry, summarize } = await import('./registry-backfill.ts');
+  const mk = (name: string, version: string, publishedAt: string, extra: Record<string, unknown> = {}, meta: Record<string, unknown> = {}) => ({
+    server: { name, version, ...extra },
+    _meta: { 'io.modelcontextprotocol.registry/official': { status: 'active', isLatest: false, publishedAt, updatedAt: publishedAt, statusChangedAt: publishedAt, ...meta } },
+  });
+  test('parseEntry: 공식 메타 시각·상태, 원격 호스트, 패키지 수', () => {
+    const e = parseEntry(mk('x/a', '1.0.0', '2026-04-13T17:32:20Z', { remotes: [{ type: 'streamable-http', url: 'https://API.a.com/mcp' }], packages: [{}] }, { isLatest: true }));
+    assert.equal(e?.publishedAt, '2026-04-13T17:32:20Z');
+    assert.equal(e?.isLatest, true);
+    assert.deepEqual(e?.hosts, ['api.a.com']);
+    assert.equal(e?.packages, 1);
+    assert.equal(parseEntry({ server: {} }), null);
+  });
+  test('summarize: 서버별 첫 게시 월 = 신규, 버전 분포, 구성, 중복 제거', () => {
+    const entries = [
+      mk('x/a', '1.0.0', '2025-09-10T00:00:00Z', { remotes: [{ type: 'sse', url: 'https://h.com/s' }] }),
+      mk('x/a', '1.1.0', '2025-10-02T00:00:00Z', { remotes: [{ type: 'sse', url: 'https://h.com/s' }] }, { isLatest: true }),
+      mk('x/a', '1.1.0', '2025-10-02T00:00:00Z'), // 중복
+      mk('x/b', '0.1.0', '2025-10-05T00:00:00Z', { packages: [{}] }, { isLatest: true, status: 'deleted' }),
+      mk('x/c', '1', '2025-11-01T00:00:00Z', {}, { isLatest: true }),
+    ].map((x) => parseEntry(x)!);
+    const s = summarize(entries, 1, 100);
+    assert.equal(s.versions, 4);
+    assert.equal(s.names, 3);
+    assert.equal(s.duplicate_name_version, 1);
+    assert.deepEqual(s.new_servers_by_month, { '2025-09': 1, '2025-10': 1, '2025-11': 1 });
+    assert.deepEqual(s.versions_by_month, { '2025-09': 1, '2025-10': 2, '2025-11': 1 });
+    assert.equal(s.versions_with_remotes, 2);
+    assert.equal(s.versions_packages_only, 1);
+    assert.equal(s.versions_neither, 1);
+    assert.deepEqual(s.latest_status, { active: 2, deleted: 1 });
+    assert.equal(s.versions_per_name.max, 2);
+    assert.deepEqual(s.top_hosts_new_servers, [['h.com', 1]]);
+    assert.equal(s.published_min, '2025-09-10T00:00:00Z');
+  });
+  test('fetchAllVersions: version 파라미터 없이 커서 끝까지, 커서 정체는 실패', async () => {
+    const urls: string[] = [];
+    const pages = [
+      { servers: [mk('x/a', '1', '2025-09-10T00:00:00Z')], metadata: { nextCursor: 'x/a:1' } },
+      { servers: [mk('x/b', '1', '2025-09-11T00:00:00Z')], metadata: {} },
+    ];
+    const fetchImpl = (async (u: string | URL) => {
+      urls.push(String(u));
+      return new Response(JSON.stringify(pages.shift()), { status: 200 });
+    }) as typeof fetch;
+    const r = await fetchAllVersions({ baseUrl: 'https://reg.example', fetchImpl, sleep: async () => {} });
+    assert.equal(r.pages, 2);
+    assert.equal(r.entries.length, 2);
+    assert.ok(!urls[0]?.includes('version='));
+    assert.ok(urls[1]?.includes('cursor=x%2Fa%3A1'));
+    const stuck = (async () => new Response(JSON.stringify({ servers: [], metadata: { nextCursor: 'same' } }), { status: 200 })) as typeof fetch;
+    await assert.rejects(fetchAllVersions({ baseUrl: 'https://reg.example', fetchImpl: stuck, sleep: async () => {} }));
+  });
+});

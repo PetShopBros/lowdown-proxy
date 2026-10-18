@@ -7,3 +7,5 @@ dist/
 .env*
 
 mcp-publisher*
+
+registry-count.*
