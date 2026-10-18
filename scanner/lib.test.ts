@@ -799,6 +799,41 @@ describe('직후 재시도', () => {
     assert.deepEqual(skipped.sort(), ['a2', 'a3']);
   });
 
+  test('onResult: 항목마다 호출, 호스트를 놓은 뒤 호출', async () => {
+    const seen: string[] = [];
+    let running = 0;
+    const { results } = await runPerHostRoundRobin(
+      ['a1', 'a2', 'b1'],
+      (s) => s[0] as string,
+      2,
+      async (s) => {
+        running++;
+        await new Promise((r) => setTimeout(r, 2));
+        running--;
+        return s.toUpperCase();
+      },
+      {
+        onResult: async (item, result) => {
+          seen.push(`${item}:${result}`);
+          await new Promise((r) => setTimeout(r, 5)); // 저장이 느려도 전부 처리
+        },
+      },
+    );
+    assert.equal(results.length, 3);
+    assert.deepEqual(seen.sort(), ['a1:A1', 'a2:A2', 'b1:B1']);
+  });
+
+  test('onResult 가 throw 하면 reject', async () => {
+    await assert.rejects(
+      runPerHostRoundRobin(['a1', 'b1'], (s) => s[0] as string, 1, async (s) => s, {
+        onResult: () => {
+          throw new Error('insert failed');
+        },
+      }),
+      /insert failed/,
+    );
+  });
+
   test('빈 목록', async () => {
     const r = await runPerHostRoundRobin([], () => 'x', 4, async () => 1);
     assert.deepEqual(r, { results: [], skipped: [] });

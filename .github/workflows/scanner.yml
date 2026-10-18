@@ -36,6 +36,10 @@ on:
         description: 'Registry 비교 기록 (시장판 1단계)'
         type: boolean
         default: false
+      cohort_host_cap:
+        description: '확장 코호트 호스트당 상한 (비우면 상한 없음, COHORT_BASE 필요)'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -75,6 +79,7 @@ jobs:
           COHORT_BASE: ${{ inputs.cohort_base }}
           PLAN_ONLY: ${{ inputs.plan_only && '1' || '' }}
           REGISTRY_DIFF: ${{ (github.event_name == 'schedule' || inputs.registry_diff) && '1' || '' }}
+          COHORT_HOST_CAP: ${{ inputs.cohort_host_cap }}
 
       - name: Open issue on failure
         if: failure() && github.event_name == 'schedule'

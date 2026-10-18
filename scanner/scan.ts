@@ -304,50 +304,76 @@ async function main(): Promise<void> {
   const cohortVersionsOf = (targetId: string): string[] => (baseIds.has(targetId) ? [cohortBase, cohortVersion] : [cohortVersion]);
   const tProbe = Date.now();
 
-  // 3) 청크 단위 probe → 즉시 저장 (중간 실패해도 앞선 데이터 보존)
+  // 3) 호스트당 동시 1건, 호스트 간 최대 concurrency 건(호스트를 번갈아 선택) → 80행마다 즉시 저장 (중간 실패해도 앞선 데이터 보존)
+  //    한 호스트에 대상이 몰려도 그 호스트로는 한 번에 1건만 보낸다. 상대 서버 부하·속도 제한 때문에 결과가 흔들리는 것을 줄인다.
   const CHUNK = 80;
   const all: ObservationRow[] = [];
+  let pending: ObservationRow[] = [];
   let inserted = 0;
-  for (let i = 0; i < jobs.length; i += CHUNK) {
-    const chunk = jobs.slice(i, i + CHUNK);
-    const rows = await runPool(chunk, concurrency, async (job): Promise<ObservationRow> => {
-      const observedAt = new Date().toISOString();
-      try {
-        const p = await probeRemote(job.remote, { registryVersion: job.version, index: job.index });
-        return {
-          scan_run_id: runId,
-          node_id: nodeId,
-          target_id: `mcp:${job.name}`,
-          target_type: 'mcp_server',
-          observed_at: observedAt,
-          source: 'scanner',
-          ...p,
-          metadata: { ...p.metadata, ...runMeta, ...(cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {}) },
-        };
-      } catch (e) {
-        console.error(`unexpected probe error for ${job.name}: ${e instanceof Error ? e.message : 'unknown'}`);
-        return {
-          scan_run_id: runId,
-          node_id: nodeId,
-          target_id: `mcp:${job.name}`,
-          target_type: 'mcp_server',
-          observed_at: observedAt,
-          source: 'scanner',
-          transport: job.remote.type,
-          http_status: null,
-          reached_level: 0,
-          latency_ms: null,
-          error_type: 'network_error',
-          metadata: { remote_url: job.remote.url, remote_index: job.index, registry_version: job.version, scanner_version: SCANNER_VERSION, internal_error: true, ...runMeta, ...(cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {}) },
-        };
-      }
-    });
-    all.push(...rows);
+  const flush = async (): Promise<void> => {
+    if (pending.length === 0) return;
+    const batch = pending;
+    pending = [];
     if (supabase) {
-      inserted += await insertObservations(rows, supabase);
+      inserted += await insertObservations(batch, supabase);
       console.log(`inserted ${inserted}/${jobs.length}`);
     }
-  }
+  };
+  const hostBusyMs = new Map<string, number>();
+  const probeOne = async (job: CohortJob): Promise<ObservationRow> => {
+    const observedAt = new Date().toISOString();
+    try {
+      const p = await probeRemote(job.remote, { registryVersion: job.version, index: job.index });
+      return {
+        scan_run_id: runId,
+        node_id: nodeId,
+        target_id: `mcp:${job.name}`,
+        target_type: 'mcp_server',
+        observed_at: observedAt,
+        source: 'scanner',
+        ...p,
+        metadata: { ...p.metadata, ...runMeta, ...(cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {}) },
+      };
+    } catch (e) {
+      console.error(`unexpected probe error for ${job.name}: ${e instanceof Error ? e.message : 'unknown'}`);
+      return {
+        scan_run_id: runId,
+        node_id: nodeId,
+        target_id: `mcp:${job.name}`,
+        target_type: 'mcp_server',
+        observed_at: observedAt,
+        source: 'scanner',
+        transport: job.remote.type,
+        http_status: null,
+        reached_level: 0,
+        latency_ms: null,
+        error_type: 'network_error',
+        metadata: { remote_url: job.remote.url, remote_index: job.index, registry_version: job.version, scanner_version: SCANNER_VERSION, internal_error: true, ...runMeta, ...(cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {}) },
+      };
+    }
+  };
+  await runPerHostRoundRobin(
+    jobs,
+    (job) => hostOf(job.remote.url),
+    concurrency,
+    async (job) => {
+      const t = Date.now();
+      const row = await probeOne(job);
+      const h = hostOf(job.remote.url);
+      hostBusyMs.set(h, (hostBusyMs.get(h) ?? 0) + (Date.now() - t));
+      return row;
+    },
+    {
+      onResult: async (_job, row) => {
+        all.push(row);
+        pending.push(row);
+        if (pending.length >= CHUNK) await flush();
+      },
+    },
+  );
+  await flush();
+  // 가장 오래 붙잡힌 호스트 = probe 시간의 하한. timeout 을 정할 때 본다.
+  const slowestHosts = [...hostBusyMs.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([h, ms]) => [h, Math.round(ms / 1000)]);
 
   const probeSec = Math.round((Date.now() - tProbe) / 1000);
 
@@ -406,6 +432,8 @@ async function main(): Promise<void> {
     inserted,
     elapsed_sec: `total ${totalSec} (registry ${registrySec}, probe ${probeSec}, retry ${retrySec})`,
     top_hosts: JSON.stringify(hostTop),
+    probe_per_host_concurrency: 1,
+    probe_slowest_hosts_sec: JSON.stringify(slowestHosts),
     est_bytes: `${all.length} rows × ~976 B ≈ ${((all.length * 976) / 1e6).toFixed(2)} MB`,
     scanner_version: SCANNER_VERSION,
     scanner_commit: commit ?? 'none',
