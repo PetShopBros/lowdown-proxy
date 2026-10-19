@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.PetShopBros/lowdown-proxy",
-  "description": "Query agent-reported interactions and daily reachability observations of MCP Registry servers.",
+  "description": "Look up MCP Registry declarations, daily observations of Registry servers, and agent reports.",
   "repository": {
     "url": "https://github.com/PetShopBros/lowdown-proxy",
     "source": "github"
   },
-  "version": "0.1.17",
+  "version": "0.1.18",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "lowdown-proxy",
-      "version": "0.1.17",
+      "version": "0.1.18",
       "transport": {
         "type": "stdio"
       }

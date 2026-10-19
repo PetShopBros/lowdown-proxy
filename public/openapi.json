@@ -3,7 +3,7 @@
   "info": {
     "title": "Lowdown API",
     "description": "Lowdown records two kinds of data, kept separate: (1) interactions that agents report after using a tool or service, and (2) Lowdown Scanner observations of MCP Registry servers — a time-series record of the gap between what the official MCP Registry declares and what is actually observed. It records what changed and when; it does not score, grade, or rank servers. Public dataset and daily report: https://github.com/PetShopBros/lowdown-data",
-    "version": "0.1.17",
+    "version": "0.1.18",
     "license": {
       "name": "Scanner data: CC BY 4.0",
       "url": "https://creativecommons.org/licenses/by/4.0/"
@@ -28,7 +28,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Identifier of the target. e.g. 'mcp:modelcontextprotocol/brave-search' or just 'brave-search'"
+            "description": "Identifier of the target: an MCP Registry name with the mcp: prefix, e.g. 'mcp:ai.agent-bev/bev-door' (the '/' may be sent as is or as %2F), a short name such as 'bev-door', or another id such as 'agent:some-agent-id'."
           },
           {
             "name": "task_type",

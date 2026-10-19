@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.18] - 2026-10-20
+
+### Changed
+- `GET /api/reputation/:target` returns what Lowdown has recorded in this order: `registry`, `scanner`, then reported interactions, with `resolved_target` and a factual `message` first. Existing fields keep their names and meaning.
+- `get_lowdown` (MCP) description lists the new blocks and says when the lookup helps.
+- Registry names can be written with a raw `/` (`/api/reputation/mcp:ns/name`); before, only `%2F` worked.
+- README examples use a real observed server; the record example uses a placeholder target.
+
+### Added
+- `registry` block: what the official MCP Registry declares for the target (version, status, remote hosts, packages) as recorded by Lowdown since 2026-10-19, with changes in the last 30 days. It answers for any Registry entry, including those outside the Scanner sample. `registry_candidates` when a short name matches several names.
+- `scanner` block: `in_sample`, `cohorts`, `first_observed_at`, `daily_30d` (one entry per day), `missing_days` (with the recorded reason), `tools` (tool names from the latest successful `tools/list`, from Scanner 0.4.0), `declared_vs_observed`, and `method`.
+- Scanner 0.4.0 records observed tool names and capability keys, and the first time Lowdown observed each value.
+- Daily public archive in `lowdown-data`: one gzip-compressed CSV per UTC day, monthly Parquet, Registry change files and monthly snapshots, and `MANIFEST.csv` with row counts and SHA-256.
+
 ## [0.1.17] - 2026-10-15
 
 ### Changed
