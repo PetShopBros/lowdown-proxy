@@ -15,8 +15,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
-  const target = req.query.target as string;
-  if (!target) return res.status(400).json({ error: "target required" });
+  // Registry 이름의 '/' 를 그대로 쓴 주소(/api/reputation/mcp:ns/name)는 vercel.json rewrite 가 _slash?t=ns/name 으로 넘긴다.
+  const slashT = req.query.t;
+  const target = (req.query.target === "_slash" && typeof slashT === "string" && slashT.length > 0 ? slashT : req.query.target) as string;
+  if (!target || target === "_slash") return res.status(400).json({ error: "target required" });
   const taskType = (req.query.task_type as string) ?? null;
   // 조회 유입 측정용 태그 (예: ?ref=report). 안전한 문자만 허용.
   const refRaw = req.query.ref;

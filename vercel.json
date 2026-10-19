@@ -1,6 +1,16 @@
 {
   "rewrites": [
-    { "source": "/openapi.json", "destination": "/api/discovery?file=openapi.json" },
-    { "source": "/llms.txt", "destination": "/api/discovery?file=llms.txt" }
+    {
+      "source": "/openapi.json",
+      "destination": "/api/discovery?file=openapi.json"
+    },
+    {
+      "source": "/llms.txt",
+      "destination": "/api/discovery?file=llms.txt"
+    },
+    {
+      "source": "/api/reputation/:ns/:name",
+      "destination": "/api/reputation/_slash?t=:ns/:name"
+    }
   ]
 }

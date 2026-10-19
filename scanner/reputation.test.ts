@@ -401,6 +401,16 @@ describe('증거 블록 — Registry 선언 + Scanner 날짜별 기록', () => {
     assert.equal(lookupsInserted.length, 1);
   });
 
+  test('슬래시를 그대로 쓴 주소(rewrite → _slash?t=)도 같은 대상으로 조회', async () => {
+    const r = await call('_slash', { t: 'mcp:io.github.acme/solo' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.target, 'mcp:io.github.acme/solo');
+    assert.equal(r.body.resolved_target, 'mcp:io.github.acme/solo');
+    assert.equal(lookupsInserted[0]!.target, 'mcp:io.github.acme/solo');
+    const empty = await call('_slash');
+    assert.equal(empty.status, 400);
+  });
+
   test('task_type 요청에는 증거 블록을 붙이지 않는다', async () => {
     const r = await call('mcp:io.github.acme/solo', { task_type: 'web_search' });
     assert.equal(r.body.registry, undefined);

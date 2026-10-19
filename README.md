@@ -136,79 +136,70 @@ How a response is classified (MCP spec, *Tools → Error Handling*):
 No auth required.
 
 ```bash
-# Get reputation of a tool
-curl https://lowdown-proxy.vercel.app/api/reputation/brave-search
+# What Lowdown has recorded about an MCP Registry server
+curl https://lowdown-proxy.vercel.app/api/reputation/mcp:ai.agent-bev/bev-door
 
-# With node identity — returns richer data
-curl https://lowdown-proxy.vercel.app/api/reputation/brave-search \
+# A short name works when it matches one server; otherwise candidate names are returned
+curl https://lowdown-proxy.vercel.app/api/reputation/bev-door
+
+# With node identity: adds task_breakdown and recent_trends for reported interactions
+curl https://lowdown-proxy.vercel.app/api/reputation/mcp:ai.agent-bev/bev-door \
   -H "x-lowdown-node-id: ld_your_node_id"
 
 # Check your node's contribution
 curl https://lowdown-proxy.vercel.app/api/node/ld_your_node_id
 
-# Record an interaction
+# Record an interaction (replace the example values with your own)
 curl -X POST https://lowdown-proxy.vercel.app/api/interactions \
   -H "Content-Type: application/json" \
-  -d '{"actor":"agent:my-bot","target":"mcp:modelcontextprotocol/brave-search","target_type":"tool","task_type":"web_search","outcome":"success"}'
+  -d '{"actor":"agent:my-bot","target":"mcp:io.github.user/server","target_type":"tool","task_type":"web_search","outcome":"success"}'
 ```
 
-Basic response (no node):
+Registry names contain `/`; it can be written as is or encoded as `%2F`.
+
+Response for that server on 2026-10-20 (trimmed: the full response has 14 daily entries, the observed tool names, and the observation method):
 
 ```json
 {
-  "target": "brave-search",
-  "interactions": 30,
-  "rated_interactions": 30,
-  "success_rate": 0.933,
-  "protocol_requests": 0,
-  "rejected_requests": 0,
-  "by_source": { "organic": 30, "seeded": 0, "synthetic": 0 },
-  "confidence": "medium"
-}
-```
-
-`interactions` is every record for the target; `rated_interactions` is the denominator of `success_rate`, and `confidence` is based on it.
-
-Contributor response (with node):
-
-```json
-{
-  "target": "brave-search",
-  "interactions": 30,
-  "success_rate": 0.933,
-  "confidence": "medium",
-  "task_breakdown": { ... },
-  "recent_trends": [ ... ]
-}
-```
-
-Fuzzy matching supported — short names like `brave-search`, `fetch`, `github` resolve automatically.
-
-### Scanner observations
-
-For MCP servers listed in the official MCP Registry, the response also carries a separate `scanner` block: what Lowdown's Scanner observed when it connected to the server (`initialize` and `tools/list` only — it never calls a tool). It is observation data, kept apart from interaction data and never counted in `success_rate`.
-
-```bash
-curl https://lowdown-proxy.vercel.app/api/reputation/mcp:io.github.user/server
-```
-
-```json
-{
-  "target": "mcp:io.github.user/server",
+  "target": "mcp:ai.agent-bev/bev-door",
+  "resolved_target": "mcp:ai.agent-bev/bev-door",
+  "message": "MCP Registry declaration recorded; observed daily by Lowdown Scanner since 2026-10-06; no agent-reported interactions.",
+  "registry": {
+    "listed": true,
+    "declared_version": "0.2.5",
+    "status": "active",
+    "remote_hosts": ["mcp.bev-buyer.ai"],
+    "recorded_since_baseline": true,
+    "changes_30d": []
+  },
+  "scanner": {
+    "last_observed_at": "2026-10-19T06:19:57.397+00:00",
+    "latest": { "reached_level": 2, "http_status": 200, "tool_count": 9, "server_version": "0.2.5" },
+    "in_sample": true,
+    "first_observed_at": "2026-10-06T19:59:59.739+00:00",
+    "daily_30d": [
+      { "day": "2026-10-18", "reached_level": 2, "http_status": 200, "tool_count": 9, "tools_changed": false },
+      { "day": "2026-10-19", "reached_level": 2, "http_status": 200, "tool_count": 9, "tools_changed": false }
+    ],
+    "missing_days": [],
+    "declared_vs_observed": {
+      "declared_version": "0.2.5",
+      "observed_server_version": "0.2.5",
+      "declared_hosts": ["mcp.bev-buyer.ai"],
+      "observed_hosts": ["mcp.bev-buyer.ai"]
+    }
+  },
   "interactions": 0,
   "success_rate": null,
-  "scanner": {
-    "target": "mcp:io.github.user/server",
-    "last_observed_at": "2026-10-07T19:17:00+00:00",
-    "observations_30d": 28,
-    "latest": { "reached_level": 2, "http_status": 200, "latency_ms": 312, "tool_count": 7 },
-    "schema_versions_30d": 1,
-    "status_distribution_30d": { "200": 28 }
-  }
+  "confidence": "none"
 }
 ```
 
-HTTP statuses are reported as observed — a `401` is a `401`, not "dead".
+- `registry`: what the official MCP Registry declares for the server, as recorded by Lowdown since 2026-10-19, with changes in the last 30 days. It answers for any Registry entry, observed or not.
+- `scanner`: what Lowdown Scanner observed when it connected (`initialize` and `tools/list` only; it never calls a tool): one entry per day for the last 30 days, days without an observation and the recorded reason, the tool names returned by `tools/list`, and declared values next to observed ones. HTTP statuses are reported as observed: a `401` is a `401`, not "dead". A server outside the observed sample returns `observed: false`, which says nothing about its status.
+- Interaction fields: `interactions` is every reported record for the target; `rated_interactions` is the denominator of `success_rate`, and `confidence` is based on it. Scanner observations are never counted in `success_rate`.
+
+These are recorded facts with their sources, not scores or rankings. The full schema is in [`openapi.json`](https://lowdown-proxy.vercel.app/openapi.json).
 
 ## Why Lowdown
 
