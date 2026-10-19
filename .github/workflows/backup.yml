@@ -1,9 +1,17 @@
 name: backup
 
+# 날짜별 보관: 닫힌 날(UTC)마다 CSV.gz 1개 + MANIFEST.csv, 지난달은 Parquet 1개.
+# 한 번 쓴 파일은 다시 쓰지 않는다(scanner/archive.ts, scanner/archive_parquet.py).
+
 on:
   schedule:
-    - cron: '43 19 * * 0' # 매주 월요일 04:43 KST (UTC 일요일 19:43)
+    - cron: '43 0 * * *' # 매일 09:43 KST (UTC 00:43) — 전날(UTC) 관찰은 이미 끝난 시각
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '계산만 (파일·커밋 없음)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -14,10 +22,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  export:
+  archive:
     # ubuntu-latest 는 2026-10-19부터 26.04로 바뀐다. 검증 전까지 24.04 고정.
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -33,13 +41,25 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Export scanner_observations to CSV
-        run: node scanner/export.ts data-repo --months 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pyarrow
+        run: pip install pyarrow==21.0.0
+
+      - name: Archive closed days (CSV.gz + MANIFEST)
+        id: archive
+        run: node scanner/archive.ts data-repo ${{ inputs.dry_run && '--dry-run' || '' }}
         env:
           LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
           LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
 
+      - name: Monthly Parquet (closed months)
+        run: python scanner/archive_parquet.py data-repo ${{ inputs.dry_run && '--dry-run' || '' }}
+
       - name: Commit and push
+        if: ${{ !inputs.dry_run }}
         working-directory: data-repo
         run: |
           git config user.name "lowdown-bot"
@@ -49,8 +69,16 @@ jobs:
             echo "no changes"
             exit 0
           fi
-          git commit -m "data: scanner_observations export $(date -u +%F)"
+          git commit -m "data: archive $(date -u +%F)"
+          git pull --rebase
           git push
+
+      # 보관 뒤 DB 행 수가 바뀐 날이 있으면(보관 파일은 그대로) 알림
+      - name: Audit mismatch
+        if: steps.archive.outputs.audit_mismatch != '' && steps.archive.outputs.audit_mismatch != '0'
+        run: |
+          echo "::error::보관한 날의 DB 행 수가 MANIFEST 와 다릅니다: ${{ steps.archive.outputs.audit_mismatch }}일"
+          exit 1
 
       - name: Open issue on failure
         if: failure() && github.event_name == 'schedule'
