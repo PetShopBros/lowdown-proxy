@@ -40,6 +40,11 @@ on:
         description: '확장 코호트 호스트당 상한 (비우면 상한 없음, COHORT_BASE 필요)'
         type: string
         default: ''
+      first_seen:
+        description: 'tool names + first observed (0.4.0)'
+        type: boolean
+        default: false
+
 
 permissions:
   contents: read
@@ -79,6 +84,7 @@ jobs:
           COHORT_BASE: ${{ inputs.cohort_base || '2026-10-07-v1' }}
           PLAN_ONLY: ${{ inputs.plan_only && '1' || '' }}
           REGISTRY_DIFF: ${{ (github.event_name == 'schedule' || inputs.registry_diff) && '1' || '' }}
+          FIRST_SEEN: ${{ (github.event_name == 'schedule' || inputs.first_seen) && '1' || '' }}
           COHORT_HOST_CAP: ${{ inputs.cohort_host_cap || '3' }}
 
       - name: Open issue on failure

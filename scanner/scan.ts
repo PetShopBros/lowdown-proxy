@@ -7,6 +7,7 @@
 //       COHORT_BASE — 확장 코호트의 기준 버전(예: 2026-10-07-v1). 설정하면 Day 0 에 base 전부 + 추가분으로 만들고,
 //         base 멤버 행에는 metadata.cohort_versions = [base, version] 을 남겨 base 시계열을 이어 볼 수 있게 한다.
 //       COHORT_HOST_CAP=<N> — 확장 코호트 Day 0 선정 시 호스트당 대상 상한(base 멤버를 먼저 센다). 0/미설정 = 상한 없음
+//       FIRST_SEEN=1 — (0.4.0) 도구 이름 목록(scanner_tool_sets)과 최초 관측(scanner_first_seen) 기록. 전체 실행(limit 없음)에서만.
 //       REGISTRY_DIFF=1 — 시장판 1단계: 관찰 뒤 Registry 선언 변화를 registry_state/registry_changes 에 기록(probe 없음).
 //         첫 실행은 baseline(이벤트 없음). fallback 날은 건너뜀. dry-run 은 읽고 계산만 한다. 실패해도 관찰 데이터와 무관
 //       PLAN_ONLY=1 또는 --plan-only — Registry 수신 + 선정 계산만 하고 끝낸다(probe·저장 없음). COHORT_BASE 필요
@@ -53,6 +54,7 @@ import {
   utcDayStart,
 } from './lib.ts';
 import { diffRegistry, fetchRegistryState, insertRegistryChanges, upsertRegistryState } from './registry-diff.ts';
+import { aggregateObserved, computeFirstSeen, fetchFirstSeen, insertToolSets, isPublishable, toolSetRows, upsertFirstSeen } from './first-seen.ts';
 import type { CohortGap, CohortGapRow, CohortJob, ObservationRow, ProbeResult, RetryInfo } from './lib.ts';
 
 function fail(message: string): never {
@@ -323,11 +325,13 @@ async function main(): Promise<void> {
     }
   };
   const hostBusyMs = new Map<string, number>();
+  // 도구 이름은 관찰 행에 넣지 않고(행 크기·공개 CSV) 메모리에만 두었다가 scanner_tool_sets 로 저장
+  const toolNamesByRow = new WeakMap<ObservationRow, string[]>();
   const probeOne = async (job: CohortJob): Promise<ObservationRow> => {
     const observedAt = new Date().toISOString();
     try {
-      const p = await probeRemote(job.remote, { registryVersion: job.version, index: job.index });
-      return {
+      const { tool_names: toolNames, ...p } = await probeRemote(job.remote, { registryVersion: job.version, index: job.index });
+      const row: ObservationRow = {
         scan_run_id: runId,
         node_id: nodeId,
         target_id: `mcp:${job.name}`,
@@ -337,6 +341,8 @@ async function main(): Promise<void> {
         ...p,
         metadata: { ...p.metadata, ...runMeta, ...(cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {}) },
       };
+      if (toolNames) toolNamesByRow.set(row, toolNames);
+      return row;
     } catch (e) {
       console.error(`unexpected probe error for ${job.name}: ${e instanceof Error ? e.message : 'unknown'}`);
       return {
@@ -429,6 +435,47 @@ async function main(): Promise<void> {
     }
     console.log('registry diff', JSON.stringify(diffStats));
   }
+
+  // 6) (0.4.0) 도구 이름 목록 + 최초 관측. 관찰과 독립, 실패해도 계속. 부분 실행(limit)은 하지 않는다(집계가 왜곡됨).
+  let firstSeenStats: Record<string, string | number> = {};
+  if (process.env.FIRST_SEEN?.trim() === '1') {
+    const tFs = Date.now();
+    if (limit) {
+      firstSeenStats = { first_seen: 'skipped (limit)' };
+    } else if (!cohortReadCfg) {
+      firstSeenStats = { first_seen: 'skipped (no db config)' };
+    } else {
+      try {
+        const now = new Date().toISOString();
+        const namesOf = (r: ObservationRow) => toolNamesByRow.get(r);
+        const sets = toolSetRows(all, namesOf, { now, scanRunId: runId });
+        const prev = await fetchFirstSeen(cohortReadCfg);
+        const fs = computeFirstSeen(prev, aggregateObserved(all, namesOf), { now, scanRunId: runId });
+        let written = 'dry-run (not written)';
+        if (supabase) {
+          const ts = await insertToolSets(supabase, sets);
+          const up = fs.mode === 'skipped' ? 0 : await upsertFirstSeen(supabase, fs.upserts);
+          written = `tool_sets sent ${ts}, first_seen ${up}`;
+        }
+        const byKind = (rows: typeof fs.firstObserved) => JSON.stringify(Object.fromEntries(['capability', 'protocol_version', 'tool_name'].map((k) => [k, rows.filter((r) => r.kind === k).length])));
+        firstSeenStats = {
+          first_seen: fs.mode + (fs.skipReason ? ` (${fs.skipReason})` : ''),
+          first_seen_prev: prev.length,
+          first_seen_upserts: fs.upserts.length,
+          first_observed: byKind(fs.firstObserved),
+          first_observed_publishable: byKind(fs.firstObserved.filter(isPublishable)),
+          tool_sets_rows: sets.length,
+          first_seen_written: written,
+          first_seen_sec: Math.round((Date.now() - tFs) / 1000),
+        };
+        if (dryRun) for (const r of fs.firstObserved.slice(0, 5)) console.log('first observed sample', JSON.stringify(r));
+      } catch (e) {
+        console.error(`first_seen 실패(관찰 데이터는 저장 완료): ${e instanceof Error ? e.message : 'unknown'}`);
+        firstSeenStats = { first_seen: 'error' };
+      }
+    }
+    console.log('first seen', JSON.stringify(firstSeenStats));
+  }
   const totalSec = Math.round((Date.now() - t0) / 1000);
   const summary = summarize(all, runId, {
     dry_run: dryRun,
@@ -445,6 +492,7 @@ async function main(): Promise<void> {
     ...stats,
     ...retryStats,
     ...diffStats,
+    ...firstSeenStats,
   });
   console.log(summary);
   if (dryRun) {

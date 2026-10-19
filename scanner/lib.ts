@@ -11,8 +11,9 @@ import type { LookupFunction } from 'node:net';
 
 // 관찰 결과의 의미가 바뀌는 수정(probe 판정·저장 필드·코호트 규칙)마다 올린다. CHANGELOG 의 Scanner 항목과 맞춘다.
 //   0.1.0 — 2026-10-06 최초 / 0.2.0 — 2026-10-16 scanner_commit·registry_fetched_at 기록 시작
+//   0.3.0 — 2026-10-19 메인 probe 호스트당 동시 1건 / 0.4.0 — capabilities·names_hash 기록, 도구 이름 목록 별도 저장
 //   (0.1.0 기간에도 재시도·대체·사유 분리가 추가됐으므로 그 기간 행의 정확한 코드는 알 수 없다)
-export const SCANNER_VERSION = '0.3.0';
+export const SCANNER_VERSION = '0.4.0';
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 export const USER_AGENT = `lowdown-scanner/${SCANNER_VERSION}`;
 export const DEFAULT_REGISTRY_URL = 'https://registry.modelcontextprotocol.io';
@@ -392,6 +393,41 @@ export interface ProbeResult {
   /** HTTP 응답을 받지 못했거나(timeout/dns/tls/...) 2xx 인데 JSON-RPC 응답이 아닐 때(invalid_response)만 채운다. */
   error_type: string | null;
   metadata: Record<string, unknown>;
+  /** L2 에서 받은 도구 이름(형식 통과분, 정렬). 관찰 행에는 넣지 않고 scanner_tool_sets 로만 저장한다. */
+  tool_names?: string[];
+}
+
+const CAPABILITY_KEY = /^[A-Za-z][A-Za-z0-9_]{0,31}$/;
+const TOOL_NAME = /^[A-Za-z0-9_.\-/]{1,64}$/;
+export const MAX_CAPABILITIES = 20;
+export const MAX_TOOL_NAMES = 200;
+
+/** initialize 결과 capabilities 의 최상위 키 이름만(형식 통과, 정렬, 최대 20). experimental 안쪽 키는 보지 않는다. */
+export function capabilityKeys(caps: unknown): string[] | null {
+  if (typeof caps !== 'object' || caps === null || Array.isArray(caps)) return null;
+  return Object.keys(caps)
+    .filter((k) => CAPABILITY_KEY.test(k))
+    .sort()
+    .slice(0, MAX_CAPABILITIES);
+}
+
+/** tools/list 의 도구 이름(형식 통과분, 중복 제거, 정렬, 최대 200). 설명문은 보지 않는다. */
+export function toolNameList(tools: readonly unknown[]): { names: string[]; rejected: number } {
+  const ok = new Set<string>();
+  let rejected = 0;
+  for (const t of tools) {
+    const name = typeof t === 'object' && t !== null ? (t as { name?: unknown }).name : undefined;
+    if (typeof name === 'string' && TOOL_NAME.test(name)) ok.add(name);
+    else rejected++;
+  }
+  const sorted = [...ok].sort();
+  rejected += Math.max(0, sorted.length - MAX_TOOL_NAMES);
+  return { names: sorted.slice(0, MAX_TOOL_NAMES), rejected };
+}
+
+/** 정렬된 이름 목록의 해시. 이름 집합이 같으면 스키마·설명이 바뀌어도 같다. */
+export function namesHash(names: readonly string[]): string {
+  return sha256(JSON.stringify([...names].sort()));
 }
 
 export interface RegistryRemote {
@@ -434,10 +470,12 @@ export async function probeRemote(
     registry_version: ctx.registryVersion,
     scanner_version: SCANNER_VERSION,
   };
-  const out = (p: Omit<ProbeResult, 'transport' | 'metadata'>): ProbeResult => ({
+  let toolNames: string[] | undefined;
+  const out = (p: Omit<ProbeResult, 'transport' | 'metadata' | 'tool_names'>): ProbeResult => ({
     transport: remote.type,
     metadata,
     ...p,
+    ...(toolNames ? { tool_names: toolNames } : {}),
   });
 
   // L1: initialize
@@ -484,7 +522,9 @@ export async function probeRemote(
   if (typeof initResult !== 'object' || initResult === null) {
     return out({ http_status: init.status, reached_level: 0, latency_ms: latency, error_type: 'invalid_response' });
   }
-  const ir = initResult as { protocolVersion?: unknown; serverInfo?: unknown };
+  const ir = initResult as { protocolVersion?: unknown; serverInfo?: unknown; capabilities?: unknown };
+  const caps = capabilityKeys(ir.capabilities);
+  if (caps) metadata.capabilities = caps;
   const negotiated =
     typeof ir.protocolVersion === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(ir.protocolVersion)
       ? ir.protocolVersion
@@ -560,6 +600,10 @@ export async function probeRemote(
     } catch {
       metadata.hash_error = true;
     }
+    const tn = toolNameList(lr.tools);
+    toolNames = tn.names;
+    metadata.names_hash = namesHash(tn.names);
+    if (tn.rejected > 0) metadata.tool_names_rejected = tn.rejected;
     return out({ http_status: list.status, reached_level: 2, latency_ms: latency, error_type: null });
   } finally {
     await closeSession();

@@ -185,7 +185,7 @@ export async function fetchRegistryState(cfg: SupabaseConfig, deps: DiffIoDeps =
   return out;
 }
 
-async function postBatches(
+export async function postBatches(
   cfg: SupabaseConfig,
   path: string,
   rows: readonly object[],
