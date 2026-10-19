@@ -18,8 +18,8 @@
     "/api/reputation/{target}": {
       "get": {
         "operationId": "getReputation",
-        "summary": "Get recorded interactions and Scanner observations for an agent, tool, or service",
-        "description": "Returns interaction counts and outcomes reported by agents, and — for MCP Registry servers — a separate `scanner` block with what Lowdown Scanner observed (initialize + tools/list reachability, HTTP status, tool count, schema changes). Short names like 'brave-search' resolve when they match one target.",
+        "summary": "Get the Registry declaration, Scanner observations, and reported interactions for a target",
+        "description": "Returns what Lowdown has recorded about a target, in this order: (1) `registry`: what the official MCP Registry declares for it, as recorded by Lowdown since 2026-10-19, with changes in the last 30 days; (2) `scanner`: what Lowdown Scanner observed (initialize + tools/list only), including one entry per day for the last 30 days, days without an observation and why, and the observed tool names; (3) interactions reported by agents. These are facts with their sources, not scores. Short names resolve when they match one target; otherwise candidate names are returned.",
         "parameters": [
           {
             "name": "target",
@@ -61,79 +61,120 @@
                     "target": {
                       "type": "string"
                     },
-                    "interactions": {
-                      "type": "integer"
+                    "resolved_target": {
+                      "type": "string",
+                      "description": "Registry name the lookup resolved to, with the mcp: prefix."
                     },
-                    "rated_interactions": {
-                      "type": "integer",
-                      "description": "Denominator of success_rate."
+                    "message": {
+                      "type": "string",
+                      "description": "One factual sentence: whether a Registry record, Scanner observations, and reported interactions exist."
                     },
-                    "protocol_requests": {
-                      "type": "integer",
-                      "description": "initialize, tools/list, ping and other non-tool requests (not in success_rate)."
-                    },
-                    "rejected_requests": {
-                      "type": "integer",
-                      "description": "Requests rejected as malformed, unknown tool, or invalid arguments (not in success_rate)."
-                    },
-                    "by_source": {
+                    "registry": {
                       "type": "object",
+                      "description": "Declared facts from the official MCP Registry as recorded by Lowdown (records kept since 2026-10-19). `listed: false` with a note when no record matches.",
                       "properties": {
-                        "organic": {
-                          "type": "integer"
+                        "listed": {
+                          "type": "boolean",
+                          "description": "true when the entry is in the Registry as of the latest record."
                         },
-                        "seeded": {
-                          "type": "integer"
+                        "name": {
+                          "type": "string"
                         },
-                        "synthetic": {
-                          "type": "integer"
+                        "declared_version": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "enum": [
+                            "active",
+                            "deprecated",
+                            "deleted",
+                            null
+                          ]
+                        },
+                        "removed_at": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time",
+                          "description": "When Lowdown recorded the entry as gone from the Registry list."
+                        },
+                        "remote_hosts": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "declares_packages": {
+                          "type": "boolean"
+                        },
+                        "first_recorded_at": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time"
+                        },
+                        "recorded_since_baseline": {
+                          "type": "boolean",
+                          "description": "true for entries already present in Lowdown's first Registry snapshot (2026-10-19); first_recorded_at is then not when the entry first appeared in the Registry."
+                        },
+                        "changes_30d": {
+                          "type": "array",
+                          "description": "Registry changes detected in the last 30 days, newest first (max 20). old/new are given for version and status changes.",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "on": {
+                                "type": "string",
+                                "format": "date"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "new",
+                                  "removed",
+                                  "restored",
+                                  "version",
+                                  "status",
+                                  "remotes",
+                                  "packages",
+                                  "description"
+                                ]
+                              },
+                              "old": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "new": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            }
+                          }
+                        },
+                        "note": {
+                          "type": "string"
                         }
                       }
                     },
-                    "success_rate_basis": {
-                      "type": "string"
-                    },
-                    "success_rate": {
-                      "type": [
-                        "number",
-                        "null"
-                      ],
-                      "description": "Share of successes among rated interactions: organic tool calls and agent reports. Protocol requests, rejected requests, and seeded or synthetic records are excluded. null when there are none."
-                    },
-                    "confidence": {
-                      "type": "string",
-                      "enum": [
-                        "none",
-                        "low",
-                        "medium",
-                        "high"
-                      ],
-                      "description": "Based on rated_interactions (none = 0, low < 10, medium < 100, high >= 100)."
-                    },
-                    "avg_latency_ms": {
-                      "type": "number"
-                    },
-                    "reviews": {
-                      "type": "integer"
-                    },
-                    "avg_rating": {
-                      "type": "number"
-                    },
-                    "review_conversion_rate": {
-                      "type": [
-                        "number",
-                        "null"
-                      ]
-                    },
-                    "failure_breakdown": {
-                      "type": "object",
-                      "additionalProperties": {
-                        "type": "integer"
+                    "registry_candidates": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
                       },
-                      "description": "Counts of reported failure types."
-                    },
-                    "message": {
-                      "type": "string"
+                      "description": "Returned instead of `registry` when a short name matches several Registry names."
                     },
                     "scanner": {
                       "type": "object",
@@ -217,6 +258,168 @@
                           "additionalProperties": {
                             "type": "integer"
                           }
+                        },
+                        "in_sample": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ],
+                          "description": "Whether the target is in a Scanner cohort."
+                        },
+                        "cohorts": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "first_observed_at": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time",
+                          "description": "First observation of this target by Lowdown Scanner."
+                        },
+                        "daily_30d": {
+                          "type": "array",
+                          "description": "One entry per UTC day with an observation in the last 30 days. When a target has several remotes, the entry with the highest reached_level is shown and `remotes` counts them.",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "day": {
+                                "type": "string",
+                                "format": "date"
+                              },
+                              "reached_level": {
+                                "type": [
+                                  "integer",
+                                  "null"
+                                ]
+                              },
+                              "http_status": {
+                                "type": [
+                                  "integer",
+                                  "null"
+                                ]
+                              },
+                              "error_type": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "tool_count": {
+                                "type": [
+                                  "integer",
+                                  "null"
+                                ]
+                              },
+                              "tools_changed": {
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ],
+                                "description": "Whether the tool schema hash differs from the previous observed day; null when either is unknown."
+                              },
+                              "retry_reached_level": {
+                                "type": [
+                                  "integer",
+                                  "null"
+                                ],
+                                "description": "Result of the same-day retry, when one was made."
+                              },
+                              "remotes": {
+                                "type": "integer"
+                              }
+                            }
+                          }
+                        },
+                        "missing_days": {
+                          "type": "array",
+                          "description": "Days since the first observation (within the last 30 days, before today UTC) with no observation row, and the recorded reason: not_in_registry, no_remote, remote_not_probeable, not_active, or no_observation.",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "day": {
+                                "type": "string",
+                                "format": "date"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "tools": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "description": "Tool names returned by tools/list in the latest successful observation (from scanner 0.4.0, 2026-10-20). Names only; descriptions are not stored. Names outside [A-Za-z0-9_.-/]{1,64} are omitted.",
+                          "properties": {
+                            "names": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "count": {
+                              "type": "integer"
+                            },
+                            "partial": {
+                              "type": "boolean",
+                              "description": "true when tools/list announced more pages; only the first page is recorded."
+                            },
+                            "set_first_observed_at": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "format": "date-time",
+                              "description": "When Lowdown first observed this exact set of tool names for the target."
+                            },
+                            "observed_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            }
+                          }
+                        },
+                        "declared_vs_observed": {
+                          "type": "object",
+                          "description": "Declared and observed values side by side. No judgment is made.",
+                          "properties": {
+                            "declared_version": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "observed_server_version": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "declared_hosts": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "observed_hosts": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "method": {
+                          "type": "object",
+                          "description": "How the observations were made and what they do not show.",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
                         }
                       }
                     },
@@ -226,6 +429,77 @@
                         "type": "string"
                       },
                       "description": "Returned instead of `scanner` when a short name matches several scanned servers."
+                    },
+                    "interactions": {
+                      "type": "integer"
+                    },
+                    "rated_interactions": {
+                      "type": "integer",
+                      "description": "Denominator of success_rate."
+                    },
+                    "protocol_requests": {
+                      "type": "integer",
+                      "description": "initialize, tools/list, ping and other non-tool requests (not in success_rate)."
+                    },
+                    "rejected_requests": {
+                      "type": "integer",
+                      "description": "Requests rejected as malformed, unknown tool, or invalid arguments (not in success_rate)."
+                    },
+                    "by_source": {
+                      "type": "object",
+                      "properties": {
+                        "organic": {
+                          "type": "integer"
+                        },
+                        "seeded": {
+                          "type": "integer"
+                        },
+                        "synthetic": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "success_rate_basis": {
+                      "type": "string"
+                    },
+                    "success_rate": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Share of successes among rated interactions: organic tool calls and agent reports. Protocol requests, rejected requests, and seeded or synthetic records are excluded. null when there are none."
+                    },
+                    "confidence": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "low",
+                        "medium",
+                        "high"
+                      ],
+                      "description": "Based on rated_interactions (none = 0, low < 10, medium < 100, high >= 100)."
+                    },
+                    "avg_latency_ms": {
+                      "type": "number"
+                    },
+                    "reviews": {
+                      "type": "integer"
+                    },
+                    "avg_rating": {
+                      "type": "number"
+                    },
+                    "review_conversion_rate": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "failure_breakdown": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "integer"
+                      },
+                      "description": "Counts of reported failure types."
                     }
                   }
                 }

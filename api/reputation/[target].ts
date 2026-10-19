@@ -85,6 +85,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Scanner 관찰 데이터: interactions/success_rate 와 합산하지 않고 별도 `scanner` 블록으로만 노출.
     // 실패해도 기존 응답에는 영향 없음. task_type 필터 요청에는 붙이지 않는다.
     const scannerLookup = taskType ? null : await findScanner(supabase, target);
+    // Registry 선언 + Scanner 날짜별 기록. 실패해도 기존 응답에는 영향 없음. task_type 필터 요청에는 붙이지 않는다.
+    const evidence = taskType ? null : await buildEvidence(supabase, target, scannerLookup);
 
     // 조회 자체를 로깅 (organic vs seeded 구분)
     const source = req.headers["x-lowdown-source"] === "seeded" ? "seeded" : "organic";
@@ -104,11 +106,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({
         target,
         task_type: taskType ?? undefined,
+        ...evidenceHead(evidence, scannerLookup, 0),
+        ...evidenceFields(evidence, scannerLookup),
         interactions: 0,
         success_rate: null,
         confidence: "none",
-        message: "No interactions recorded yet.",
-        ...scannerFields(scannerLookup),
       });
     }
 
@@ -126,6 +128,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const baseResponse = {
       target,
       task_type: taskType ?? undefined,
+      ...evidenceHead(evidence, scannerLookup, interactions),
+      ...evidenceFields(evidence, scannerLookup),
       target_type: data.target_type,
       interactions,
       rated_interactions: rated,
@@ -148,7 +152,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         review_conversion_rate: data.review_conversion_rate,
       }),
       confidence,
-      ...scannerFields(scannerLookup),
     };
 
     // node_id 없으면 기본 응답
@@ -326,5 +329,295 @@ function shapeScanner(r: any): Record<string, unknown> {
     schema_versions_30d: Number(r.schema_versions_30d ?? 0),
     status_distribution_30d: r.status_distribution_30d ?? {},
     note: "Observed by Lowdown Scanner (initialize + tools/list only; no tool calls). Not included in success_rate.",
+  };
+}
+
+// ── 증거 블록: Registry 선언 + Scanner 날짜별 기록 ───────────────────
+// 판정·점수·순위는 내지 않는다. 사실과 그 출처, 관찰 방법과 한계만.
+// 각 조회는 독립적으로 실패할 수 있고, 실패한 부분은 빠질 뿐 응답 전체를 막지 않는다.
+
+const SAFE_NAME = /^[A-Za-z0-9._\-/]{1,200}$/;
+const SAFE_VERSION = /^[0-9A-Za-z.+_-]{1,32}$/;
+const SAFE_TOOL = /^[A-Za-z0-9_.\-/]{1,64}$/;
+const SAFE_HOST = /^[a-z0-9.-]{1,253}$/;
+const SAFE_COHORT = /^[0-9A-Za-z.-]{1,40}$/;
+const REGISTRY_STATUSES = new Set(["active", "deprecated", "deleted"]);
+const GAP_REASONS = new Set(["no_remote", "remote_not_probeable", "not_active", "not_in_registry"]);
+const WINDOW_DAYS = 30;
+const DAY_MS = 86_400_000;
+const REGISTRY_RECORDS_SINCE = "2026-10-19";
+
+const METHOD = {
+  requests: "POST initialize, then tools/list. No tool calls and no authentication.",
+  vantage: "One network location (GitHub Actions). A timeout or refusal means not reachable from there, not necessarily from everywhere.",
+  frequency: "Once per day, for a fixed sample of MCP Registry entries with a streamable-http remote.",
+  limits: "Each row is a single probe at one moment. It is not a measure of availability or uptime, and not a score.",
+  dataset: "https://github.com/PetShopBros/lowdown-data",
+};
+
+interface Evidence {
+  name: string | null;
+  registry?: Record<string, unknown>;
+  registryCandidates?: string[];
+  scannerExtra?: Record<string, unknown>;
+  scannerSince?: string | null;
+}
+
+const safeVersion = (v: unknown) => (typeof v === "string" && SAFE_VERSION.test(v) ? v : null);
+const safeHosts = (v: unknown) => (Array.isArray(v) ? v.filter((h) => typeof h === "string" && SAFE_HOST.test(h)).slice(0, 20) : []);
+const utcDay = (t: number) => new Date(t).toISOString().slice(0, 10);
+const intOrNull = (v: unknown) => {
+  const n = typeof v === "number" ? v : typeof v === "string" && /^-?\d{1,9}$/.test(v) ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : null;
+};
+
+function hostOfUrl(u: unknown): string | null {
+  if (typeof u !== "string") return null;
+  try {
+    const h = new URL(u).hostname.toLowerCase();
+    return SAFE_HOST.test(h) ? h : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 입력 → Registry 이름. scanner 에서 이미 찾았으면 그 이름, 아니면 Registry 기록에서 정확히 → 부분 일치. */
+async function resolveRegistryName(supabase: any, target: string, lookup: ScannerLookup | null): Promise<{ name: string | null; candidates: string[]; row: any | null }> {
+  const fromScanner = lookup?.summary?.target;
+  if (typeof fromScanner === "string" && fromScanner.startsWith("mcp:")) {
+    const name = fromScanner.slice(4);
+    const { data, error } = await supabase.from("registry_state").select("*").eq("name", name).limit(1);
+    if (error) throw new Error("registry_state");
+    return { name, candidates: [], row: (data ?? [])[0] ?? null };
+  }
+  const raw = target.startsWith("mcp:") ? target.slice(4) : target;
+  if (!SAFE_NAME.test(raw) || (target.includes(":") && !target.startsWith("mcp:"))) return { name: null, candidates: [], row: null };
+  const exact = await supabase.from("registry_state").select("*").eq("name", raw).limit(1);
+  if (exact.error) throw new Error("registry_state");
+  const row = (exact.data ?? [])[0];
+  if (row) return { name: raw, candidates: [], row };
+  if (raw.length < 3) return { name: null, candidates: [], row: null };
+  const pattern = `%${raw.replace(/[\\%_]/g, "\\$&")}%`;
+  const fuzzy = await supabase.from("registry_state").select("*").ilike("name", pattern).order("name", { ascending: true }).limit(6);
+  if (fuzzy.error) throw new Error("registry_state");
+  const rows = (fuzzy.data ?? []) as any[];
+  if (rows.length === 1) return { name: String(rows[0].name), candidates: [], row: rows[0] };
+  return { name: null, candidates: rows.slice(0, 5).map((r) => String(r.name)).filter((n) => SAFE_NAME.test(n)), row: null };
+}
+
+export function shapeRegistry(row: any, changes: any[]): Record<string, unknown> {
+  const removed = row.removed_at ?? null;
+  return {
+    listed: removed === null,
+    name: row.name,
+    declared_version: safeVersion(row.version),
+    status: REGISTRY_STATUSES.has(row.status) ? row.status : null,
+    removed_at: removed,
+    remote_hosts: safeHosts(row.hosts),
+    declares_packages: Boolean(row.packages_key),
+    first_recorded_at: row.first_seen_at ?? null,
+    recorded_since_baseline: row.baseline === true,
+    changes_30d: changes.slice(0, 20).map((c) => ({
+      on: c.detected_on,
+      kind: c.kind,
+      ...(c.kind === "version" ? { old: safeVersion(c.old_value), new: safeVersion(c.new_value) } : {}),
+      ...(c.kind === "status" ? { old: REGISTRY_STATUSES.has(c.old_value) ? c.old_value : null, new: REGISTRY_STATUSES.has(c.new_value) ? c.new_value : null } : {}),
+    })),
+    note:
+      row.baseline === true
+        ? `Recorded from Lowdown's first Registry snapshot (${REGISTRY_RECORDS_SINCE}); first_recorded_at is not when the entry first appeared in the Registry.`
+        : "Declared facts from the official MCP Registry as recorded by Lowdown.",
+  };
+}
+
+interface ObsRow {
+  observed_at: string;
+  reached_level: number | null;
+  http_status: number | null;
+  error_type: string | null;
+  tool_count?: unknown;
+  schema_hash?: unknown;
+  names_hash?: unknown;
+  remote_url?: unknown;
+  retry_level?: unknown;
+}
+
+/** 하루 1행: 원격 주소가 여러 개면 가장 멀리 간 결과와 주소 수. tools_changed 는 직전 관찰일과 schema_hash 비교. */
+export function dailyFromRows(rows: ObsRow[]): Array<Record<string, unknown>> {
+  const byDay = new Map<string, ObsRow[]>();
+  for (const r of rows) {
+    const d = String(r.observed_at).slice(0, 10);
+    if (!byDay.has(d)) byDay.set(d, []);
+    byDay.get(d)!.push(r);
+  }
+  const out: Array<Record<string, unknown>> = [];
+  let prevSchema: string | null = null;
+  for (const day of [...byDay.keys()].sort()) {
+    const list = byDay.get(day)!;
+    const best = list.reduce((a, b) => ((b.reached_level ?? -1) > (a.reached_level ?? -1) ? b : a));
+    const schema = typeof best.schema_hash === "string" && /^[0-9a-f]{16,64}$/.test(best.schema_hash) ? best.schema_hash : null;
+    out.push({
+      day,
+      reached_level: best.reached_level,
+      http_status: best.http_status,
+      error_type: best.error_type,
+      tool_count: intOrNull(best.tool_count),
+      tools_changed: schema && prevSchema ? schema !== prevSchema : null,
+      retry_reached_level: intOrNull(best.retry_level),
+      remotes: list.length,
+    });
+    if (schema) prevSchema = schema;
+  }
+  return out;
+}
+
+/** 관찰을 시작한 뒤 행이 없는 날. 그날 코호트 공백 기록이 있으면 그 사유, 없으면 no_observation. 오늘(UTC)은 넣지 않는다. */
+export function missingDays(observedDays: Set<string>, startDay: string, now: number, gaps: Map<string, string>): Array<{ day: string; reason: string }> {
+  const out: Array<{ day: string; reason: string }> = [];
+  const today = utcDay(now);
+  for (let t = Date.parse(`${startDay}T00:00:00Z`); ; t += DAY_MS) {
+    const d = utcDay(t);
+    if (d >= today) break;
+    if (!observedDays.has(d)) out.push({ day: d, reason: gaps.get(d) ?? "no_observation" });
+  }
+  return out.slice(-WINDOW_DAYS);
+}
+
+async function scannerHistory(supabase: any, targetId: string, registryRow: any | null, latestVersion: unknown, now: number): Promise<{ extra: Record<string, unknown>; since: string | null }> {
+  const sinceIso = new Date(now - WINDOW_DAYS * DAY_MS).toISOString();
+  const [obs, first, cohort, gaps] = await Promise.all([
+    supabase
+      .from("scanner_observations")
+      .select("observed_at,reached_level,http_status,error_type,tool_count:metadata->>tool_count,schema_hash:metadata->>schema_hash,names_hash:metadata->>names_hash,remote_url:metadata->>remote_url,retry_level:metadata->retry->>reached_level")
+      .eq("target_id", targetId)
+      .gte("observed_at", sinceIso)
+      .order("observed_at", { ascending: true })
+      .limit(400),
+    supabase.from("scanner_observations").select("observed_at").eq("target_id", targetId).order("observed_at", { ascending: true }).limit(1),
+    supabase.from("scanner_cohort").select("cohort_version,selected_at").eq("target_id", targetId),
+    supabase.from("scanner_cohort_gaps").select("observed_at,reason").eq("target_id", targetId).gte("observed_at", sinceIso).order("observed_at", { ascending: true }).limit(60),
+  ]);
+  if (obs.error) throw new Error("scanner_observations");
+  const rows = (obs.data ?? []) as ObsRow[];
+  const daily = dailyFromRows(rows);
+  const firstObservedAt = first.error ? null : ((first.data ?? [])[0]?.observed_at ?? null);
+  const cohorts = cohort.error ? null : ((cohort.data ?? []) as any[]).map((c) => String(c.cohort_version)).filter((c) => SAFE_COHORT.test(c)).sort();
+  const gapByDay = new Map<string, string>();
+  if (!gaps.error) for (const g of (gaps.data ?? []) as any[]) if (GAP_REASONS.has(g.reason)) gapByDay.set(String(g.observed_at).slice(0, 10), g.reason);
+
+  const firstDay = typeof firstObservedAt === "string" ? firstObservedAt.slice(0, 10) : null;
+  const windowStart = utcDay(now - WINDOW_DAYS * DAY_MS);
+  const missing = firstDay ? missingDays(new Set(daily.map((d) => String(d.day))), firstDay > windowStart ? firstDay : windowStart, now, gapByDay) : [];
+
+  // 최신 관찰의 도구 이름 목록 (0.4.0 부터). 최신 L2 행의 names_hash 로 찾는다.
+  let tools: Record<string, unknown> | null = null;
+  const lastL2 = [...rows].reverse().find((r) => r.reached_level === 2 && typeof r.names_hash === "string" && /^[0-9a-f]{64}$/.test(r.names_hash));
+  if (lastL2) {
+    const ts = await supabase.from("scanner_tool_sets").select("names,partial,first_seen_at").eq("target_id", targetId).eq("names_hash", lastL2.names_hash).limit(1);
+    const t = ts.error ? null : (ts.data ?? [])[0];
+    if (t) {
+      const names = (Array.isArray(t.names) ? t.names : []).filter((n: unknown) => typeof n === "string" && SAFE_TOOL.test(n)).slice(0, 200);
+      tools = { names, count: names.length, partial: t.partial === true, set_first_observed_at: t.first_seen_at ?? null, observed_at: lastL2.observed_at };
+    }
+  }
+
+  const lastDay = daily.length ? String(daily[daily.length - 1]!.day) : null;
+  const observedHosts = lastDay ? [...new Set(rows.filter((r) => String(r.observed_at).startsWith(lastDay)).map((r) => hostOfUrl(r.remote_url)).filter((h): h is string => h !== null))].sort() : [];
+
+  return {
+    since: firstObservedAt,
+    extra: {
+      in_sample: cohorts === null ? null : cohorts.length > 0,
+      ...(cohorts ? { cohorts } : {}),
+      first_observed_at: firstObservedAt,
+      daily_30d: daily,
+      missing_days: missing,
+      tools,
+      ...(registryRow
+        ? {
+            declared_vs_observed: {
+              declared_version: safeVersion(registryRow.version),
+              observed_server_version: safeVersion(latestVersion),
+              declared_hosts: safeHosts(registryRow.hosts),
+              observed_hosts: observedHosts,
+            },
+          }
+        : {}),
+      method: METHOD,
+    },
+  };
+}
+
+async function buildEvidence(supabase: any, target: string, lookup: ScannerLookup | null): Promise<Evidence | null> {
+  const now = Date.now();
+  const ev: Evidence = { name: null };
+  let registryRow: any | null = null;
+  try {
+    const r = await resolveRegistryName(supabase, target, lookup);
+    ev.name = r.name;
+    registryRow = r.row;
+    if (r.row) {
+      const since = utcDay(now - WINDOW_DAYS * DAY_MS);
+      const ch = await supabase
+        .from("registry_changes")
+        .select("detected_on,kind,old_value,new_value")
+        .eq("name", r.row.name)
+        .gte("detected_on", since)
+        .order("detected_on", { ascending: false })
+        .limit(20);
+      ev.registry = shapeRegistry(r.row, ch.error ? [] : (ch.data ?? []));
+    } else if (r.candidates.length > 1) {
+      ev.registryCandidates = r.candidates;
+    } else if (r.name === null && !(target.includes(":") && !target.startsWith("mcp:"))) {
+      ev.registry = {
+        listed: false,
+        note: `No MCP Registry record matches this name in Lowdown's Registry records (kept since ${REGISTRY_RECORDS_SINCE}).`,
+      };
+    }
+  } catch {
+    // Registry 기록 조회 실패 → registry 블록 없이 계속
+  }
+  const targetId = lookup?.summary?.target;
+  if (typeof targetId === "string") {
+    try {
+      const h = await scannerHistory(supabase, targetId, registryRow, (lookup!.summary!.latest as any)?.server_version, now);
+      ev.scannerExtra = h.extra;
+      ev.scannerSince = h.since;
+    } catch {
+      // 날짜별 기록 실패 → 기존 scanner 요약만
+    }
+  }
+  return ev;
+}
+
+function evidenceFields(ev: Evidence | null, lookup: ScannerLookup | null): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (ev?.registry) out.registry = ev.registry;
+  if (ev?.registryCandidates) out.registry_candidates = ev.registryCandidates;
+  const scanner = scannerFields(lookup);
+  if (scanner.scanner && ev?.scannerExtra && lookup?.summary) {
+    const { note, ...rest } = scanner.scanner as Record<string, unknown>;
+    out.scanner = { ...rest, ...ev.scannerExtra, note };
+  } else Object.assign(out, scanner);
+  return out;
+}
+
+/** 첫머리: 확인된 Registry 이름과 사실 문장. 기록이 있는 쪽을 먼저 말한다. */
+function evidenceHead(ev: Evidence | null, lookup: ScannerLookup | null, interactions: number): Record<string, unknown> {
+  if (!ev && !lookup) return interactions === 0 ? { message: "No interactions recorded yet." } : {};
+  const parts: string[] = [];
+  const reg = ev?.registry as Record<string, unknown> | undefined;
+  if (reg?.listed === true) parts.push("MCP Registry declaration recorded");
+  else if (reg && reg.removed_at) parts.push("MCP Registry entry recorded as removed");
+  else if (ev?.registryCandidates) parts.push("several MCP Registry names match (see registry_candidates)");
+  else if (reg) parts.push("no MCP Registry record found");
+  if (lookup?.summary) parts.push(ev?.scannerSince ? `observed daily by Lowdown Scanner since ${String(ev.scannerSince).slice(0, 10)}` : "observed by Lowdown Scanner");
+  else if (lookup && lookup.candidates.length > 0) parts.push("several observed names match (see scanner_candidates)");
+  else if (lookup?.unobserved) parts.push("not in the Lowdown Scanner sample");
+  parts.push(interactions > 0 ? `${interactions} agent-reported interactions` : "no agent-reported interactions");
+  const text = parts.join("; ");
+  return {
+    ...(ev?.name ? { resolved_target: `mcp:${ev.name}` } : {}),
+    message: `${text.charAt(0).toUpperCase()}${text.slice(1)}.`,
   };
 }

@@ -24,13 +24,12 @@ const server = new McpServer({
 // ── 1. get_lowdown ──────────────────────────────────────────────
 server.tool(
   "get_lowdown",
-  "Look up what Lowdown has recorded about an agent, tool, or service. " +
-  "Returns recorded interactions (count, outcomes, success rate). The success rate counts organic tool calls and " +
-  "agent reports only; protocol requests, rejected requests, and seeded or synthetic records are counted separately. " +
-  "For MCP Registry servers it also returns a separate `scanner` block: daily Lowdown Scanner observations of initialize and tools/list reachability, " +
-  "HTTP status, tool count, and tool-schema changes over the last 30 days. " +
-  "Scanner data is observation, not a score. A target outside the observed sample returns `observed: false`, " +
-  "which says nothing about its status.",
+  "Look up what Lowdown has recorded about an MCP server, agent, tool, or service before choosing or connecting to it. " +
+  "For MCP Registry servers it returns, in order: a `registry` block (what the official MCP Registry declares, and changes in the last 30 days); " +
+  "a `scanner` block (daily Lowdown Scanner observations of initialize and tools/list over the last 30 days, one entry per day, days without an observation and why, " +
+  "the tool names observed, and declared versus observed version and hosts); and interactions reported by agents (count, outcomes, success rate). " +
+  "The success rate counts organic tool calls and agent reports only; protocol requests, rejected requests, and seeded or synthetic records are counted separately. " +
+  "These are recorded facts, not scores. A server outside the observed sample returns `observed: false` in `scanner`, which says nothing about its status.",
   {
     target: z.string().describe(
       "MCP Registry name with the mcp: prefix (e.g. 'mcp:io.github.user/server'), a short name, or an id such as 'agent:some-agent-id'"
