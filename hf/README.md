@@ -1,0 +1,110 @@
+---
+license: cc-by-4.0
+pretty_name: Lowdown MCP Registry observations
+tags:
+- mcp
+- model-context-protocol
+- ai-agents
+- observability
+- mcp-registry
+size_categories:
+- 10K<n<100K
+configs:
+- config_name: observations
+  data_files: "scanner_observations/daily/*/*/*.csv.gz"
+  default: true
+- config_name: registry_changes
+  data_files: "registry_changes/daily/*/*/*.csv.gz"
+---
+# lowdown-data
+
+This dataset is a copy of [PetShopBros/lowdown-data](https://github.com/PetShopBros/lowdown-data) on GitHub, which is the source of record. Files are copied unchanged after each daily archive (around 00:45 UTC); `MANIFEST.csv` lists each file with its row count and SHA-256, so the two copies can be compared.
+
+Lowdown is a time-series record of the gap between what the official MCP Registry declares and what is actually observed. It records what changed and when. It does not score, grade, or rank servers.
+
+This repository holds the public output of the Lowdown Scanner: a daily summary report and the raw observation records.
+
+## Contents
+
+| Path | What it is | Updated |
+|---|---|---|
+| [`REPORT.md`](REPORT.md) | Summary of the most recent Scanner run and the last few runs | Regenerated from the database after Scanner runs |
+| `scanner_observations/daily/YYYY/MM/YYYY-MM-DD.csv.gz` | Raw observation records, one gzip-compressed CSV per day (UTC). Columns are listed below. A day with no rows has a header-only file. | Daily, for the previous UTC day |
+| `scanner_observations/parquet/YYYY-MM.parquet` | The same records for a completed month, in Parquet (zstd). `metadata` keys are expanded into `m_<key>` columns; nested values (such as `retry`) are JSON strings. | Once a month, for the previous month |
+| `registry_changes/daily/YYYY/MM/YYYY-MM-DD.csv.gz` | Changes in Registry declarations detected that day (from 2026-10-19) | Daily, for the previous UTC day |
+| `registry_state/snapshots/YYYY-MM-DD.csv.gz` | Full state of Registry declarations as recorded on that day | Once a month |
+| [`MANIFEST.csv`](MANIFEST.csv) | One line per archived file: `dataset`, `day`, `path`, `rows`, `bytes`, `sha256`, `written_at` | With every new file |
+| `LICENSE` | CC BY 4.0 | |
+
+### How the archive is kept
+
+- A day is archived only after it has ended (UTC), and only if the number of rows read matches the number of rows in the database.
+- Archived files are written once and never rewritten. `MANIFEST.csv` records each file's row count and SHA-256, so any copy can be checked.
+- If the database count for an archived day later differs, the file is left unchanged and the difference is reported.
+- The daily CSV files are the source of record. The Parquet files are derived from them for analysis.
+- Until 2026-10-18 the records were published as one CSV per month (`scanner_observations/YYYY-MM.csv`). Those rows are identical to the daily files for the same days, and the monthly files remain in the Git history.
+
+## What the Scanner observes
+
+- **Population:** a fixed sample of 5,000 entries (cohort `2026-10-19-v2`), observed from 2026-10-19. It contains all 2,000 entries of the first cohort `2026-10-07-v1` (observed since 2026-10-06) plus 3,000 entries added on 2026-10-19. The added entries were selected the same way as the first cohort (a fixed hash order over Registry names, among entries with a probeable remote), with at most 3 entries per remote host; first-cohort entries count toward each host's limit, and no entry was removed. The cohort is unchanged after selection. These are Registry entries, not operators, and they do not represent the whole Registry. Only entries with a `streamable-http` remote are in scope; stdio-only servers are not observed.
+- **Requests per host:** from scanner `0.3.0` (2026-10-19), at most one request is sent to the same host at a time, with up to 8 hosts in parallel. Earlier runs sent up to 8 requests at a time regardless of host.
+- **Requests:** `initialize` and `tools/list` only. The Scanner never calls a tool and does not authenticate.
+- **Frequency and location:** once per day, from a single network location (GitHub Actions).
+- **Redirects** are not followed. `401` and `403` are recorded as the status observed, not as success or failure.
+- **Probe method:** every probe is a `POST` JSON-RPC request (`initialize`, then `tools/list`). No `HEAD` or `GET` probes are made, so an HTTP status such as `405` is the server's own answer to that request.
+- **Failure stage:** `reached_level` (`0` initialize did not complete, `1` initialize completed and `tools/list` did not, `2` both completed) together with `init_status` and `list_status` in `metadata` shows how far a probe got.
+- **Single vantage point:** all probes run from one network location (GitHub Actions). A timeout or refusal means "not reachable from there", not necessarily from everywhere.
+- **Retries:** probes that fail in a way that may be temporary (timeout, connection refused or reset, HTTP 408, 429, 5xx) are tried once more a few minutes after the run, one request per host at a time. The retry result is added to the same row under `metadata.retry`. The first-attempt columns are never changed. Rows recorded before retries were introduced have no `retry` key.
+- **Registry fallback:** on a day when the Registry list cannot be fetched, the Scanner observes the same cohort using the remote URLs from the previous run. Those rows carry `metadata.registry_fallback: true` with `registry_snapshot_run` and `registry_snapshot_at`, and that day's Registry changes are not reflected.
+
+These are single probes. They describe reachability at one moment, not availability or uptime.
+
+## Observation columns
+
+| Column | Meaning |
+|---|---|
+| `id` | Row id (ascending) |
+| `scan_run_id` | One id per Scanner run |
+| `node_id` | Id of the observing Scanner node |
+| `target_id` | `mcp:` + Registry server name |
+| `target_type` | Always `mcp_server` |
+| `observed_at` | Time of the first attempt (UTC) |
+| `transport` | Remote transport type (`streamable-http`) |
+| `http_status` | HTTP status of the last response received; empty if no HTTP response |
+| `reached_level` | `0` initialize did not complete, `1` initialize completed and tools/list did not, `2` both completed |
+| `latency_ms` | Latency of the initialize request |
+| `error_type` | Set only when no HTTP response was received (`timeout`, `dns`, `tls`, `conn_refused`, `conn_reset`, `network_error`), the URL was not called (`blocked_url`), or a 2xx response was not valid JSON-RPC (`invalid_response`) |
+| `source` | Always `scanner` |
+| `metadata` | JSON with additional facts, listed below |
+
+Common `metadata` keys: `remote_url`, `remote_index`, `registry_version`, `scanner_version`, `cohort_version`, `cohort_versions` (cohorts the entry belongs to), `scanner_commit`, `registry_fetched_at`, `registry_fallback`, `init_status`, `list_status`, `list_latency_ms`, `list_error_type`, `protocol_version`, `server_version`, `session_id_issued`, `tool_count`, `tools_has_more`, `schema_hash` (tool names and input/output schemas), `desc_hash` (tool names, titles and descriptions), `rpc_error_code`, `www_authenticate`, `www_authenticate_resource_metadata`, and `retry` (`retried_at`, `reached_level`, `http_status`, `error_type`, `latency_ms`, `per_host_concurrency`). Tool descriptions themselves are not stored, only their hash.
+
+## Registry change columns
+
+| Column | Meaning |
+|---|---|
+| `detected_on` | UTC day the change was detected |
+| `detected_at` | Time of the Scanner run that detected it (UTC) |
+| `scan_run_id` | Id of that Scanner run |
+| `name` | Registry server name |
+| `kind` | `new`, `removed`, `restored`, `version`, `status`, `remotes`, `packages`, or `description` |
+| `old_value`, `new_value` | Value before and after (for `description`, a hash; descriptions are not stored) |
+| `hosts` | Remote hosts declared by the entry (for `remotes`, hosts before and after combined) |
+
+Registry state snapshots have the columns `name`, `version`, `status`, `remotes_key`, `packages_key`, `desc_hash`, `hosts`, `first_seen_at`, `baseline`, `removed_at`, `updated_at`. Entries present on 2026-10-19, when recording began, are marked `baseline` and their `first_seen_at` is the time of that first run, not the time they first appeared in the Registry.
+
+## Copies
+
+The same files are copied unchanged to [Hugging Face](https://huggingface.co/datasets/art2meta/lowdown-mcp-observations) after each daily archive. This repository is the source of record; `MANIFEST.csv` lets any copy be checked against it.
+
+## License and citation
+
+The data and `REPORT.md` are licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). You may share and adapt them for any purpose, including commercial use, with attribution.
+
+Suggested attribution:
+
+> Lowdown Scanner data (PetShopBros/lowdown-data), CC BY 4.0, https://github.com/PetShopBros/lowdown-data
+
+## Source
+
+The Scanner code is in [PetShopBros/lowdown-proxy](https://github.com/PetShopBros/lowdown-proxy) (`scanner/`).

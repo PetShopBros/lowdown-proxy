@@ -60,7 +60,7 @@ The same package ships an MCP server (stdio) that lets an agent query Lowdown di
 | `record_interaction` | Records the outcome of using a tool or service |
 | `get_node_stats` | Contribution stats of your node |
 
-The same data is available over HTTP without installing anything: see [Public API](#public-api), the [OpenAPI document](https://lowdown-proxy.vercel.app/openapi.json), and [`llms.txt`](https://lowdown-proxy.vercel.app/llms.txt). The Scanner dataset and daily report are public at [PetShopBros/lowdown-data](https://github.com/PetShopBros/lowdown-data) (CC BY 4.0).
+The same data is available over HTTP without installing anything: see [Public API](#public-api), the [OpenAPI document](https://lowdown-proxy.vercel.app/openapi.json), and [`llms.txt`](https://lowdown-proxy.vercel.app/llms.txt). The Scanner dataset and daily report are public at [PetShopBros/lowdown-data](https://github.com/PetShopBros/lowdown-data) (CC BY 4.0), with a daily copy on [Hugging Face](https://huggingface.co/datasets/art2meta/lowdown-mcp-observations).
 
 ## App logs in tool results
 
@@ -242,7 +242,7 @@ Just run the proxy and share what your agents experience.
 
 ## Status
 
-Running continuously since September 2026. Since October 6, 2026 the Scanner has observed a fixed sample of MCP Registry entries every day: 2,000 entries through October 18, and from October 19 a 5,000-entry sample that keeps all of the first 2,000. The daily report and raw data are public at [PetShopBros/lowdown-data](https://github.com/PetShopBros/lowdown-data).
+Running continuously since September 2026. Since October 6, 2026 the Scanner has observed a fixed sample of MCP Registry entries every day: 2,000 entries through October 18, and from October 19 a 5,000-entry sample that keeps all of the first 2,000. The daily report and raw data are public at [PetShopBros/lowdown-data](https://github.com/PetShopBros/lowdown-data), with a daily copy on [Hugging Face](https://huggingface.co/datasets/art2meta/lowdown-mcp-observations).
 See [DESIGN.md](./DESIGN.md) for what's in scope and what's been ruled out.
 
 ## License

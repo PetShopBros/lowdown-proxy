@@ -19,6 +19,7 @@ Lowdown keeps two kinds of data apart:
 - [Raw observations](https://github.com/PetShopBros/lowdown-data/tree/main/scanner_observations): one gzip-compressed CSV per UTC day and one Parquet file per completed month, one row per probe, CC BY 4.0. [MANIFEST.csv](https://github.com/PetShopBros/lowdown-data/blob/main/MANIFEST.csv) lists every file with its row count and SHA-256.
 - [Registry changes](https://github.com/PetShopBros/lowdown-data/tree/main/registry_changes): changes in Registry declarations, one file per UTC day from 2026-10-19. [Registry snapshots](https://github.com/PetShopBros/lowdown-data/tree/main/registry_state/snapshots): all declarations, once a month.
 - [Dataset README](https://github.com/PetShopBros/lowdown-data/blob/main/README.md): columns, scope, and limits.
+- [Hugging Face copy](https://huggingface.co/datasets/art2meta/lowdown-mcp-observations): the same files, copied daily, with a data viewer.
 
 ## Source
 

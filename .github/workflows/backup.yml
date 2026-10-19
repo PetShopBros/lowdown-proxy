@@ -73,6 +73,24 @@ jobs:
           git pull --rebase
           git push
 
+      # 허깅페이스 사본(art2meta/lowdown-mcp-observations). 원본은 lowdown-data, 파일은 그대로 복사하고 지우지 않는다.
+      # HF_TOKEN(데이터셋 쓰기 전용 fine-grained 토큰)이 없으면 건너뛴다. 바뀐 파일만 올라간다.
+      - name: Copy to Hugging Face
+        if: ${{ !inputs.dry_run }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "HF_TOKEN not set (skip)"
+            exit 0
+          fi
+          pip install huggingface_hub==2.2.0
+          rev=$(git -C data-repo rev-parse --short HEAD)
+          hf upload art2meta/lowdown-mcp-observations data-repo . --repo-type dataset \
+            --exclude ".git/*" --exclude "README.md" --commit-message "sync from lowdown-data $rev"
+          hf upload art2meta/lowdown-mcp-observations hf/README.md README.md --repo-type dataset \
+            --commit-message "dataset card"
+
       # 보관 뒤 DB 행 수가 바뀐 날이 있으면(보관 파일은 그대로) 알림
       - name: Audit mismatch
         if: steps.archive.outputs.audit_mismatch != '' && steps.archive.outputs.audit_mismatch != '0'
