@@ -20,7 +20,7 @@ jobs:
       cancel-in-progress: false
     # ubuntu-latest 는 2026-10-19부터 26.04로 바뀐다. 검증 전까지 24.04 고정.
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -52,6 +52,26 @@ jobs:
             exit 0
           fi
           git commit -m "report: REPORT.md $(date -u +%F)"
+          git pull --rebase
+          git push
+
+      # 시장판 3단계: 일일 기록 페이지·피드 (lowdown-data/docs → GitHub Pages).
+      # REPORT.md 커밋 뒤에 돈다 — 여기서 실패해도 REPORT.md 는 이미 올라가 있다.
+      - name: Generate daily record pages
+        run: node scanner/market.ts data-repo
+        env:
+          LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
+          LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
+
+      - name: Commit and push daily record
+        working-directory: data-repo
+        run: |
+          git add docs
+          if git diff --cached --quiet; then
+            echo "no changes"
+            exit 0
+          fi
+          git commit -m "market: daily record $(date -u +%F)"
           git pull --rebase
           git push
 

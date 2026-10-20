@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 - Scanner 0.5.0 records `metadata.tool_set_hash` on each observation and, with `TOOL_DEFS=1`, stores full tool definitions in private tables (`scanner_tool_defs`, `scanner_tool_set_versions`). Each definition is stored once by content hash; observations reference it, so the history keeps its time axis without storing unchanged definitions again. Definitions are never exposed through the public API or views.
 - Rule flags table (`scanner_tool_flags`) and derived change table (`scanner_tool_changes`). The first rule, `oversize`, marks definitions over 64 KB. Flags describe what was observed; they are not a verdict.
+- Daily record pages (market board, stage 3): one page per UTC day with Registry declaration changes, Lowdown observation counts, server-level tool definition change counts, and values first observed by Lowdown. RSS and JSON Feed (last 30 days), a JSON file per day, an archive, and an About page that defines each section. Published from `lowdown-data/docs` on GitHub Pages; pages and feeds are generated only from the daily JSON files. No scores or rankings.
 
 ## [0.1.18] - 2026-10-20
 

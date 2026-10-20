@@ -111,3 +111,11 @@ curl "https://lowdown-proxy.vercel.app/api/reputation/mcp:io.github.user/server?
 - 공개 레포에서 60일간 레포 활동이 없으면 스케줄 워크플로가 자동 비활성화됩니다(GitHub 정책).
 - legacy `sse` transport와 `{변수}`가 들어간 URL은 probe하지 않습니다(실행 로그 통계에만 집계).
 - scanner는 Node >= 22.18(TypeScript 직접 실행)이 필요합니다. Actions는 Node 24를 씁니다.
+
+## 일일 기록 페이지 (시장판 3단계)
+
+- `node scanner/market.ts <lowdown-data 경로>` → `docs/` (GitHub Pages: main 브랜치 `/docs`). `report.yml`에서 REPORT.md 커밋 뒤에 실행됩니다.
+- 하루 JSON(`docs/days/YYYY-MM-DD.json`)이 유일한 원본입니다. HTML·RSS·JSON Feed·sitemap은 이 파일들에서만 만듭니다.
+- 멱등: 같은 데이터로 다시 돌리면 같은 바이트(커밋 없음). 더 새로운 날짜가 있으면 과거 날짜 파일은 고치지 않습니다. 부분 실행이면 아무것도 쓰지 않고 실패합니다.
+- 실린 것: Registry 선언 변화(이름·호스트·버전·상태), 관찰 결과(숫자만), 도구 정의 변화(서버 단위 숫자만, (대상, 원격) 비교), First observed by Lowdown(공개 기준 적용). 설명문·원격 URL·패키지 키·원문은 싣지 않습니다.
+- 이름 링크는 `?ref=market` 조회로 연결되어 `reputation_lookups.ref`에 기록됩니다. GitHub Pages 자체에는 방문 기록이 없습니다.
