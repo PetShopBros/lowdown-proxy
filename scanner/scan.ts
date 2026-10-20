@@ -8,6 +8,8 @@
 //         base 멤버 행에는 metadata.cohort_versions = [base, version] 을 남겨 base 시계열을 이어 볼 수 있게 한다.
 //       COHORT_HOST_CAP=<N> — 확장 코호트 Day 0 선정 시 호스트당 대상 상한(base 멤버를 먼저 센다). 0/미설정 = 상한 없음
 //       FIRST_SEEN=1 — (0.4.0) 도구 이름 목록(scanner_tool_sets)과 최초 관측(scanner_first_seen) 기록. 전체 실행(limit 없음)에서만.
+//       TOOL_DEFS=1 — (0.5.0) 도구 정의 원문을 비공개 테이블(scanner_tool_defs / scanner_tool_set_versions)에 저장하고 oversize 플래그를 붙인다.
+//         이미 있는 정의·집합은 무시. dry-run 은 계산·집계만. 실패해도 관찰 데이터와 무관(관찰 행의 tool_set_hash 는 항상 기록됨)
 //       REGISTRY_DIFF=1 — 시장판 1단계: 관찰 뒤 Registry 선언 변화를 registry_state/registry_changes 에 기록(probe 없음).
 //         첫 실행은 baseline(이벤트 없음). fallback 날은 건너뜀. dry-run 은 읽고 계산만 한다. 실패해도 관찰 데이터와 무관
 //       PLAN_ONLY=1 또는 --plan-only — Registry 수신 + 선정 계산만 하고 끝낸다(probe·저장 없음). COHORT_BASE 필요
@@ -55,6 +57,7 @@ import {
 } from './lib.ts';
 import { diffRegistry, fetchRegistryState, insertRegistryChanges, upsertRegistryState } from './registry-diff.ts';
 import { aggregateObserved, computeFirstSeen, fetchFirstSeen, insertToolSets, isPublishable, toolSetRows, upsertFirstSeen } from './first-seen.ts';
+import { insertToolDefs, insertToolFlags, insertToolSetVersions, oversizeFlags, ToolDefCollector, toolDefRows, toolSetVersionRows } from './tool-defs.ts';
 import type { CohortGap, CohortGapRow, CohortJob, ObservationRow, ProbeResult, RetryInfo } from './lib.ts';
 
 function fail(message: string): never {
@@ -330,10 +333,12 @@ async function main(): Promise<void> {
   const hostBusyMs = new Map<string, number>();
   // 도구 이름은 관찰 행에 넣지 않고(행 크기·공개 CSV) 메모리에만 두었다가 scanner_tool_sets 로 저장
   const toolNamesByRow = new WeakMap<ObservationRow, string[]>();
+  // (0.5.0) 도구 정의 원문도 관찰 행에 넣지 않는다. 정의·집합 단위로 중복 없이 메모리에 모았다가 비공개 테이블로 저장
+  const toolDefs = new ToolDefCollector();
   const probeOne = async (job: CohortJob): Promise<ObservationRow> => {
     const observedAt = new Date().toISOString();
     try {
-      const { tool_names: toolNames, ...p } = await probeRemote(job.remote, { registryVersion: job.version, index: job.index });
+      const { tool_names: toolNames, tool_defs: defs, ...p } = await probeRemote(job.remote, { registryVersion: job.version, index: job.index });
       const row: ObservationRow = {
         scan_run_id: runId,
         node_id: nodeId,
@@ -345,6 +350,7 @@ async function main(): Promise<void> {
         metadata: { ...p.metadata, ...runMeta, ...(cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {}) },
       };
       if (toolNames) toolNamesByRow.set(row, toolNames);
+      toolDefs.add(p.metadata.tool_set_hash, defs);
       return row;
     } catch (e) {
       console.error(`unexpected probe error for ${job.name}: ${e instanceof Error ? e.message : 'unknown'}`);
@@ -491,6 +497,37 @@ async function main(): Promise<void> {
     }
     console.log('first seen', JSON.stringify(firstSeenStats));
   }
+
+  // 7) (0.5.0) 도구 정의 원문 — 비공개 저장. 관찰과 독립, 실패해도 계속. 정의 → 집합 → 플래그 순(집합이 가리키는 정의가 먼저 있어야 한다)
+  let toolDefStats: Record<string, string | number> = {};
+  if (process.env.TOOL_DEFS?.trim() === '1') {
+    const tTd = Date.now();
+    const ctx = { now: new Date().toISOString(), scanRunId: runId };
+    const defRows = toolDefRows(toolDefs, ctx);
+    const setRows = toolSetVersionRows(toolDefs, ctx);
+    const flags = oversizeFlags(defRows, ctx);
+    toolDefStats = {
+      tool_defs_unique: defRows.length,
+      tool_defs_bytes: toolDefs.bytes(),
+      tool_sets_unique: setRows.length,
+      tool_defs_oversize: flags.length,
+    };
+    if (supabase) {
+      try {
+        const d = await insertToolDefs(supabase, defRows);
+        const s = await insertToolSetVersions(supabase, setRows);
+        const f = await insertToolFlags(supabase, flags);
+        toolDefStats.tool_defs_written = `defs sent ${d}, sets sent ${s}, flags sent ${f}`;
+      } catch (e) {
+        console.error(`tool_defs 실패(관찰 데이터는 저장 완료): ${e instanceof Error ? e.message : 'unknown'}`);
+        toolDefStats.tool_defs_written = 'error';
+      }
+    } else {
+      toolDefStats.tool_defs_written = 'dry-run (not written)';
+    }
+    toolDefStats.tool_defs_sec = Math.round((Date.now() - tTd) / 1000);
+    console.log('tool defs', JSON.stringify(toolDefStats));
+  }
   const totalSec = Math.round((Date.now() - t0) / 1000);
   const summary = summarize(all, runId, {
     dry_run: dryRun,
@@ -508,6 +545,7 @@ async function main(): Promise<void> {
     ...retryStats,
     ...diffStats,
     ...firstSeenStats,
+    ...toolDefStats,
   });
   console.log(summary);
   if (dryRun) {

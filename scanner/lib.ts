@@ -1,5 +1,6 @@
 // Lowdown MCP Scanner — 핵심 로직 (의존성 0, Node >= 22.18)
-// 원칙: 관찰한 사실만 기록한다. tools/call 은 하지 않는다. tool 이름/설명문은 저장하지 않는다.
+// 원칙: 관찰한 사실만 기록한다. tools/call 은 하지 않는다. 관찰 행에는 tool 이름/설명문을 넣지 않는다.
+//       (0.5.0~) 도구 정의 원문은 비공개 테이블 scanner_tool_defs 에만 저장한다. 공개 view·API 에는 해시·변경 유형·플래그만.
 
 import { createHash } from 'node:crypto';
 import { lookup as dnsLookup } from 'node:dns';
@@ -12,8 +13,9 @@ import type { LookupFunction } from 'node:net';
 // 관찰 결과의 의미가 바뀌는 수정(probe 판정·저장 필드·코호트 규칙)마다 올린다. CHANGELOG 의 Scanner 항목과 맞춘다.
 //   0.1.0 — 2026-10-06 최초 / 0.2.0 — 2026-10-16 scanner_commit·registry_fetched_at 기록 시작
 //   0.3.0 — 2026-10-19 메인 probe 호스트당 동시 1건 / 0.4.0 — capabilities·names_hash 기록, 도구 이름 목록 별도 저장
+//   0.5.0 — 2026-10-21 metadata.tool_set_hash 기록, 도구 정의 원문 비공개 저장(scanner_tool_defs)
 //   (0.1.0 기간에도 재시도·대체·사유 분리가 추가됐으므로 그 기간 행의 정확한 코드는 알 수 없다)
-export const SCANNER_VERSION = '0.4.0';
+export const SCANNER_VERSION = '0.5.0';
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 export const USER_AGENT = `lowdown-scanner/${SCANNER_VERSION}`;
 export const DEFAULT_REGISTRY_URL = 'https://registry.modelcontextprotocol.io';
@@ -375,6 +377,57 @@ export function hashTools(tools: unknown[]): { schema_hash: string; desc_hash: s
   return { schema_hash: sha256(`[${schema.join(',')}]`), desc_hash: sha256(`[${desc.join(',')}]`) };
 }
 
+// ─────────────────────────────────────────────
+// 도구 정의 원문 (0.5.0~) — 비공개 테이블(scanner_tool_defs)에만 저장한다. 관찰 행·공개 view·API 에는 넣지 않는다.
+//   원문은 원격 서버가 보낸, 신뢰할 수 없는 문자열이다. 저장·해시·규칙 검사에만 쓰고 에이전트에 그대로 전달하지 않는다.
+//   body     = canonicalJson(도구 객체 전체: name, title, description, inputSchema, outputSchema, annotations, _meta ...)
+//              text 로 저장한다(jsonb 는 \u0000 을 받지 않는다. canonicalJson 은 제어문자를 이스케이프하므로 text 에 안전).
+//   def_hash = sha256(body). 같은 정의는 서버·날짜와 무관하게 한 번만 저장된다.
+//   tool_schema_hash / tool_desc_hash = 서버 단위 schema_hash / desc_hash 를 이루는 도구 하나분 원소의 해시.
+//   tool_set_hash = sha256(정렬한 def_hash 목록, 중복 포함). 관찰 행 metadata 에 기록 → scanner_tool_set_versions 로 원문을 찾는다.
+//   크기 상한 없이 저장한다(응답 전체가 이미 4MB 상한). OVERSIZE_DEF_BYTES 를 넘으면 oversize 플래그만 붙인다.
+// ─────────────────────────────────────────────
+
+export const OVERSIZE_DEF_BYTES = 64 * 1024;
+
+export interface ToolDef {
+  def_hash: string;
+  tool_name: string | null;
+  body: string;
+  tool_schema_hash: string;
+  tool_desc_hash: string;
+  byte_size: number;
+}
+
+function asToolObject(t: unknown): Record<string, unknown> {
+  return typeof t === 'object' && t !== null && !Array.isArray(t) ? (t as Record<string, unknown>) : {};
+}
+
+/** tools/list 의 원소 하나 → 원문 정의. 객체가 아닌 원소도 그대로 원문으로 남긴다(해시 원소는 hashTools 와 같이 {} 취급). */
+export function toolDefOf(t: unknown): ToolDef {
+  const body = canonicalJson(t);
+  const o = asToolObject(t);
+  const name = typeof o.name === 'string' ? o.name : null;
+  return {
+    def_hash: sha256(body),
+    tool_name: name,
+    body,
+    tool_schema_hash: sha256(canonicalJson({ name: o.name, inputSchema: o.inputSchema, outputSchema: o.outputSchema })),
+    tool_desc_hash: sha256(canonicalJson({ name: o.name, title: o.title, description: o.description })),
+    byte_size: Buffer.byteLength(body, 'utf8'),
+  };
+}
+
+/** 정렬한 def_hash 목록(중복 포함)의 해시. 도구 순서와 무관하다. */
+export function toolSetHash(defHashes: readonly string[]): string {
+  return sha256(JSON.stringify([...defHashes].sort()));
+}
+
+/** 저장된 원문으로 서버 단위 해시를 다시 계산한다. 관찰 행의 schema_hash / desc_hash 와 같아야 원문이 손실 없이 저장된 것이다. */
+export function serverHashesFromBodies(bodies: readonly string[]): { schema_hash: string; desc_hash: string } {
+  return hashTools(bodies.map((b) => JSON.parse(b) as unknown));
+}
+
 function shortText(v: unknown, max = 64): string | null {
   if (typeof v !== 'string') return null;
   // eslint-disable-next-line no-control-regex
@@ -395,6 +448,8 @@ export interface ProbeResult {
   metadata: Record<string, unknown>;
   /** L2 에서 받은 도구 이름(형식 통과분, 정렬). 관찰 행에는 넣지 않고 scanner_tool_sets 로만 저장한다. */
   tool_names?: string[];
+  /** (0.5.0) L2 에서 받은 도구 정의 원문. 관찰 행에는 넣지 않고 scanner_tool_defs 로만 저장한다. */
+  tool_defs?: ToolDef[];
 }
 
 const CAPABILITY_KEY = /^[A-Za-z][A-Za-z0-9_]{0,31}$/;
@@ -471,11 +526,13 @@ export async function probeRemote(
     scanner_version: SCANNER_VERSION,
   };
   let toolNames: string[] | undefined;
-  const out = (p: Omit<ProbeResult, 'transport' | 'metadata' | 'tool_names'>): ProbeResult => ({
+  let toolDefs: ToolDef[] | undefined;
+  const out = (p: Omit<ProbeResult, 'transport' | 'metadata' | 'tool_names' | 'tool_defs'>): ProbeResult => ({
     transport: remote.type,
     metadata,
     ...p,
     ...(toolNames ? { tool_names: toolNames } : {}),
+    ...(toolDefs ? { tool_defs: toolDefs } : {}),
   });
 
   // L1: initialize
@@ -604,6 +661,13 @@ export async function probeRemote(
     toolNames = tn.names;
     metadata.names_hash = namesHash(tn.names);
     if (tn.rejected > 0) metadata.tool_names_rejected = tn.rejected;
+    try {
+      const defs = lr.tools.map(toolDefOf);
+      toolDefs = defs;
+      metadata.tool_set_hash = toolSetHash(defs.map((d) => d.def_hash));
+    } catch {
+      metadata.tool_defs_error = true;
+    }
     return out({ http_status: list.status, reached_level: 2, latency_ms: latency, error_type: null });
   } finally {
     await closeSession();

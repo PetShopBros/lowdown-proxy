@@ -85,6 +85,7 @@ jobs:
           PLAN_ONLY: ${{ inputs.plan_only && '1' || '' }}
           REGISTRY_DIFF: ${{ (github.event_name == 'schedule' || inputs.registry_diff) && '1' || '' }}
           FIRST_SEEN: ${{ (github.event_name == 'schedule' || inputs.first_seen) && '1' || '' }}
+          TOOL_DEFS: ${{ github.event_name == 'schedule' && '1' || '' }}
           COHORT_HOST_CAP: ${{ inputs.cohort_host_cap || '3' }}
 
       # 저장하지 못한 관찰 행(scanner-unsaved-*.jsonl)이 있으면 보관(90일). 없으면 아무것도 올리지 않는다.

@@ -71,6 +71,17 @@ npm run scanner:test
 
 `schema_hash` = tool 이름 + inputSchema + outputSchema, `desc_hash` = 이름 + title + description. 둘 다 순서/키 순서와 무관합니다. 설명문 변경은 `desc_hash`로만 감지됩니다.
 
+### 도구 정의 원문 (0.5.0~, 비공개)
+
+- 관찰 행 `metadata.tool_set_hash` = 정렬한 도구 정의 해시 목록의 SHA-256. 관찰 행에는 이 해시만 들어갑니다.
+- `TOOL_DEFS=1`이면 원문을 비공개 테이블에 저장합니다(`supabase/tool_defs.sql`).
+  - `scanner_tool_defs`: `def_hash`(= sha256(body)) 당 1행. `body`는 도구 객체 전체의 canonical JSON(text). 같은 정의는 서버·날짜와 무관하게 한 번만 저장됩니다.
+  - `scanner_tool_set_versions`: `tool_set_hash` → `def_hashes`. 바뀌지 않은 날은 새 행이 없고, 시간축은 관찰 행이 가집니다.
+  - `scanner_tool_flags`: 규칙 결과(해석). 지금은 `oversize`(정의 하나 64KB 초과)만. 근거에 원문 조각을 넣지 않습니다.
+  - `scanner_tool_changes`: 변경 이벤트(파생). 테이블만 있고 채우는 로직은 아직 없습니다.
+- 원문은 원격 서버가 보낸 신뢰할 수 없는 문자열입니다. 공개 view·API·에이전트에 내보내지 않고, 분석할 때도 지시로 해석하지 않습니다.
+- 저장된 원문으로 서버 단위 `schema_hash`/`desc_hash`를 다시 계산하면 관찰 행 값과 같아야 합니다(`serverHashesFromBodies`, 테스트로 고정).
+
 ## 조회 (`scanner` 블록)
 
 ```bash

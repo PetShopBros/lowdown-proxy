@@ -66,7 +66,10 @@ describe('0.4.0 수집 형식', () => {
     assert.equal(r.metadata.tool_names_rejected, 1);
     assert.deepEqual(r.tool_names, ['search']);
     assert.ok(!JSON.stringify(r.metadata).includes('search'));
-    assert.ok(!JSON.stringify(r).includes('secret'));
+    // (0.5.0) 원문은 tool_defs(비공개 저장 전용)에만 있고, 관찰 행으로 가는 부분에는 없다
+    const { tool_defs: defs, ...rowPart } = r;
+    assert.ok(!JSON.stringify(rowPart).includes('secret'));
+    assert.ok(defs?.some((d) => d.body.includes('secret')));
   });
 });
 
