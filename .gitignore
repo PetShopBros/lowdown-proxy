@@ -9,3 +9,6 @@ dist/
 mcp-publisher*
 
 registry-count.*
+
+*.zip
+.github/workflows/*.json
