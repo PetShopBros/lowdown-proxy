@@ -23,7 +23,7 @@
 // target_id 는 기존 Lowdown 표기와 맞춰 `mcp:` + Registry 이름 (예: mcp:io.github.user/server)
 
 import { randomUUID } from 'node:crypto';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync } from 'node:fs';
 import {
   attachRetry,
   DEFAULT_COHORT_SIZE,
@@ -39,8 +39,8 @@ import {
   fetchFallbackJobs,
   fetchRegistryTargets,
   hostOf,
+  createDurableInserter,
   insertCohortGaps,
-  insertObservations,
   isRetryable,
   MAX_COHORT_SIZE,
   planCohortJobs,
@@ -315,13 +315,16 @@ async function main(): Promise<void> {
   const all: ObservationRow[] = [];
   let pending: ObservationRow[] = [];
   let inserted = 0;
+  // 저장 실패 한 번이 스캔 전체를 버리지 않게: 실패한 배치는 보관 → 막힌 동안 60초에 한 번만 시도 → 스캔 뒤 길게 대기하며 재시도
+  //  (2026-10-20 06:10 UTC: Supabase 무응답으로 첫 저장에서 16분짜리 스캔 전체가 중단됐다)
+  const durable = supabase ? createDurableInserter(supabase, { log: (m) => console.error(m) }) : undefined;
   const flush = async (): Promise<void> => {
     if (pending.length === 0) return;
     const batch = pending;
     pending = [];
-    if (supabase) {
-      inserted += await insertObservations(batch, supabase);
-      console.log(`inserted ${inserted}/${jobs.length}`);
+    if (durable) {
+      await durable.push(batch);
+      console.log(`inserted ${durable.inserted()}/${jobs.length}${durable.backlogBatches() ? ` (보관 중 ${durable.backlogBatches()}배치)` : ''}`);
     }
   };
   const hostBusyMs = new Map<string, number>();
@@ -381,6 +384,18 @@ async function main(): Promise<void> {
     },
   );
   await flush();
+  // 막혀서 보관한 배치가 있으면 여기서 길게 대기하며 다시 저장. 끝내 못 넣은 행은 JSONL 로 남긴다(워크플로가 artifact 로 올림).
+  let unsavedRows = 0;
+  if (durable) {
+    const { unsaved } = await durable.finish();
+    inserted = durable.inserted();
+    unsavedRows = unsaved.length;
+    if (unsaved.length > 0) {
+      const file = `scanner-unsaved-${runId}.jsonl`;
+      writeFileSync(file, unsaved.map((r) => JSON.stringify(r)).join('\n') + '\n');
+      console.error(`::error::저장하지 못한 관찰 ${unsaved.length}행을 ${file} 에 남겼습니다`);
+    }
+  }
   // 가장 오래 붙잡힌 호스트 = probe 시간의 하한. timeout 을 정할 때 본다.
   const slowestHosts = [...hostBusyMs.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([h, ms]) => [h, Math.round(ms / 1000)]);
 
@@ -504,6 +519,8 @@ async function main(): Promise<void> {
   // 전체 관찰을 실제로 저장했을 때만 report job 이 돈다(scanner.yml: needs.scan.outputs.scanned). 샘플(limit)·dry-run·건너뛴 예비 실행은 제외
   const outputFile = process.env.GITHUB_OUTPUT;
   if (outputFile && !dryRun && !limit && inserted > 0) appendFileSync(outputFile, 'scanned=1\n');
+  // 저장하지 못한 행이 있으면 실패로 끝낸다(이슈 자동 생성). 나머지 단계는 이미 다 돌았다.
+  if (unsavedRows > 0) process.exitCode = 1;
 }
 
 function pct(x: number): string {

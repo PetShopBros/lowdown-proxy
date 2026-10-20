@@ -860,6 +860,8 @@ export interface InsertDeps {
   sleep?: (ms: number) => Promise<void>;
   batchSize?: number;
   maxAttempts?: number;
+  /** 이전 시도의 응답이 유실됐을 수 있는 배치의 재시도: 첫 시도의 409(unique index)도 "이미 저장됨"으로 본다 */
+  assumeAmbiguous?: boolean;
 }
 
 export async function insertObservations(rows: ObservationRow[], cfg: SupabaseConfig, deps: InsertDeps = {}): Promise<number> {
@@ -873,7 +875,7 @@ export async function insertObservations(rows: ObservationRow[], cfg: SupabaseCo
   for (let i = 0; i < rows.length; i += size) {
     const batch = rows.slice(i, i + size);
     const body = JSON.stringify(batch);
-    let ambiguous = false;
+    let ambiguous = deps.assumeAmbiguous === true;
     for (let attempt = 1; ; attempt++) {
       let res: Response | null = null;
       try {
@@ -910,6 +912,99 @@ export async function insertObservations(rows: ObservationRow[], cfg: SupabaseCo
     }
   }
   return inserted;
+}
+
+export interface DurableInserterOpts {
+  /** 테스트용 주입. 기본은 insertObservations */
+  insert?: (rows: ObservationRow[], cfg: SupabaseConfig, deps: InsertDeps) => Promise<number>;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  log?: (msg: string) => void;
+  /** 저장이 막힌 뒤 새 배치를 바로 시도하지 않는 시간(ms). 기본 60초 */
+  cooldownMs?: number;
+  /** 스캔이 끝난 뒤 남은 배치를 다시 시도하기 전 대기(ms). 기본 60·120·240초 */
+  recoveryWaitsMs?: number[];
+}
+
+export interface DurableInserter {
+  /** 배치 하나를 저장한다. 실패해도 throw 하지 않고 보관해 두었다가 다시 시도한다. */
+  push(batch: ObservationRow[]): Promise<void>;
+  /** 스캔이 끝난 뒤: 남은 배치를 대기 후 재시도하고, 끝내 못 넣은 행을 돌려준다. */
+  finish(): Promise<{ unsaved: ObservationRow[] }>;
+  inserted(): number;
+  backlogBatches(): number;
+}
+
+/**
+ * 저장 실패 한 번이 16분짜리 스캔 전체를 버리지 않게 한다(2026-10-20 06:10 UTC, Supabase 응답 없음).
+ * 실패한 배치는 메모리에 보관, 막힌 동안은 60초에 한 번만 1회 시도, 끝난 뒤 길게 대기하며 재시도.
+ * 보관한 배치는 응답이 유실됐을 수 있으므로 409(unique index)를 "이미 저장됨"으로 본다.
+ */
+export function createDurableInserter(cfg: SupabaseConfig, opts: DurableInserterOpts = {}): DurableInserter {
+  const insert = opts.insert ?? insertObservations;
+  const sleep = opts.sleep ?? defaultSleep;
+  const now = opts.now ?? Date.now;
+  const log = opts.log ?? (() => {});
+  const cooldownMs = opts.cooldownMs ?? 60_000;
+  const waits = opts.recoveryWaitsMs ?? [60_000, 120_000, 240_000];
+  const backlog: ObservationRow[][] = [];
+  let inserted = 0;
+  let blockedAt = 0; // 0 = 막히지 않음
+
+  const attempt = async (batch: ObservationRow[], maxAttempts: number, ambiguous: boolean): Promise<boolean> => {
+    try {
+      inserted += await insert(batch, cfg, { maxAttempts, assumeAmbiguous: ambiguous });
+      return true;
+    } catch (e) {
+      log(`저장 실패(보관 후 재시도): ${e instanceof Error ? e.message : 'unknown'}`);
+      return false;
+    }
+  };
+
+  const drain = async (maxAttempts: number): Promise<boolean> => {
+    while (backlog.length > 0) {
+      if (!(await attempt(backlog[0]!, maxAttempts, true))) return false;
+      backlog.shift();
+    }
+    return true;
+  };
+
+  return {
+    async push(batch) {
+      if (batch.length === 0) return;
+      if (blockedAt && now() - blockedAt < cooldownMs) {
+        backlog.push(batch);
+        return;
+      }
+      const probing = blockedAt !== 0; // 막혀 있던 뒤의 첫 시도는 1회만(오래 붙잡히지 않게)
+      const maxAttempts = probing ? 1 : 4;
+      if (backlog.length > 0 && !(await drain(maxAttempts))) {
+        blockedAt = now();
+        backlog.push(batch);
+        return;
+      }
+      if (await attempt(batch, maxAttempts, false)) {
+        if (probing) log(`저장 복구(보관 배치 모두 저장)`);
+        blockedAt = 0;
+        return;
+      }
+      blockedAt = now();
+      backlog.push(batch);
+    },
+    async finish() {
+      for (const w of waits) {
+        if (backlog.length === 0) break;
+        log(`보관한 배치 ${backlog.length}개, ${Math.round(w / 1000)}초 뒤 재시도`);
+        await sleep(w);
+        if (await drain(4)) blockedAt = 0;
+      }
+      if (backlog.length === 0) return { unsaved: [] };
+      const unsaved = backlog.splice(0).flat();
+      return { unsaved };
+    },
+    inserted: () => inserted,
+    backlogBatches: () => backlog.length,
+  };
 }
 
 // ─────────────────────────────────────────────

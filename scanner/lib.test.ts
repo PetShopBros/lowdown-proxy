@@ -13,6 +13,7 @@ import {
   capHost,
   classifyNetworkError,
   countObservationsSince,
+  createDurableInserter,
   csvEscape,
   extendCohort,
   extendCohortCapped,
@@ -521,6 +522,106 @@ describe('supabase', () => {
   test('재시도 소진 시 실패', async () => {
     const f = (async () => new Response('x', { status: 503 })) as unknown as typeof fetch;
     await assert.rejects(insertObservations([ROW], CFG, { fetchImpl: f, sleep: async () => {}, maxAttempts: 3 }), /HTTP 503/);
+  });
+});
+
+describe('insertObservations assumeAmbiguous', () => {
+  test('assumeAmbiguous: 첫 시도 409 도 이미 저장된 배치로 본다', async () => {
+    const f = (async () => new Response('dup', { status: 409 })) as unknown as typeof fetch;
+    assert.equal(await insertObservations([ROW], CFG, { fetchImpl: f, assumeAmbiguous: true }), 1);
+  });
+});
+
+describe('createDurableInserter', () => {
+  const batch = (n: number): ObservationRow[] => Array.from({ length: n }, () => ROW);
+  type InsertFn = NonNullable<NonNullable<Parameters<typeof createDurableInserter>[1]>['insert']>;
+
+  test('정상이면 바로 저장, 보관 없음', async () => {
+    const insert: InsertFn = async (rows) => rows.length;
+    const d = createDurableInserter(CFG, { insert, sleep: async () => {} });
+    await d.push(batch(3));
+    assert.equal(d.inserted(), 3);
+    assert.equal(d.backlogBatches(), 0);
+    assert.deepEqual((await d.finish()).unsaved, []);
+  });
+
+  test('저장 실패는 throw 하지 않고 보관, 막힌 동안 새 배치는 시도 없이 보관', async () => {
+    let calls = 0;
+    let t = 1_000_000;
+    const insert: InsertFn = async () => {
+      calls++;
+      throw new Error('supabase insert failed: HTTP network');
+    };
+    const logs: string[] = [];
+    const d = createDurableInserter(CFG, { insert, sleep: async () => {}, now: () => t, log: (m) => logs.push(m) });
+    await d.push(batch(2)); // 실패 → 보관
+    assert.equal(calls, 1);
+    t += 10_000;
+    await d.push(batch(2)); // 쿨다운 중: 시도 없이 보관
+    assert.equal(calls, 1);
+    assert.equal(d.backlogBatches(), 2);
+    assert.equal(d.inserted(), 0);
+    assert.match(logs[0]!, /network/);
+  });
+
+  test('쿨다운이 지나면 1회만 시도, 복구되면 보관 배치까지 모두 저장', async () => {
+    let up = false;
+    const maxSeen: number[] = [];
+    const ambSeen: boolean[] = [];
+    let t = 1_000_000;
+    const insert: InsertFn = async (rows, _c, deps) => {
+      maxSeen.push(deps.maxAttempts ?? -1);
+      ambSeen.push(deps.assumeAmbiguous === true);
+      if (!up) throw new Error('down');
+      return rows.length;
+    };
+    const d = createDurableInserter(CFG, { insert, sleep: async () => {}, now: () => t });
+    await d.push(batch(1)); // 실패(4회 시도 설정, 첫 배치는 ambiguous=false)
+    await d.push(batch(1)); // 쿨다운 → 보관
+    t += 61_000;
+    up = true;
+    await d.push(batch(1)); // 보관 2개 + 이 배치 저장
+    assert.equal(d.inserted(), 3);
+    assert.equal(d.backlogBatches(), 0);
+    assert.equal(maxSeen[0], 4);
+    assert.ok(maxSeen.slice(1).every((m) => m === 1), '막힌 뒤의 시도는 1회씩');
+    assert.equal(ambSeen[0], false);
+    assert.ok(ambSeen.slice(1).includes(true), '보관 배치 재시도는 assumeAmbiguous');
+  });
+
+  test('finish: 대기 후 복구되면 unsaved 없음', async () => {
+    let up = false;
+    const waits: number[] = [];
+    const insert: InsertFn = async (rows) => {
+      if (!up) throw new Error('down');
+      return rows.length;
+    };
+    const d = createDurableInserter(CFG, {
+      insert,
+      sleep: async (ms) => {
+        waits.push(ms);
+        if (waits.length === 2) up = true;
+      },
+    });
+    await d.push(batch(4));
+    const r = await d.finish();
+    assert.deepEqual(r.unsaved, []);
+    assert.equal(d.inserted(), 4);
+    assert.deepEqual(waits, [60_000, 120_000]);
+  });
+
+  test('finish: 끝내 실패하면 남은 행을 돌려준다(3회 대기)', async () => {
+    const waits: number[] = [];
+    const insert: InsertFn = async () => {
+      throw new Error('down');
+    };
+    const d = createDurableInserter(CFG, { insert, sleep: async (ms) => void waits.push(ms) });
+    await d.push(batch(2));
+    await d.push(batch(3));
+    const r = await d.finish();
+    assert.equal(r.unsaved.length, 5);
+    assert.deepEqual(waits, [60_000, 120_000, 240_000]);
+    assert.equal(d.backlogBatches(), 0);
   });
 });
 
