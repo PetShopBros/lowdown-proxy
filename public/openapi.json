@@ -67,7 +67,7 @@
                     },
                     "message": {
                       "type": "string",
-                      "description": "One factual sentence: whether a Registry record, Scanner observations, and reported interactions exist."
+                      "description": "One factual sentence: whether a Registry record, Scanner observations, and reported interactions exist, and, for observed servers, when tool definitions last changed."
                     },
                     "registry": {
                       "type": "object",
@@ -279,6 +279,130 @@
                           ],
                           "format": "date-time",
                           "description": "First observation of this target by Lowdown Scanner."
+                        },
+                        "definition_changes": {
+                          "type": "object",
+                          "description": "Changes in the server's tool definitions in Lowdown's daily observations of the last 30 days. Each day's observation is compared with the previous one from the same remote URL, using hashes of tool schemas, descriptions and names; description text is never returned. Facts only: no score or risk level.",
+                          "properties": {
+                            "pattern": {
+                              "type": "string",
+                              "enum": [
+                                "not_enough_observations",
+                                "no_change_observed",
+                                "changed",
+                                "changes_on_most_days"
+                              ],
+                              "description": "`changes_on_most_days`: definitions changed on at least half of at least 4 compared days, so a single change is routine for this server."
+                            },
+                            "observed_days": {
+                              "type": "integer",
+                              "description": "Days with a complete tools/list observation (reached_level 2)."
+                            },
+                            "compared_days": {
+                              "type": "integer",
+                              "description": "Days that could be compared with an earlier observation from the same remote."
+                            },
+                            "change_days": {
+                              "type": "integer",
+                              "description": "Compared days on which a schema, description or tool name hash differed."
+                            },
+                            "first_compared_day": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "format": "date"
+                            },
+                            "last_change": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "format": "date"
+                            },
+                            "days_since_last_change": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ],
+                              "description": "Days from last_change to the latest observed day."
+                            },
+                            "stable_days_before_last_change": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ],
+                              "description": "Days from the previous change (or the first observed day) to last_change."
+                            },
+                            "events": {
+                              "type": "array",
+                              "description": "Up to 5 most recent changes, newest first.",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "day": {
+                                    "type": "string",
+                                    "format": "date"
+                                  },
+                                  "kinds": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "enum": [
+                                        "schema_changed",
+                                        "description_changed",
+                                        "tool_names_changed",
+                                        "server_version_changed"
+                                      ]
+                                    }
+                                  },
+                                  "tool_count": {
+                                    "type": "object",
+                                    "properties": {
+                                      "from": {
+                                        "type": "integer"
+                                      },
+                                      "to": {
+                                        "type": "integer"
+                                      }
+                                    }
+                                  },
+                                  "server_version": {
+                                    "type": "object",
+                                    "properties": {
+                                      "from": {
+                                        "type": "string"
+                                      },
+                                      "to": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "returned_to_earlier_definition": {
+                                    "type": "boolean",
+                                    "description": "The new definition equals one observed earlier from the same remote."
+                                  },
+                                  "compared_with": {
+                                    "type": "string",
+                                    "format": "date"
+                                  },
+                                  "remote_host": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ],
+                                    "description": "Present only when the server has several remotes."
+                                  }
+                                }
+                              }
+                            },
+                            "note": {
+                              "type": "string"
+                            },
+                            "basis": {
+                              "type": "string"
+                            }
+                          }
                         },
                         "daily_30d": {
                           "type": "array",

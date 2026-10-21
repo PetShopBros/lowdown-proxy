@@ -96,13 +96,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const userAgent = (req.headers["user-agent"] as string) ?? null;
 
-    await supabase.from("reputation_lookups").insert({
+    const lookupRow = {
       requester,
       target,
       source,
       user_agent: userAgent,
       ...(ref ? { ref } : {}),
-    } as never);
+    };
+    // 응답 종류(result_kind)를 함께 남겨 "답이 없어 낭비된 조회" 비율을 잰다.
+    // 열이 아직 없는 DB 에서도 조회 기록이 빠지지 않도록, 실패하면 result_kind 없이 한 번 더 쓴다.
+    const logged = await supabase.from("reputation_lookups").insert({ ...lookupRow, result_kind: resultKind(taskType, scannerLookup, evidence, data) } as never);
+    if (logged.error) await supabase.from("reputation_lookups").insert(lookupRow as never);
 
     if (error || !data) {
       return res.status(200).json({
@@ -253,6 +257,17 @@ function buildFailureBreakdown(rows: any[]): Record<string, number> | null {
     breakdown[key] = (breakdown[key] ?? 0) + 1;
   }
   return breakdown;
+}
+
+/** 조회 기록용 응답 종류. 판정이 아니라 "무엇으로 답했나"만. */
+export function resultKind(taskType: string | null, lookup: ScannerLookup | null, ev: Evidence | null, data: unknown): string {
+  if (taskType) return "task_type";
+  if (lookup?.summary) return "observed";
+  if ((lookup?.candidates.length ?? 0) > 0 || (ev?.registryCandidates?.length ?? 0) > 0) return "candidates";
+  const reg = ev?.registry as Record<string, unknown> | undefined;
+  if (reg && (reg.listed === true || reg.removed_at)) return "registry_only";
+  if (data) return "interactions_only";
+  return "none";
 }
 
 // ── Scanner 관찰 블록 ────────────────────────────────────────────
@@ -442,6 +457,128 @@ interface ObsRow {
   names_hash?: unknown;
   remote_url?: unknown;
   retry_level?: unknown;
+  desc_hash?: unknown;
+  server_version?: unknown;
+}
+
+// ── 도구 정의 변경 이력 ───────────────────────────────────────────
+// 같은 원격 주소의 L2 관찰을 직전 L2 관찰과 비교한다(해시만, 원문 없음).
+// 사실만: 점수·위험 등급·판정 없음. 자주 바뀌는 서버는 그 사실을 함께 적어 한 번의 변경을 과대 해석하지 않게 한다.
+const HASH_RE = /^[0-9a-f]{16,64}$/;
+export const FREQUENT_SHARE = 0.5; // 비교한 날 중 이 비율 이상 바뀌면 changes_on_most_days
+export const FREQUENT_MIN_DAYS = 4; // 이 수 이상 비교했을 때만 changes_on_most_days 로 본다
+const MAX_EVENTS = 5;
+
+interface DefPoint {
+  at: string;
+  day: string;
+  sh: string;
+  dh: string;
+  nh: string | null;
+  count: number | null;
+  version: string | null;
+}
+
+const dayDiff = (a: string, b: string) => Math.round((Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / DAY_MS);
+
+export function definitionChanges(rows: ObsRow[]): Record<string, unknown> {
+  const byRemote = new Map<string, DefPoint[]>();
+  for (const r of rows) {
+    if (r.reached_level !== 2) continue;
+    const sh = typeof r.schema_hash === "string" && HASH_RE.test(r.schema_hash) ? r.schema_hash : null;
+    const dh = typeof r.desc_hash === "string" && HASH_RE.test(r.desc_hash) ? r.desc_hash : null;
+    if (!sh || !dh) continue;
+    const remote = typeof r.remote_url === "string" ? r.remote_url : "";
+    const at = String(r.observed_at);
+    const point: DefPoint = {
+      at,
+      day: at.slice(0, 10),
+      sh,
+      dh,
+      nh: typeof r.names_hash === "string" && /^[0-9a-f]{64}$/.test(r.names_hash) ? r.names_hash : null,
+      count: intOrNull(r.tool_count),
+      version: safeVersion(r.server_version),
+    };
+    if (!byRemote.has(remote)) byRemote.set(remote, []);
+    byRemote.get(remote)!.push(point);
+  }
+
+  const multiRemote = byRemote.size > 1;
+  const observedDays = new Set<string>();
+  const comparedDays = new Set<string>();
+  const changeDays = new Set<string>();
+  const events: Array<Record<string, unknown>> = [];
+
+  for (const [remote, list] of byRemote) {
+    // 하루 1점(그날 마지막 관찰)
+    const perDay = new Map<string, DefPoint>();
+    for (const p of [...list].sort((a, b) => a.at.localeCompare(b.at))) perDay.set(p.day, p);
+    const points = [...perDay.values()];
+    const seen = new Set<string>();
+    points.forEach((p) => observedDays.add(p.day));
+    for (let i = 0; i < points.length; i++) {
+      const cur = points[i]!;
+      const key = `${cur.sh}:${cur.dh}`;
+      if (i > 0) {
+        const prev = points[i - 1]!;
+        comparedDays.add(cur.day);
+        const kinds: string[] = [];
+        if (cur.sh !== prev.sh) kinds.push("schema_changed");
+        if (cur.dh !== prev.dh) kinds.push("description_changed");
+        if (cur.nh && prev.nh && cur.nh !== prev.nh) kinds.push("tool_names_changed");
+        const definitionChanged = kinds.length > 0;
+        if (cur.version && prev.version && cur.version !== prev.version) kinds.push("server_version_changed");
+        if (definitionChanged) changeDays.add(cur.day);
+        if (kinds.length > 0) {
+          events.push({
+            day: cur.day,
+            kinds,
+            ...(cur.count !== null && prev.count !== null && cur.count !== prev.count ? { tool_count: { from: prev.count, to: cur.count } } : {}),
+            ...(cur.version && prev.version && cur.version !== prev.version ? { server_version: { from: prev.version, to: cur.version } } : {}),
+            returned_to_earlier_definition: definitionChanged && seen.has(key),
+            compared_with: prev.day,
+            ...(multiRemote ? { remote_host: hostOfUrl(remote) } : {}),
+          });
+        }
+      }
+      seen.add(key);
+    }
+  }
+
+  const days = [...observedDays].sort();
+  const changes = [...changeDays].sort();
+  const compared = comparedDays.size;
+  const lastObserved = days[days.length - 1] ?? null;
+  const lastChange = changes[changes.length - 1] ?? null;
+  const prevChange = changes.length > 1 ? changes[changes.length - 2]! : null;
+  const pattern =
+    compared === 0 ? "not_enough_observations" :
+    changes.length === 0 ? "no_change_observed" :
+    compared >= FREQUENT_MIN_DAYS && changes.length / compared >= FREQUENT_SHARE ? "changes_on_most_days" :
+    "changed";
+
+  const notes: Record<string, string> = {
+    not_enough_observations: "Fewer than two days with a complete tools/list observation from the same remote, so nothing was compared.",
+    no_change_observed: `No change in tool schemas, descriptions or names across ${compared} compared days.`,
+    changes_on_most_days: `Tool definitions changed on ${changes.length} of ${compared} compared days. Changes are routine for this server, so a single change says little on its own.`,
+    changed: `Tool definitions changed on ${changes.length} of ${compared} compared days.`,
+  };
+
+  return {
+    pattern,
+    observed_days: days.length,
+    compared_days: compared,
+    change_days: changes.length,
+    first_compared_day: days[0] ?? null,
+    last_change: lastChange,
+    days_since_last_change: lastChange && lastObserved ? dayDiff(lastObserved, lastChange) : null,
+    stable_days_before_last_change: lastChange ? dayDiff(lastChange, prevChange ?? days[0]!) : null,
+    events: events.sort((a, b) => String(b.day).localeCompare(String(a.day))).slice(0, MAX_EVENTS),
+    note: notes[pattern],
+    basis:
+      "Each daily observation is compared with the previous one from the same remote URL, using hashes of tool schemas, descriptions and names. " +
+      "Description text is not returned. A change is a recorded fact, not a judgment about the server.",
+  };
 }
 
 /** 하루 1행: 원격 주소가 여러 개면 가장 멀리 간 결과와 주소 수. tools_changed 는 직전 관찰일과 schema_hash 비교. */
@@ -490,7 +627,7 @@ async function scannerHistory(supabase: any, targetId: string, registryRow: any 
   const [obs, first, cohort, gaps] = await Promise.all([
     supabase
       .from("scanner_observations")
-      .select("observed_at,reached_level,http_status,error_type,tool_count:metadata->>tool_count,schema_hash:metadata->>schema_hash,names_hash:metadata->>names_hash,remote_url:metadata->>remote_url,retry_level:metadata->retry->>reached_level")
+      .select("observed_at,reached_level,http_status,error_type,tool_count:metadata->>tool_count,schema_hash:metadata->>schema_hash,desc_hash:metadata->>desc_hash,server_version:metadata->>server_version,names_hash:metadata->>names_hash,remote_url:metadata->>remote_url,retry_level:metadata->retry->>reached_level")
       .eq("target_id", targetId)
       .gte("observed_at", sinceIso)
       .order("observed_at", { ascending: true })
@@ -532,6 +669,7 @@ async function scannerHistory(supabase: any, targetId: string, registryRow: any 
       in_sample: cohorts === null ? null : cohorts.length > 0,
       ...(cohorts ? { cohorts } : {}),
       first_observed_at: firstObservedAt,
+      definition_changes: definitionChanges(rows),
       daily_30d: daily,
       missing_days: missing,
       tools,
@@ -613,7 +751,13 @@ function evidenceHead(ev: Evidence | null, lookup: ScannerLookup | null, interac
   else if (reg && reg.removed_at) parts.push("MCP Registry entry recorded as removed");
   else if (ev?.registryCandidates) parts.push("several MCP Registry names match (see registry_candidates)");
   else if (reg) parts.push("no MCP Registry record found");
-  if (lookup?.summary) parts.push(ev?.scannerSince ? `observed daily by Lowdown Scanner since ${String(ev.scannerSince).slice(0, 10)}` : "observed by Lowdown Scanner");
+  if (lookup?.summary) {
+    parts.push(ev?.scannerSince ? `observed daily by Lowdown Scanner since ${String(ev.scannerSince).slice(0, 10)}` : "observed by Lowdown Scanner");
+    const dc = ev?.scannerExtra?.definition_changes as Record<string, unknown> | undefined;
+    if (dc?.pattern === "changed") parts.push(`tool definitions last changed on ${dc.last_change} after ${dc.stable_days_before_last_change} days without change`);
+    else if (dc?.pattern === "changes_on_most_days") parts.push(`tool definitions change on most observed days (${dc.change_days} of ${dc.compared_days})`);
+    else if (dc?.pattern === "no_change_observed") parts.push(`no tool definition change in ${dc.compared_days} compared days`);
+  }
   else if (lookup && lookup.candidates.length > 0) parts.push("several observed names match (see scanner_candidates)");
   else if (lookup?.unobserved) parts.push("not in the Lowdown Scanner sample");
   parts.push(interactions > 0 ? `${interactions} agent-reported interactions` : "no agent-reported interactions");

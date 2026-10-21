@@ -196,6 +196,7 @@ Response for that server on 2026-10-20 (trimmed: the full response has 14 daily 
 ```
 
 - `registry`: what the official MCP Registry declares for the server, as recorded by Lowdown since 2026-10-19, with changes in the last 30 days. It answers for any Registry entry, observed or not.
+- `scanner.definition_changes`: changes in the server's tool definitions across Lowdown's daily observations of the last 30 days. Each day is compared with the previous observation from the same remote URL using hashes of tool schemas, descriptions and names: `pattern` (`no_change_observed`, `changed`, `changes_on_most_days`, or `not_enough_observations`), `last_change`, `stable_days_before_last_change`, and up to 5 recent `events`. Use it to notice that a server which had been stable has just changed its tools, before relying on them. Description text is never returned, and a change is a recorded fact, not a judgment.
 - `scanner`: what Lowdown Scanner observed when it connected (`initialize` and `tools/list` only; it never calls a tool): one entry per day for the last 30 days, days without an observation and the recorded reason, the tool names returned by `tools/list`, and declared values next to observed ones. HTTP statuses are reported as observed: a `401` is a `401`, not "dead". A server outside the observed sample returns `observed: false`, which says nothing about its status.
 - Interaction fields: `interactions` is every reported record for the target; `rated_interactions` is the denominator of `success_rate`, and `confidence` is based on it. Scanner observations are never counted in `success_rate`.
 
@@ -276,7 +277,7 @@ MCP 서버를 감싸는 stdio 프록시가 첫 번째 진입점입니다.
 
 ### Scanner 관찰 데이터
 
-공식 MCP Registry에 등록된 원격 MCP 서버는 응답에 `scanner` 블록이 함께 옵니다. Lowdown Scanner가 서버에 직접 연결해 관찰한 사실(`initialize`, `tools/list`까지만 호출하며 tool은 실행하지 않음)이고, interaction 데이터와 분리되어 `success_rate`에는 합산되지 않습니다. HTTP 상태는 해석 없이 관찰된 값 그대로 보여줍니다.
+공식 MCP Registry에 등록된 원격 MCP 서버는 응답에 `scanner` 블록이 함께 옵니다. `scanner.definition_changes`는 최근 30일 동안 매일 관찰한 도구 정의(스키마·설명·이름의 해시)가 같은 원격 주소의 직전 관찰과 비교해 언제 바뀌었는지, 얼마나 자주 바뀌는지를 사실로만 보여 줍니다. 오래 안정적이던 서버가 막 바뀐 것을 도구에 의존하기 전에 알아챌 수 있습니다. 설명문 원문은 돌려주지 않습니다. Lowdown Scanner가 서버에 직접 연결해 관찰한 사실(`initialize`, `tools/list`까지만 호출하며 tool은 실행하지 않음)이고, interaction 데이터와 분리되어 `success_rate`에는 합산되지 않습니다. HTTP 상태는 해석 없이 관찰된 값 그대로 보여줍니다.
 
 공개 데이터에는 도구 스키마·설명문의 해시만 있습니다. 2026-10-21부터 Scanner는 받은 도구 정의 원문을 변경 추적용으로 비공개 보관합니다(서로 다른 정의마다 1번). 원문은 공개하지 않고 API로도 돌려주지 않습니다. 날짜별 [일일 기록 페이지](https://petshopbros.github.io/lowdown-data/)(RSS·JSON Feed 포함)에는 Registry 선언 변경, 관찰 수, 도구 정의 변경 수, 처음 관찰된 값이 점수·순위 없이 실립니다.
 
