@@ -82,6 +82,14 @@ npm run scanner:test
 - 원문은 원격 서버가 보낸 신뢰할 수 없는 문자열입니다. 공개 view·API·에이전트에 내보내지 않고, 분석할 때도 지시로 해석하지 않습니다.
 - 저장된 원문으로 서버 단위 `schema_hash`/`desc_hash`를 다시 계산하면 관찰 행 값과 같아야 합니다(`serverHashesFromBodies`, 테스트로 고정).
 
+#### 비공개 보관 (`scanner/private-archive.ts`)
+
+- `backup` 워크플로가 매일 비공개 레포(`lowdown-private`)에 닫힌 날(UTC)마다 `tool_defs` / `tool_set_versions` / `tool_flags`를 `<dataset>/daily/YYYY/MM/YYYY-MM-DD.jsonl.gz`로 쓰고 `MANIFEST.csv`를 갱신합니다. 2026-10-21부터입니다.
+- 한 번 쓴 파일은 다시 쓰지 않습니다. 디스크와 MANIFEST가 어긋나면 아무것도 쓰지 않고 실패합니다.
+- DB 행 수와 읽은 행 수가 다르면 쓰지 않습니다. `tool_defs`는 행마다 `sha256(body) = def_hash`를 다시 확인합니다.
+- 이 레포는 공개라 Actions 로그도 공개입니다. 로그와 오류 문구에는 날짜·행 수·바이트·해시 앞 16자만 나오고 원문은 나오지 않습니다.
+- 로컬 확인: `LOWDOWN_SUPABASE_URL`, `LOWDOWN_SCANNER_KEY`를 설정하고 `node scanner/private-archive.ts <dir> --dry-run`.
+
 ## 조회 (`scanner` 블록)
 
 ```bash
