@@ -60,7 +60,7 @@ The same package ships an MCP server (stdio) that lets an agent query Lowdown di
 | `record_interaction` | Records the outcome of using a tool or service |
 | `get_node_stats` | Contribution stats of your node |
 
-The same data is available over HTTP without installing anything: see [Public API](#public-api), the [OpenAPI document](https://lowdown-proxy.vercel.app/openapi.json), and [`llms.txt`](https://lowdown-proxy.vercel.app/llms.txt). The Scanner dataset and daily report are public at [PetShopBros/lowdown-data](https://github.com/PetShopBros/lowdown-data) (CC BY 4.0), with a daily copy on [Hugging Face](https://huggingface.co/datasets/art2meta/lowdown-mcp-observations).
+The same data is available over HTTP without installing anything: see [Public API](#public-api), the [OpenAPI document](https://lowdown-proxy.vercel.app/openapi.json), and [`llms.txt`](https://lowdown-proxy.vercel.app/llms.txt). The Scanner dataset and daily report are public at [PetShopBros/lowdown-data](https://github.com/PetShopBros/lowdown-data) (CC BY 4.0), with a daily copy on [Hugging Face](https://huggingface.co/datasets/art2meta/lowdown-mcp-observations). A [daily record page](https://petshopbros.github.io/lowdown-data/) (with [RSS](https://petshopbros.github.io/lowdown-data/feed.xml) and [JSON Feed](https://petshopbros.github.io/lowdown-data/feed.json)) lists each UTC day's Registry declaration changes, observation counts, tool definition change counts, and values first observed. It has no scores or rankings.
 
 ## App logs in tool results
 
@@ -243,6 +243,7 @@ Just run the proxy and share what your agents experience.
 ## Status
 
 Running continuously since September 2026. Since October 6, 2026 the Scanner has observed a fixed sample of MCP Registry entries every day: 2,000 entries through October 18, and from October 19 a 5,000-entry sample that keeps all of the first 2,000. The daily report and raw data are public at [PetShopBros/lowdown-data](https://github.com/PetShopBros/lowdown-data), with a daily copy on [Hugging Face](https://huggingface.co/datasets/art2meta/lowdown-mcp-observations).
+Since October 21, 2026 the Scanner also keeps the full tool definitions it receives, privately and once per distinct definition, so that changes can be traced over time. Public data and API responses contain hashes only; the definitions themselves are not published.
 See [DESIGN.md](./DESIGN.md) for what's in scope and what's been ruled out.
 
 ## License
@@ -276,6 +277,8 @@ MCP 서버를 감싸는 stdio 프록시가 첫 번째 진입점입니다.
 ### Scanner 관찰 데이터
 
 공식 MCP Registry에 등록된 원격 MCP 서버는 응답에 `scanner` 블록이 함께 옵니다. Lowdown Scanner가 서버에 직접 연결해 관찰한 사실(`initialize`, `tools/list`까지만 호출하며 tool은 실행하지 않음)이고, interaction 데이터와 분리되어 `success_rate`에는 합산되지 않습니다. HTTP 상태는 해석 없이 관찰된 값 그대로 보여줍니다.
+
+공개 데이터에는 도구 스키마·설명문의 해시만 있습니다. 2026-10-21부터 Scanner는 받은 도구 정의 원문을 변경 추적용으로 비공개 보관합니다(서로 다른 정의마다 1번). 원문은 공개하지 않고 API로도 돌려주지 않습니다. 날짜별 [일일 기록 페이지](https://petshopbros.github.io/lowdown-data/)(RSS·JSON Feed 포함)에는 Registry 선언 변경, 관찰 수, 도구 정의 변경 수, 처음 관찰된 값이 점수·순위 없이 실립니다.
 
 ### 앱 로그를 도구 결과에 붙이기
 

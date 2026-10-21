@@ -28,9 +28,9 @@ Agents should not have to trust an agent/tool they've never interacted with.
 - 고정 코호트: Day 0 에 probe 가능 target 을 SHA-256 순으로 2,000개 확정해 `scanner_cohort`(cohort_version 예: 2026-10-07-v1)에 저장하고, 같은 버전 동안은 같은 대상만 관찰한다. remote URL 은 매일 최신 Registry 값을 쓴다. Registry 에서 사라진 멤버는 실패로 기록하지 않고 `cohort_missing` 으로만 센다. 확장은 새 버전으로 한다. v2(5,000)는 v1 멤버를 모두 포함하고(`COHORT_BASE`), 리포트는 v1 멤버를 따로 세어 추이를 잇는다.
 - 해석 주의: 코호트는 "Registry 항목"의 표본이다. 운영자 수가 아니다(한 업체가 여러 항목을 등록할 수 있음).
 - 관찰(scanner_observations)과 상호작용(interactions)은 섞지 않는다. 관찰 = 우리가 봤다, interaction = 실제 에이전트가 썼다.
-- 사실만 기록한다: 401/403 은 http_status 숫자 그대로, 해석은 조회 시점에 한다. 원격 서버가 보낸 tool 이름·설명문은 저장하지 않고 개수와 해시만 저장한다.
+- 사실만 기록한다: 401/403 은 http_status 숫자 그대로, 해석은 조회 시점에 한다. 관찰 행과 공개 데이터에는 tool 이름·설명문을 싣지 않고 개수와 해시만 둔다. 0.5.0(2026-10-21)부터 도구 정의 원문은 변경 추적용으로 **비공개 저장**한다(`scanner_tool_defs` 등, 정의당 1행·내용 해시 중복 제거, anon/authenticated 권한 없음, 날짜별 비공개 사본은 `lowdown-private`). 원문은 원격 서버가 보낸 신뢰할 수 없는 문자열이므로 공개 API·view에 내보내지 않고 지시로 해석하지 않는다.
 - 조회: GET /api/reputation/:target 응답의 `scanner` 블록 (success_rate 에 합산하지 않음). target 표기는 `mcp:` + Registry 이름.
-- 공개 데이터: 주 1회 CSV 를 lowdown-data 저장소로 내보낸다.
+- 공개 데이터: 날짜별(UTC) CSV.gz 를 lowdown-data 저장소로 내보낸다(Hugging Face 사본 포함). 일일 기록 페이지·RSS·JSON Feed 는 GitHub Pages(lowdown-data/docs)로 제공하며 점수·순위는 없다.
 - 7일 PoC 기준: 사람 개입 없이 7일 동안 매일 실행되고 매일 reached_level ≥ 1 관찰이 남는다.
 - 범위 밖: 별점/Reliability Score, Local Scanner, 모니터링 SaaS, 알림, 전체 24,000개 센서스, 운영자 중복 제거.
 
@@ -39,7 +39,7 @@ Agents should not have to trust an agent/tool they've never interacted with.
 - 행동 이상탐지, critic/audience 등급 분리, 신뢰도 가중치
 - LLM judge 기반 품질평가
 - 프레임워크 어댑터(LangChain 등)
-- 웹사이트/랭킹/배지
+- 점수·랭킹·배지 (일일 기록 페이지·피드는 사실 기록이며 점수·순위 없음)
 
 ## 경쟁 지형 (2026-09 기준 확인됨)
 - ERC-8004 (MetaMask/Ethereum Foundation/Google/Coinbase 공저) — Identity/Reputation/Validation 온체인 표준
