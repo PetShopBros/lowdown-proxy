@@ -75,6 +75,7 @@ let lookupsInserted: Row[] = [];
 let requests: string[] = [];
 let scannerStatus = 200;
 let rejectResultKind = false;
+let objectNotFound = 0;
 
 function matchLike(pattern: string, value: string): boolean {
   // PostgreSQL ILIKE: % 와일드카드, \ 이스케이프
@@ -155,6 +156,7 @@ before(async () => {
       const rows = query(source, url.searchParams);
       if ((req.headers.accept ?? '').includes('pgrst.object')) {
         if (rows.length !== 1) {
+          objectNotFound++;
           res.writeHead(406, { 'content-type': 'application/json' }).end(JSON.stringify({ code: 'PGRST116', details: `The result contains ${rows.length} rows`, hint: null, message: 'JSON object requested, multiple (or no) rows returned' }));
           return;
         }
@@ -178,6 +180,7 @@ beforeEach(() => {
   requests = [];
   scannerStatus = 200;
   rejectResultKind = false;
+  objectNotFound = 0;
   failTables = new Set();
 });
 
@@ -312,6 +315,18 @@ describe('조회 로깅 / ref', () => {
     await call('nothing-here-at-all');
     await call('mcp:modelcontextprotocol/brave-search', { task_type: 'search' });
     assert.deepEqual(lookupsInserted.map((l) => l.result_kind), ['observed', 'candidates', 'registry_only', 'none', 'task_type']);
+  });
+
+  test('기록이 없는 대상도 406(행 없음) 요청 없이 200, 대량 사용 안내 Link 헤더', async () => {
+    const r = await call('nothing-here-at-all');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.interactions, 0);
+    assert.equal(objectNotFound, 0);
+    assert.ok(!requests.some((q) => q.includes('reputation_summary') && q.includes('pgrst.object')));
+    assert.match(r.headers.Link ?? '', /lowdown-data>; rel="related"/);
+    const t = await call('nothing-here-at-all', { task_type: 'search' });
+    assert.equal(t.status, 200);
+    assert.equal(objectNotFound, 0);
   });
 
   test('result_kind 열이 없는 DB 에서도 조회 기록은 빠지지 않는다', async () => {

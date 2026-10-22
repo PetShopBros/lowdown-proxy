@@ -12,6 +12,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // CORS — 어떤 에이전트/클라이언트도 조회 가능하게
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  // 여러 서버의 기록이 필요하면 반복 조회 대신 일별 공개 데이터셋을 쓰도록 안내 (대량 조회 10/22 관찰)
+  res.setHeader("Link", BULK_DATA_LINK);
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
@@ -46,7 +48,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           .select("target")
           .ilike("target", `%${target}%`)
           .limit(1)
-          .single();
+          .maybeSingle();
 
         if (fuzzyTargets) {
           const { data: fuzzyRows } = await supabase
@@ -68,7 +70,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .from("reputation_summary")
         .select("*")
         .eq("target", target)
-        .single();
+        .maybeSingle();
       data = result.data;
       error = result.error;
 
@@ -79,7 +81,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           .ilike("target", `%${target}%`)
           .order("interactions", { ascending: false })
           .limit(1)
-          .single();
+          .maybeSingle();
         if (fuzzy) { data = fuzzy; error = null; }
       }
     }
@@ -210,6 +212,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(500).json({ error: "Internal server error" });
   }
 }
+
+export const BULK_DATA_LINK = '<https://github.com/PetShopBros/lowdown-data>; rel="related"; title="Daily dataset for bulk use (CC BY 4.0)"';
 
 // ── 성공률 기준 (supabase/2026-10-15_interactions_p0.sql 의 reputation_summary 와 같은 규칙) ──
 const TASK_COLUMNS = "outcome, latency_ms, failure_type, source, request_kind, error_layer, task_type";

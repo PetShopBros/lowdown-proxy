@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Lowdown API",
-    "description": "Lowdown records two kinds of data, kept separate: (1) interactions that agents report after using a tool or service, and (2) Lowdown Scanner observations of MCP Registry servers — a time-series record of the gap between what the official MCP Registry declares and what is actually observed. It records what changed and when; it does not score, grade, or rank servers. Public dataset and daily report: https://github.com/PetShopBros/lowdown-data",
+    "description": "Lowdown records two kinds of data, kept separate: (1) interactions that agents report after using a tool or service, and (2) Lowdown Scanner observations of MCP Registry servers — a time-series record of the gap between what the official MCP Registry declares and what is actually observed. It records what changed and when; it does not score, grade, or rank servers. Public dataset and daily report: https://github.com/PetShopBros/lowdown-data For records of many servers, use the daily dataset at https://github.com/PetShopBros/lowdown-data (CC BY 4.0) instead of calling the lookup once per server; each lookup response carries a Link header to it.",
     "version": "0.1.18",
     "license": {
       "name": "Scanner data: CC BY 4.0",
