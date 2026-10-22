@@ -184,6 +184,34 @@ describe('시장판 — 사이트 렌더링', () => {
     assert.ok(about.includes('not evidence of malicious intent'));
   });
 
+  test('days/latest.json = 가장 최근 하루 JSON 과 같은 바이트, 디스크에서 읽은 하루 JSON 으로도 같다', () => {
+    const latest = files.get('days/latest.json')!;
+    assert.equal(latest, serializeDay(days[1]!));
+    const fromDisk = days.map((d) => parseDay(serializeDay(d)));
+    assert.equal(renderSite(fromDisk, SITE).get('days/latest.json'), latest);
+    assert.equal(parseDay(latest).day, '2026-10-21');
+    assert.ok(!renderSite([], SITE).has('days/latest.json'));
+    assert.ok(files.get('about.html')!.includes(`href="${SITE.baseUrl}days/latest.json"`));
+  });
+
+  test('about 에만 schema.org Dataset JSON-LD: 필수 name·description(50~5000자), 버전 있는 라이선스, 내려받기 경로', () => {
+    const about = files.get('about.html')!;
+    const m = about.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/);
+    assert.ok(m);
+    const ld = JSON.parse(m[1]!) as { '@type': string; name: string; description: string; license: string; url: string; temporalCoverage: string; distribution: Array<{ contentUrl: string; encodingFormat: string }> };
+    assert.equal(ld['@type'], 'Dataset');
+    assert.ok(ld.name.length > 0);
+    assert.ok(ld.description.length >= 50 && ld.description.length <= 5000);
+    assert.equal(ld.license, 'https://creativecommons.org/licenses/by/4.0/');
+    assert.equal(ld.url, `${SITE.baseUrl}about.html`);
+    assert.equal(ld.temporalCoverage, '2026-10-06/..');
+    assert.ok(ld.distribution.some((x) => x.contentUrl === `${SITE.baseUrl}days/latest.json` && x.encodingFormat === 'application/json'));
+    assert.ok(!m[1]!.includes('<'));
+    for (const f of ['index.html', 'days/2026-10-21.html', 'days/index.html']) assert.ok(!files.get(f)!.includes('application/ld+json'), f);
+    const body = about.toLowerCase().replace(/no scores, rankings or verdicts/g, '').replace(/nothing here is a score, a ranking, or a verdict/g, '').replace('no scores or rankings', '');
+    for (const w of ['rank', 'score']) assert.ok(!body.includes(w), w);
+  });
+
   test(`피드는 최근 ${FEED_DAYS}일만`, () => {
     const valid = Array.from({ length: FEED_DAYS + 5 }, (_, i) => day(new Date(Date.UTC(2026, 8, 1) + i * 86_400_000).toISOString().slice(0, 10)));
     const f = JSON.parse(renderSite(valid, SITE).get('feed.json')!) as { items: Array<{ id: string }> };

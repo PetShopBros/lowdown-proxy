@@ -81,6 +81,9 @@ export interface DaySource {
 
 export const DATASET_URL = 'https://github.com/PetShopBros/lowdown-data';
 export const LICENSE_URL = 'https://creativecommons.org/licenses/by/4.0/';
+/** 첫 관찰일(코호트 2026-10-07-v1 의 첫 실행). Dataset temporalCoverage 의 시작. */
+export const OBSERVED_SINCE = '2026-10-06';
+export const MANIFEST_URL = 'https://raw.githubusercontent.com/PetShopBros/lowdown-data/main/MANIFEST.csv';
 
 export function daySource(day: string, dataAsOf: string, siteBaseUrl: string): DaySource {
   const page = `${siteBaseUrl}days/${day}.html`;
@@ -436,6 +439,33 @@ export function renderArchiveHtml(days: readonly MarketDay[], cfg: SiteConfig): 
   return page('Archive — Lowdown MCP daily record', body, cfg, `${cfg.baseUrl}days/`, 'Daily records of MCP Registry changes and Lowdown observations.');
 }
 
+/**
+ * Google Dataset Search 용 schema.org Dataset (JSON-LD). about.html(정규 주소가 고정된 페이지)에만 넣는다.
+ * 필수 name·description(50~5000자), 라이선스는 버전이 있는 URL — developers.google.com/search/docs/data-types/dataset (2026-10-23 확인).
+ * 값은 모두 상수·설정값. 그래도 '<' 는 \u003c 로 바꿔 </script> 가 끼어들 수 없게 한다.
+ */
+export function datasetJsonLd(cfg: SiteConfig): string {
+  const ld = {
+    '@context': 'https://schema.org',
+    '@type': 'Dataset',
+    name: 'Lowdown MCP server observations',
+    description:
+      'Daily record of what the official MCP Registry declares and what Lowdown observes. Once a day, Lowdown connects to a fixed sample of 5,000 Registry entries with a streamable-http remote, sends initialize and tools/list only (it never calls a tool), and records HTTP status, reach level, latency, tool count and hashes of tool schemas and descriptions. It also records daily changes in Registry declarations. Facts as recorded; no scores, rankings or verdicts.',
+    url: `${cfg.baseUrl}about.html`,
+    license: LICENSE_URL,
+    isAccessibleForFree: true,
+    creator: { '@type': 'Organization', name: 'Lowdown', url: DATASET_URL },
+    keywords: ['MCP', 'Model Context Protocol', 'MCP Registry', 'MCP servers', 'AI agents', 'tool definitions'],
+    temporalCoverage: `${OBSERVED_SINCE}/..`,
+    measurementTechnique: 'One initialize and tools/list probe per entry per day from GitHub Actions; no tool calls, no authentication',
+    distribution: [
+      { '@type': 'DataDownload', name: 'Latest daily record (JSON)', encodingFormat: 'application/json', contentUrl: `${cfg.baseUrl}days/latest.json` },
+      { '@type': 'DataDownload', name: 'File manifest of daily CSV.gz and monthly Parquet files', encodingFormat: 'text/csv', contentUrl: MANIFEST_URL },
+    ],
+  };
+  return `\n<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, '\\u003c')}</script>`;
+}
+
 export function renderAboutHtml(cfg: SiteConfig): string {
   const body = `<h1>About this record</h1>
 <p>Lowdown publishes one record per UTC day. Each record keeps different kinds of facts apart. Nothing here is a score, a ranking, or a verdict about any server.</p>
@@ -450,12 +480,13 @@ export function renderAboutHtml(cfg: SiteConfig): string {
 <h2>Data and feeds</h2>
 <ul>
 <li>Daily JSON for each record: <code>days/YYYY-MM-DD.json</code> (the HTML pages and feeds are generated from these files).</li>
+<li>Latest record at a fixed address: <a href="${esc(cfg.baseUrl)}days/latest.json"><code>days/latest.json</code></a> (a copy of the newest daily JSON).</li>
 <li><a href="${esc(cfg.baseUrl)}feed.xml">RSS</a> and <a href="${esc(cfg.baseUrl)}feed.json">JSON Feed</a>: one item per day, last ${FEED_DAYS} days.</li>
 <li>Raw observations: <a href="https://github.com/PetShopBros/lowdown-data">lowdown-data</a> and <a href="https://huggingface.co/datasets/art2meta/lowdown-mcp-observations">Hugging Face</a>.</li>
 <li>Per-server lookup: <code>${esc(cfg.apiBase)}/api/reputation/mcp:&lt;registry name&gt;</code></li>
 </ul>
 <p>License: CC BY 4.0.</p>`;
-  return page('About this record — Lowdown', body, cfg, `${cfg.baseUrl}about.html`, 'How the Lowdown MCP daily record is produced and what each section means.');
+  return page('About this record — Lowdown', body, cfg, `${cfg.baseUrl}about.html`, 'How the Lowdown MCP daily record is produced and what each section means.', datasetJsonLd(cfg));
 }
 
 const rfc822 = (iso: string) => new Date(iso).toUTCString();
@@ -518,7 +549,11 @@ export function renderSite(days: readonly MarketDay[], cfg: SiteConfig): Map<str
     files.set(`days/${d.day}.html`, renderDayHtml(d, cfg, { canonical: `${cfg.baseUrl}days/${d.day}.html`, prev: sorted[i - 1]?.day, next: sorted[i + 1]?.day }));
   });
   const latest = sorted.at(-1);
-  if (latest) files.set('index.html', renderDayHtml(latest, cfg, { canonical: `${cfg.baseUrl}days/${latest.day}.html`, prev: sorted.at(-2)?.day }));
+  if (latest) {
+    files.set('index.html', renderDayHtml(latest, cfg, { canonical: `${cfg.baseUrl}days/${latest.day}.html`, prev: sorted.at(-2)?.day }));
+    // 고정 주소: 가장 최근 하루 JSON 의 사본 (하루 JSON 은 serializeDay 로 썼으므로 바이트가 같다)
+    files.set('days/latest.json', serializeDay(latest));
+  }
   files.set('days/index.html', renderArchiveHtml(sorted, cfg));
   files.set('about.html', renderAboutHtml(cfg));
   files.set('feed.xml', renderRss(sorted, cfg));

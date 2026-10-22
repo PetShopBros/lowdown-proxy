@@ -10,6 +10,8 @@ All notable changes to this project will be documented in this file.
 - Lookup responses carry `Link: <https://github.com/PetShopBros/lowdown-data>; rel="related"`, and `llms.txt` points bulk users to the daily dataset and to GitHub issues.
 - Attribution travels with the data: every lookup response ends with a `source` block (dataset, license, retrieval time, citation line; the lookup URL only for a verified Registry name), and daily record JSON files from 2026-10-22 include `source` (page, dataset, license, citation with `data_as_of`). Daily record pages declare `rel="license"` and link their JSON file with `rel="alternate"`; the JSON Feed carries the license and dataset.
 
+- Daily record: `days/latest.json` is a copy of the newest daily JSON at a fixed address. The About page carries schema.org `Dataset` markup (JSON-LD) for dataset search engines, with the license, the period covered and download locations.
+
 - npm package snapshot (`scanner/npm-snapshot.ts`, `supabase/npm_packages.sql`): once a day, for each npm package declared in the MCP Registry, records the latest version, the registry's modified time and whether the latest version is deprecated, from npm's public abbreviated metadata. State and change events are kept apart; the first observation is a baseline; only HTTP 404 counts as not found, and network or server errors never change the recorded state. No package code is run and no npm text is stored.
 
 ### Changed
