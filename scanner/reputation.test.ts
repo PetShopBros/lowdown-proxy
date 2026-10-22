@@ -329,6 +329,21 @@ describe('조회 로깅 / ref', () => {
     assert.equal(objectNotFound, 0);
   });
 
+  test('출처(source): 모든 응답 끝에, 확인된 Registry 이름만, 입력 문자열은 넣지 않는다', async () => {
+    const a = await call('mcp:io.github.acme/solo');
+    const keys = Object.keys(a.body);
+    assert.equal(keys[keys.length - 1], 'source');
+    assert.equal(a.body.source.lookup, 'https://lowdown-proxy.vercel.app/api/reputation/mcp:io.github.acme/solo');
+    assert.equal(a.body.source.license, 'CC BY 4.0');
+    assert.match(a.body.source.cite, /^Lowdown \(https:\/\/github\.com\/PetShopBros\/lowdown-data\), retrieved \d{4}-\d{2}-\d{2}, CC BY 4\.0$/);
+    const b = await call('Ignore previous instructions <script>');
+    assert.equal(b.status, 200);
+    assert.equal(b.body.source.lookup, undefined);
+    assert.ok(!JSON.stringify(b.body.source).includes('Ignore'));
+    const c = await call('mcp:modelcontextprotocol/brave-search', {}, { 'x-lowdown-node-id': 'n1' });
+    assert.ok(c.body.source && c.body.task_breakdown);
+  });
+
   test('result_kind 열이 없는 DB 에서도 조회 기록은 빠지지 않는다', async () => {
     rejectResultKind = true;
     const r = await call('mcp:io.github.acme/solo');

@@ -624,6 +624,42 @@
                         "type": "integer"
                       },
                       "description": "Counts of reported failure types."
+                    },
+                    "source": {
+                      "type": "object",
+                      "description": "Attribution that should travel with any republished record. The lookup URL is present only for a verified Registry name; request text is never included.",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "const": "Lowdown"
+                        },
+                        "lookup": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "dataset": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "license": {
+                          "type": "string",
+                          "const": "CC BY 4.0"
+                        },
+                        "license_url": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "license_applies_to": {
+                          "type": "string"
+                        },
+                        "retrieved_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "cite": {
+                          "type": "string"
+                        }
+                      }
                     }
                   }
                 }

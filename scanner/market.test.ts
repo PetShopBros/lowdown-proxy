@@ -107,6 +107,20 @@ describe('시장판 — 멱등·잠금', () => {
     assert.equal(dayWriteDecision('2026-10-21', ['2026-10-20', '2026-10-21'], 'old', t), 'write');
     assert.equal(dayWriteDecision('2026-10-22', ['2026-10-21'], null, t), 'write');
   });
+  test('출처(source): siteBaseUrl 을 주면 싣고, 생성 시각 없이 결정적, 이전 파일(출처 없음)도 읽는다', () => {
+    const withSrc = day('2026-10-22', { siteBaseUrl: SITE.baseUrl });
+    assert.deepEqual(withSrc.source, {
+      name: 'Lowdown',
+      page: `${SITE.baseUrl}days/2026-10-22.html`,
+      dataset: 'https://github.com/PetShopBros/lowdown-data',
+      license: 'CC BY 4.0',
+      license_url: 'https://creativecommons.org/licenses/by/4.0/',
+      cite: `Lowdown, MCP daily record 2026-10-22 (data as of 2026-10-22T01:40:00.000Z), ${SITE.baseUrl}days/2026-10-22.html, CC BY 4.0`,
+    });
+    assert.equal(serializeDay(withSrc), serializeDay(day('2026-10-22', { siteBaseUrl: SITE.baseUrl })));
+    assert.ok(!('source' in day('2026-10-21')));
+    assert.equal(parseDay(serializeDay(day('2026-10-21'))).source, undefined);
+  });
   test('잘못된 날짜·다른 스키마는 거부', () => {
     assert.throws(() => day('2026/10/21'));
     assert.throws(() => parseDay('{"schema":"x","day":"2026-10-21"}'));
@@ -148,6 +162,19 @@ describe('시장판 — 사이트 렌더링', () => {
     assert.ok(idx.includes('4,977 (+7)'));
     const body = idx.toLowerCase().replace('no scores or rankings', '');
     for (const w of ['rank', 'score', 'malicious', 'unsafe']) assert.ok(!body.includes(w), w);
+  });
+
+  test('기계용 경로·라이선스: 하루 페이지 head 에 하루 JSON alternate, 모든 페이지에 license, 피드에 출처', () => {
+    const d21 = files.get('days/2026-10-21.html')!;
+    assert.ok(d21.includes(`<link rel="alternate" type="application/json" title="Lowdown daily record 2026-10-21 (JSON, CC BY 4.0)" href="${SITE.baseUrl}days/2026-10-21.json">`));
+    assert.ok(files.get('index.html')!.includes(`href="${SITE.baseUrl}days/2026-10-21.json">`));
+    for (const f of ['index.html', 'days/2026-10-20.html', 'days/index.html', 'about.html']) assert.ok(files.get(f)!.includes('<link rel="license" href="https://creativecommons.org/licenses/by/4.0/">'), f);
+    assert.ok(!files.get('about.html')!.includes('type="application/json"'));
+    const feed = JSON.parse(files.get('feed.json')!) as { _lowdown: { license: string; dataset: string } };
+    assert.equal(feed._lowdown.license, 'CC BY 4.0');
+    assert.equal(feed._lowdown.dataset, 'https://github.com/PetShopBros/lowdown-data');
+    const apiLinks = d21.match(/<a href="https:\/\/api\.example[^"]*"[^>]*>/g) ?? [];
+    assert.ok(apiLinks.length > 0 && apiLinks.every((a) => a.includes('rel="nofollow"')));
   });
 
   test('about 은 First observed 와 미도달을 해석하지 않도록 정의한다', () => {

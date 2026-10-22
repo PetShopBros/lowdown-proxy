@@ -119,6 +119,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         interactions: 0,
         success_rate: null,
         confidence: "none",
+        source: lookupSource(evidence, Date.now()),
       });
     }
 
@@ -160,6 +161,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         review_conversion_rate: data.review_conversion_rate,
       }),
       confidence,
+      source: lookupSource(evidence, Date.now()),
     };
 
     // node_id 없으면 기본 응답
@@ -211,6 +213,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.error(err);
     return res.status(500).json({ error: "Internal server error" });
   }
+}
+
+/**
+ * 재사용될 때 출처가 함께 이동하도록 모든 응답 끝에 싣는 출처 정보.
+ * 입력 문자열은 넣지 않는다(검증된 Registry 이름만) — 인용 문구에 외부 문자열이 섞이지 않게.
+ */
+export function lookupSource(ev: Evidence | null, now: number): Record<string, unknown> {
+  const day = new Date(now).toISOString().slice(0, 10);
+  return {
+    name: "Lowdown",
+    ...(ev?.name && SAFE_NAME.test(ev.name) ? { lookup: `https://lowdown-proxy.vercel.app/api/reputation/mcp:${ev.name}` } : {}),
+    dataset: "https://github.com/PetShopBros/lowdown-data",
+    license: "CC BY 4.0",
+    license_url: "https://creativecommons.org/licenses/by/4.0/",
+    license_applies_to: "registry and scanner blocks (MCP Registry records and Lowdown Scanner observations)",
+    retrieved_at: new Date(now).toISOString(),
+    cite: `Lowdown (https://github.com/PetShopBros/lowdown-data), retrieved ${day}, CC BY 4.0`,
+  };
 }
 
 export const BULK_DATA_LINK = '<https://github.com/PetShopBros/lowdown-data>; rel="related"; title="Daily dataset for bulk use (CC BY 4.0)"';

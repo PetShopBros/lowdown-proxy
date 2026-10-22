@@ -129,6 +129,7 @@ async function main(): Promise<void> {
     observations: { current, previous: previous?.summary ?? null },
     toolDefinitions,
     firstSeenRows,
+    siteBaseUrl: site.baseUrl,
   });
 
   // 3) 하루 JSON (멱등, 과거 날짜 잠금)

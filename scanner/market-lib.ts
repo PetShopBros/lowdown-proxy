@@ -69,11 +69,38 @@ export interface ToolDefinitionSummary {
   previous_data_as_of: string;
 }
 
+/** 재사용될 때 출처가 함께 이동하도록 하루 JSON 에 싣는 출처 정보(CC BY 4.0 출처 표기용). 생성 시각은 넣지 않는다(멱등). */
+export interface DaySource {
+  name: 'Lowdown';
+  page: string;
+  dataset: string;
+  license: 'CC BY 4.0';
+  license_url: string;
+  cite: string;
+}
+
+export const DATASET_URL = 'https://github.com/PetShopBros/lowdown-data';
+export const LICENSE_URL = 'https://creativecommons.org/licenses/by/4.0/';
+
+export function daySource(day: string, dataAsOf: string, siteBaseUrl: string): DaySource {
+  const page = `${siteBaseUrl}days/${day}.html`;
+  return {
+    name: 'Lowdown',
+    page,
+    dataset: DATASET_URL,
+    license: 'CC BY 4.0',
+    license_url: LICENSE_URL,
+    cite: `Lowdown, MCP daily record ${day} (data as of ${dataAsOf}), ${page}, CC BY 4.0`,
+  };
+}
+
 export interface MarketDay {
   schema: typeof DAY_SCHEMA;
   day: string;
   data_as_of: string;
   scan_run_id: string;
+  /** 10/22 부터. 이전 날짜 파일에는 없다(과거 기록은 고치지 않음). */
+  source?: DaySource;
   registry: {
     counts: Record<RegistryKind, number>;
     /** 허용 형식이 아니어서 이름을 싣지 않은 이벤트 수 */
@@ -188,6 +215,8 @@ export function buildDay(input: {
   observations: { current: ObservationSummary; previous: ObservationSummary | null };
   toolDefinitions: ToolDefinitionSummary | null;
   firstSeenRows: readonly FirstSeenInput[];
+  /** 주면 출처(source)를 싣는다. 끝에 / 포함 */
+  siteBaseUrl?: string;
 }): MarketDay {
   if (!DAY.test(input.day)) throw new Error(`invalid day ${input.day}`);
   return {
@@ -195,6 +224,7 @@ export function buildDay(input: {
     day: input.day,
     data_as_of: input.dataAsOf,
     scan_run_id: input.scanRunId,
+    ...(input.siteBaseUrl ? { source: daySource(input.day, input.dataAsOf, input.siteBaseUrl) } : {}),
     registry: registrySection(input.registryRows),
     observations: input.observations,
     tool_definitions: input.toolDefinitions,
@@ -276,7 +306,7 @@ ul{padding-left:20px}li{margin:2px 0;overflow-wrap:anywhere}code{font-size:.9em}
 td,th{border-bottom:1px solid var(--line);padding:4px 6px;text-align:left;font-variant-numeric:tabular-nums}
 nav{display:flex;flex-wrap:wrap;gap:12px;margin:8px 0 16px}footer{margin-top:40px;font-size:.85rem}`;
 
-function page(title: string, body: string, cfg: SiteConfig, canonical: string, description: string): string {
+function page(title: string, body: string, cfg: SiteConfig, canonical: string, description: string, extraHead = ''): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -287,6 +317,7 @@ function page(title: string, body: string, cfg: SiteConfig, canonical: string, d
 <link rel="canonical" href="${esc(canonical)}">
 <link rel="alternate" type="application/rss+xml" title="Lowdown daily record (RSS)" href="${esc(cfg.baseUrl)}feed.xml">
 <link rel="alternate" type="application/feed+json" title="Lowdown daily record (JSON Feed)" href="${esc(cfg.baseUrl)}feed.json">
+<link rel="license" href="${LICENSE_URL}">${extraHead}
 <style>${CSS}</style>
 </head>
 <body><main>
@@ -390,7 +421,9 @@ export function renderDayHtml(d: MarketDay, cfg: SiteConfig, opts: { canonical: 
   else {
     parts.push(`<table><thead><tr><th>Kind</th><th>Value</th></tr></thead><tbody>${d.first_observed.map((f) => `<tr><td>${esc(f.kind)}</td><td><code>${esc(f.value)}</code></td></tr>`).join('')}</tbody></table>`);
   }
-  return page(`MCP daily record ${d.day} — Lowdown`, parts.join('\n'), cfg, opts.canonical, daySummaryText(d));
+  // 대량으로 가져가는 쪽이 API 링크를 하나씩 따라가지 않고 하루 JSON 을 고르도록 기계용 대체 경로를 head 에 둔다.
+  const jsonHead = `\n<link rel="alternate" type="application/json" title="Lowdown daily record ${esc(d.day)} (JSON, CC BY 4.0)" href="${esc(cfg.baseUrl)}days/${esc(d.day)}.json">`;
+  return page(`MCP daily record ${d.day} — Lowdown`, parts.join('\n'), cfg, opts.canonical, daySummaryText(d), jsonHead);
 }
 
 export function renderArchiveHtml(days: readonly MarketDay[], cfg: SiteConfig): string {
@@ -462,6 +495,7 @@ export function renderJsonFeed(days: readonly MarketDay[], cfg: SiteConfig): str
     feed_url: `${cfg.baseUrl}feed.json`,
     description: 'Daily facts about MCP Registry declarations and Lowdown observations. No scores or rankings.',
     language: 'en',
+    _lowdown: { dataset: DATASET_URL, license: 'CC BY 4.0', license_url: LICENSE_URL, attribution: 'Lowdown (https://github.com/PetShopBros/lowdown-data), CC BY 4.0' },
     items,
   };
   return `${JSON.stringify(feed, null, 2)}\n`;
