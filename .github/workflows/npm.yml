@@ -1,0 +1,52 @@
+name: npm
+
+# MCP Registry 가 선언한 npm 패키지의 일별 상태(scanner/npm-snapshot.ts). 코드는 실행하지 않는다.
+# 본 관찰(scanner.yml)과 따로 돈다. 실패해도 관찰에는 영향이 없다.
+
+on:
+  schedule:
+    - cron: '37 19 * * *' # 매일 04:37 KST (UTC 19:37). 부하가 적은 시각, 정각 피함
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '계산만 (DB 쓰기 없음)'
+        type: boolean
+        default: false
+      limit:
+        description: '앞에서부터 N개만 (빈 값 = 전체)'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  issues: write # 실패 시 이슈 생성(알림)
+
+concurrency:
+  group: npm-snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: npm package snapshot
+        run: node scanner/npm-snapshot.ts ${{ inputs.dry_run && '--dry-run' || '' }} ${{ inputs.limit && format('--limit={0}', inputs.limit) || '' }}
+        env:
+          LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
+          LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
+
+      - name: Open issue on failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "npm snapshot 실패 $(date -u +%F)" \
+            --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

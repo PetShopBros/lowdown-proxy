@@ -90,6 +90,15 @@ npm run scanner:test
 - 이 레포는 공개라 Actions 로그도 공개입니다. 로그와 오류 문구에는 날짜·행 수·바이트·해시 앞 16자만 나오고 원문은 나오지 않습니다.
 - 로컬 확인: `LOWDOWN_SUPABASE_URL`, `LOWDOWN_SCANNER_KEY`를 설정하고 `node scanner/private-archive.ts <dir> --dry-run`.
 
+## npm 패키지 일별 상태 (`scanner/npm-snapshot.ts`)
+
+- 대상: 공식 MCP Registry 가 지금 선언 중인 npm 패키지(`registry_state.packages_key` 의 `npm <이름> ...` 줄). 2026-10-22 기준 약 11,300개. 코드는 실행하지 않는다.
+- 읽는 것: `registry.npmjs.org` 의 요약 메타데이터(`Accept: application/vnd.npm.install-v1+json`)에서 `dist-tags.latest`, `modified`, latest 버전의 deprecated 여부. 문구(설명·README·deprecated 메시지)는 저장하지 않는다.
+- 이용 조건: npm 은 공개 API 로 복제하는 것을 허용하고, 월 500만 요청 이하를 합리적 사용으로 본다([Open-Source Terms](https://docs.npmjs.com/policies/open-source-terms)). 하루 1회 약 1.1만 요청(월 약 34만). 이름을 밝히는 UA(`lowdown-scanner/<버전> (+https://github.com/PetShopBros/lowdown-proxy)`), 동시 6, 요청 상한 15,000, 시간 상한 25분.
+- 저장(`supabase/npm_packages.sql`, 비공개): `npm_package_state`(패키지당 1행, 최신 상태와 `checked_at`·`changed_at`) / `npm_package_changes`(`latest_changed`, `deprecated`, `undeprecated`, `not_found`, `restored`).
+- 규칙: 첫 관찰은 기준선(이벤트 없음). 404 만 `not_found`. 시간 초과·5xx·429·연결 오류는 상태를 바꾸지 않고 `last_error` 에만 남긴다. 직전 found 였던 패키지가 한 번에 50개 넘게 404 가 되면 npm 쪽 문제로 보고 그 전환을 보류한다. 오류가 20% 를 넘으면 아무것도 쓰지 않고 실패한다.
+- 로컬 확인: `node scanner/npm-snapshot.ts --dry-run --limit=50`.
+
 ## 조회 (`scanner` 블록)
 
 ```bash
