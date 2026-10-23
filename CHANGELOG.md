@@ -15,6 +15,8 @@ All notable changes to this project will be documented in this file.
 - Leading and trailing whitespace in the target is removed before lookup (the log keeps the input as received). Other characters are not changed; a literal escape sequence such as `\n` is looked up as given and the message says so.
 - Daily record: `days/latest.json` is a copy of the newest daily JSON at a fixed address. The About page carries schema.org `Dataset` markup (JSON-LD) for dataset search engines, with the license, the period covered and download locations.
 
+- PyPI package snapshot (`scanner/pypi-snapshot.ts`, `supabase/pypi_packages.sql`, `.github/workflows/pypi.yml`): once a day, for each PyPI package declared in the MCP Registry, records the latest version, whether that version is yanked, its upload time, and the project status (PEP 792: active, archived, quarantined), from PyPI's public JSON and Index APIs. Same rules as the npm snapshot: state and changes kept apart, first observation is a baseline, only HTTP 404 counts as not found. No package code is run; descriptions, yank reasons and vulnerability data are not read or stored.
+
 - npm package snapshot (`scanner/npm-snapshot.ts`, `supabase/npm_packages.sql`): once a day, for each npm package declared in the MCP Registry, records the latest version, the registry's modified time and whether the latest version is deprecated, from npm's public abbreviated metadata. State and change events are kept apart; the first observation is a baseline; only HTTP 404 counts as not found, and network or server errors never change the recorded state. No package code is run and no npm text is stored.
 
 ### Changed

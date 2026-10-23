@@ -264,10 +264,10 @@ export interface PoolOpts {
 }
 
 /** 동시 요청 상한·총 요청 상한·시간 상한. 순서대로 시작하고, 끝난 것만 돌려준다. */
-export async function fetchAll(idents: readonly string[], one: (ident: string) => Promise<NpmObservation>, opts: PoolOpts): Promise<{ observations: NpmObservation[]; skipped: number }> {
+export async function fetchAll<T = NpmObservation>(idents: readonly string[], one: (ident: string) => Promise<T>, opts: PoolOpts): Promise<{ observations: T[]; skipped: number }> {
   const now = opts.now ?? Date.now;
   const todo = idents.slice(0, opts.maxRequests);
-  const out: NpmObservation[] = [];
+  const out: T[] = [];
   let next = 0;
   let started = 0;
   async function worker(): Promise<void> {
@@ -288,7 +288,7 @@ export async function fetchAll(idents: readonly string[], one: (ident: string) =
 
 const STATE_COLUMNS = 'ident,status,latest,modified,deprecated,baseline,first_checked_at,checked_at,changed_at,last_error,last_error_at,scan_run_id';
 
-async function getKeyset<T extends Record<string, unknown>>(cfg: SupabaseConfig, table: string, select: string, key: string, filters: Array<[string, string]>, deps: DiffIoDeps): Promise<T[]> {
+export async function getKeyset<T extends Record<string, unknown>>(cfg: SupabaseConfig, table: string, select: string, key: string, filters: Array<[string, string]>, deps: DiffIoDeps): Promise<T[]> {
   const f = deps.fetchImpl ?? fetch;
   const pageSize = deps.pageSize ?? 1000;
   const base = `${cfg.url.replace(/\/+$/, '')}/rest/v1/${table}`;

@@ -99,6 +99,15 @@ npm run scanner:test
 - 규칙: 첫 관찰은 기준선(이벤트 없음). 404 만 `not_found`. 시간 초과·5xx·429·연결 오류는 상태를 바꾸지 않고 `last_error` 에만 남긴다. 직전 found 였던 패키지가 한 번에 50개 넘게 404 가 되면 npm 쪽 문제로 보고 그 전환을 보류한다. 오류가 20% 를 넘으면 아무것도 쓰지 않고 실패한다.
 - 로컬 확인: `node scanner/npm-snapshot.ts --dry-run --limit=50`.
 
+## PyPI 패키지 일별 상태 (`scanner/pypi-snapshot.ts`)
+
+- 대상: 공식 MCP Registry 가 지금 선언 중인 PyPI 패키지(`pypi <이름> ...` 줄). 이름은 PEP 503 으로 정규화(소문자, `-`·`_`·`.` 연속은 `-`). 2026-10-22 기준 약 4,500개. 코드는 실행하지 않는다.
+- 읽는 것: JSON API(`/pypi/<이름>/json`)의 `info.version`, 그 버전의 `yanked`, 업로드 시각. Index API(`/simple/<이름>/`, `Accept: application/vnd.pypi.simple.v1+json`)의 `project-status`(PEP 792: active·archived·quarantined·deprecated). 설명·README·회수 사유와 JSON API 의 `vulnerabilities` 는 읽지도 저장하지도 않는다.
+- 이용 방식: PyPI 는 가장자리 요청 제한이 없지만 몇 분 안에 수천 건을 몰아 보내지 말고 시간에 걸쳐 순차로 보내고, User-Agent 로 밝히라고 안내한다([PyPI API](https://docs.pypi.org/api/)). 패키지당 2건, 하루 약 9천 건, 동시 2, 패키지 상한 6,000, 시간 상한 25분, npm 과 같은 UA.
+- 저장(`supabase/pypi_packages.sql`, 비공개): `pypi_package_state` / `pypi_package_changes`(`latest_changed`, `yanked`, `unyanked`, `status_changed`, `not_found`, `restored`).
+- 규칙: npm 과 같다. JSON API 404 만 `not_found`. Index API 가 실패하면 프로젝트 상태는 직전 값을 유지(이벤트 없음). 한 번에 30개 넘게 404 가 되면 그 전환을 보류. 오류 20% 초과 시 쓰지 않고 실패.
+- 워크플로: `.github/workflows/pypi.yml`(매일 05:37 KST). 로컬 확인: `node scanner/pypi-snapshot.ts --dry-run --limit=50`.
+
 ## 조회 (`scanner` 블록)
 
 ```bash
