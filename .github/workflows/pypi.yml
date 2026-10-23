@@ -1,13 +1,20 @@
 name: pypi
+# 서버(sandbox/dispatch.sh)가 정시에 보낸 본 실행은 제목으로 구분한다(감시·중복 확인용)
+run-name: ${{ inputs.daily && 'pypi daily (dispatch)' || github.workflow }}
 
 # MCP Registry 가 선언한 PyPI 패키지의 일별 상태(scanner/pypi-snapshot.ts). 코드는 실행하지 않는다.
 # 본 관찰(scanner.yml)·npm 스냅샷과 따로 돈다. 실패해도 다른 기록에는 영향이 없다.
 
 on:
+  # 본 실행은 서버(sandbox/dispatch.sh)가 같은 시각에 수동 실행(daily)으로 시작한다. 아래 예약은 예비: 그 실행이 이미 성공했으면 건너뛴다.
   schedule:
     - cron: '37 20 * * *' # 매일 05:37 KST (UTC 20:37). npm 스냅샷 1시간 뒤, 정각 피함
   workflow_dispatch:
     inputs:
+      daily:
+        description: '정시 본 실행 (서버 dispatch.sh 가 보냄)'
+        type: boolean
+        default: false
       dry_run:
         description: '계산만 (DB 쓰기 없음)'
         type: boolean
@@ -19,6 +26,7 @@ on:
 
 permissions:
   contents: read
+  actions: read # 예약 실행이 오늘 본 실행 결과를 확인
   issues: write # 실패 시 이슈 생성(알림)
 
 concurrency:
@@ -30,23 +38,44 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
+      # 예약 실행(예비): 지난 20시간 안에 서버가 보낸 본 실행이 성공했으면 아무것도 하지 않는다. 확인이 실패하면 실행한다(빠지는 날보다 중복이 낫다).
+      - name: Skip if today's daily run already succeeded
+        id: gate
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          since="$(date -u -d '-20 hours' +%Y-%m-%dT%H:%M:%SZ)"
+          n="$(gh run list --repo "${{ github.repository }}" --workflow pypi.yml --event workflow_dispatch --limit 20 \
+                --json displayTitle,createdAt,conclusion \
+                --jq "[.[] | select(.displayTitle == \"pypi daily (dispatch)\" and .createdAt >= \"$since\" and .conclusion == \"success\")] | length")" || n=0
+          if [ "${n:-0}" -gt 0 ]; then
+            echo "skip: daily dispatch run already succeeded since $since"
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "backup run: no successful daily dispatch run since $since"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.skip != '1'
 
       - uses: actions/setup-node@v4
+        if: steps.gate.outputs.skip != '1'
         with:
           node-version: '24'
 
       - name: PyPI package snapshot
+        if: steps.gate.outputs.skip != '1'
         run: node scanner/pypi-snapshot.ts ${{ inputs.dry_run && '--dry-run' || '' }} ${{ inputs.limit && format('--limit={0}', inputs.limit) || '' }}
         env:
           LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
           LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
 
       - name: Open issue on failure
-        if: failure() && github.event_name == 'schedule'
+        if: failure() && (github.event_name == 'schedule' || inputs.daily)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh issue create --repo "${{ github.repository }}" \
             --title "pypi snapshot 실패 $(date -u +%F)" \
-            --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

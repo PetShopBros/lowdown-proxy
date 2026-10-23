@@ -1,0 +1,12 @@
+[Unit]
+Description=Lowdown: start scanner at 10:17 KST (01:17 UTC)
+
+[Timer]
+OnCalendar=*-*-* 01:17:00 UTC
+AccuracySec=1s
+# 꺼져 있던 동안 놓친 실행을 켜질 때 몰아서 하지 않는다(그날은 GitHub 예약이 예비로 돈다)
+Persistent=false
+Unit=lowdown-dispatch@scanner.yml.service
+
+[Install]
+WantedBy=timers.target

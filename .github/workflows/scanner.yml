@@ -1,13 +1,20 @@
 name: scanner
+# 서버(sandbox/dispatch.sh)가 정시에 보낸 본 실행은 제목으로 구분한다(감시·중복 확인용)
+run-name: ${{ inputs.daily && 'scanner daily (dispatch)' || github.workflow }}
 
 on:
   schedule:
-    # 본 실행: 매일 10:17 KST (UTC 01:17). UTC 하루 앞쪽에 두어 몇 시간 지연돼도 날짜가 넘어가지 않게 한다.
+    # 본 실행은 서버(sandbox/dispatch.sh)가 10:17 KST 에 수동 실행(daily)으로 시작한다. GitHub 예약은 늦거나 빠질 수 있어 예비로만 둔다.
+    # 예비 1: 10:17 KST (UTC 01:17). 오늘 관찰이 이미 있으면 건너뛴다(SKIP_IF_DONE). UTC 하루 앞쪽이라 몇 시간 늦어도 날짜가 넘어가지 않는다.
     - cron: '17 1 * * *'
-    # 예비 실행: 매일 22:17 KST (UTC 13:17). 본 실행이 누락·지연됐을 때만 실행(SKIP_IF_DONE).
+    # 예비 2: 22:17 KST (UTC 13:17). 같은 규칙.
     - cron: '17 13 * * *'
   workflow_dispatch:
     inputs:
+      daily:
+        description: '정시 본 실행 (서버 dispatch.sh 가 보냄 — 예약 실행과 같은 설정)'
+        type: boolean
+        default: false
       dry_run:
         description: 'DB에 쓰지 않고 결과만 출력'
         type: boolean
@@ -79,14 +86,14 @@ jobs:
           LOWDOWN_NODE_ID: ${{ secrets.LOWDOWN_NODE_ID }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           SCAN_LIMIT: ${{ inputs.limit }}
-          SKIP_IF_DONE: ${{ github.event.schedule == '17 13 * * *' && '1' || '' }}
+          SKIP_IF_DONE: ${{ github.event_name == 'schedule' && '1' || '' }}
           COHORT_VERSION: ${{ inputs.cohort_version || '2026-10-19-v2' }}
           COHORT_SIZE: ${{ inputs.cohort_size || '5000' }}
           COHORT_BASE: ${{ inputs.cohort_base || '2026-10-07-v1' }}
           PLAN_ONLY: ${{ inputs.plan_only && '1' || '' }}
-          REGISTRY_DIFF: ${{ (github.event_name == 'schedule' || inputs.registry_diff) && '1' || '' }}
-          FIRST_SEEN: ${{ (github.event_name == 'schedule' || inputs.first_seen) && '1' || '' }}
-          TOOL_DEFS: ${{ github.event_name == 'schedule' && '1' || '' }}
+          REGISTRY_DIFF: ${{ (github.event_name == 'schedule' || inputs.daily || inputs.registry_diff) && '1' || '' }}
+          FIRST_SEEN: ${{ (github.event_name == 'schedule' || inputs.daily || inputs.first_seen) && '1' || '' }}
+          TOOL_DEFS: ${{ (github.event_name == 'schedule' || inputs.daily) && '1' || '' }}
           COHORT_HOST_CAP: ${{ inputs.cohort_host_cap || '3' }}
           # Registry 491페이지(2026-10-24), Actions 에서 페이지당 약 1.6초 → 8분 상한으로는 부족
           REGISTRY_BUDGET_SEC: '1200'
@@ -102,7 +109,7 @@ jobs:
           retention-days: 90
 
       - name: Open issue on registry fallback
-        if: steps.run.outputs.registry_fallback == '1' && github.event_name == 'schedule'
+        if: steps.run.outputs.registry_fallback == '1' && (github.event_name == 'schedule' || inputs.daily)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -111,12 +118,12 @@ jobs:
             --body "관찰은 직전 주소로 진행됨. 시장판에는 'not compared'로 실림. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Open issue on failure
-        if: failure() && github.event_name == 'schedule'
+        if: failure() && (github.event_name == 'schedule' || inputs.daily)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh issue create --repo "${{ github.repository }}" \
-            --title "scanner 실패 $(date -u +%F) (${{ github.event.schedule }})" \
+            --title "scanner 실패 $(date -u +%F) (${{ github.event.schedule || 'daily dispatch' }})" \
             --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   # 관찰을 실제로 저장한 실행 뒤에만 REPORT.md 갱신(예비 실행이 건너뛴 날, dry-run 은 제외)

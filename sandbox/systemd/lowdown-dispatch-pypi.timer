@@ -1,0 +1,11 @@
+[Unit]
+Description=Lowdown: start PyPI snapshot at 05:37 KST (20:37 UTC)
+
+[Timer]
+OnCalendar=*-*-* 20:37:00 UTC
+AccuracySec=1s
+Persistent=false
+Unit=lowdown-dispatch@pypi.yml.service
+
+[Install]
+WantedBy=timers.target

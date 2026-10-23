@@ -76,7 +76,7 @@ jobs:
           git push
 
       - name: Open issue on failure
-        if: failure() && github.event_name == 'schedule'
+        if: failure() && (github.event_name == 'schedule' || github.event.inputs.daily == 'true')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

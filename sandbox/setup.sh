@@ -88,6 +88,8 @@ install -m 644 "$REPO_DIR/sandbox/systemd/lowdown-sandbox.timer" /etc/systemd/sy
 install -m 644 "$REPO_DIR/sandbox/systemd/lowdown-egress.service" /etc/systemd/system/lowdown-egress.service
 systemctl daemon-reload
 systemctl enable --now lowdown-egress.service
+# 정시 실행(GitHub 워크플로를 정시에 시작) 유닛 — 타이머는 토큰을 넣은 뒤 켠다
+bash "$REPO_DIR/sandbox/dispatch-setup.sh" >/dev/null
 
 log "9/9 next steps"
 cat <<EOF
@@ -101,4 +103,5 @@ cat <<EOF
                        /usr/local/bin/node $REPO_DIR/sandbox/runner.ts --limit=10
   6) 매일 실행 켜기: sudo systemctl enable --now lowdown-sandbox.timer
 멈추기:            sudo systemctl disable --now lowdown-sandbox.timer
+정시 실행(선택):   sudo bash $REPO_DIR/sandbox/dispatch-setup.sh 가 안내하는 단계 (토큰 → 확인 → 타이머 켜기)
 EOF

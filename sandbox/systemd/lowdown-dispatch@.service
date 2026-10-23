@@ -1,0 +1,23 @@
+[Unit]
+Description=Lowdown: start GitHub workflow %i now (workflow_dispatch, daily)
+Documentation=file://@REPO_DIR@/sandbox/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# 토큰 파일은 systemd(root)가 읽고, 스크립트는 임시 사용자로 돈다
+EnvironmentFile=/etc/lowdown/dispatch.env
+ExecStart=/bin/bash @REPO_DIR@/sandbox/dispatch.sh %i
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+TimeoutStartSec=600

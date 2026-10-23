@@ -86,6 +86,23 @@ Defaults: 2 targets at a time, up to 400 per day, 4 h budget. npm requests go th
 
 Stop: `sudo systemctl disable --now lowdown-sandbox.timer`. Delete the server at any time; nothing is lost.
 
+## On-time start of GitHub workflows
+
+GitHub's scheduled runs (`schedule`) can start hours late or be dropped under load. This server also starts the daily `scanner`, `npm` and `pypi` workflows at their set times by calling GitHub's `workflow_dispatch` API with `daily=true`, the same as pressing **Run workflow**. The work still runs on GitHub Actions.
+
+| timer | workflow | time |
+|---|---|---|
+| `lowdown-dispatch-scanner.timer` | `scanner.yml` | 01:17 UTC (10:17 KST) |
+| `lowdown-dispatch-npm.timer` | `npm.yml` | 19:37 UTC (04:37 KST) |
+| `lowdown-dispatch-pypi.timer` | `pypi.yml` | 20:37 UTC (05:37 KST) |
+
+- The workflows keep their own schedules as a backup. A scheduled run does nothing when the day's work is already done (`scanner`: today's observations exist; `npm`/`pypi`: a `daily (dispatch)` run succeeded in the last 20 hours). If this server is down, the schedule runs as before.
+- Token: a fine-grained token with access to this repository only and **Actions: Read and write**, in `/etc/lowdown/dispatch.env` (root, 600). It is read by systemd and used only by `dispatch.sh`, which runs as a temporary user; it never enters a container.
+- Missed times are not caught up after a reboot (`Persistent=false`); the backup schedule covers that day.
+- `sandbox-watchdog.yml` checks that each `daily (dispatch)` run was created within 5 minutes before to 60 minutes after its time, and opens an issue otherwise.
+
+Install on an existing server: `sudo bash sandbox/dispatch-setup.sh` and follow its steps.
+
 ## Publication
 
 Private for a 4-week pilot. Publication rules (API block, daily page section, radar rules) are decided after the pilot.

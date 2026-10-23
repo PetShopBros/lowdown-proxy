@@ -1,6 +1,7 @@
 name: sandbox-watchdog
 
-# stdio 샌드박스 서버(별도 VPS)가 멈췄는지 확인한다. 읽기만 한다. 샌드박스 실행은 여기서 하지 않는다.
+# stdio 샌드박스 서버(별도 VPS)가 멈췄는지, 그 서버가 정시에 보낸 실행(sandbox/dispatch.sh)이 제때 시작했는지 확인한다.
+# 읽기만 한다. 이 워크플로는 서버와 독립적이어야 하므로 GitHub 예약으로만 돈다(서버가 시작하지 않음).
 
 on:
   schedule:
@@ -9,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  actions: read # 정시 실행 기록 확인
   issues: write
 
 jobs:
@@ -25,11 +27,39 @@ jobs:
         env:
           LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
           LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
+      # 서버가 보낸 본 실행(제목 "<이름> daily (dispatch)")이 예정 시각 -5분 ~ +60분 안에 생겼는지.
+      # 워크플로마다 지난 7일 동안 그런 실행이 하나도 없으면 아직 설정 전으로 보고 확인하지 않는다(서버가 멈춘 경우는 위 단계가 잡는다).
+      - name: Check daily dispatch timing
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -u
+          now="$(date -u +%s)"
+          missing=""
+          check() {
+            local wf="$1" hhmm="$2"
+            local expect; expect="$(date -u -d "$(date -u +%F) $hhmm" +%s)"
+            # 창(+60분)이 다 지난 가장 최근 예정 시각
+            if [ "$expect" -gt $((now - 3900)) ]; then expect=$((expect - 86400)); fi
+            local runs; runs="$(gh run list --repo "$REPO" --workflow "$wf.yml" --event workflow_dispatch --limit 40 --json displayTitle,createdAt)" || { echo "$wf: could not list runs"; return; }
+            local week; week="$(jq --arg t "$wf daily (dispatch)" --argjson lo $((now - 7 * 86400)) '[.[] | select(.displayTitle == $t and (.createdAt | fromdateiso8601) >= $lo)] | length' <<<"$runs")"
+            if [ "$week" -eq 0 ]; then echo "$wf: no daily dispatch run in 7 days — timer not set up yet, not checked"; return; fi
+            local hit; hit="$(jq --arg t "$wf daily (dispatch)" --argjson lo $((expect - 300)) --argjson hi $((expect + 3600)) '[.[] | select(.displayTitle == $t) | (.createdAt | fromdateiso8601) | select(. >= $lo and . <= $hi)] | length' <<<"$runs")"
+            local at; at="$(date -u -d "@$expect" +%FT%H:%MZ)"
+            if [ "$hit" -gt 0 ]; then echo "$wf: started on time (expected $at)"; else echo "$wf: no daily dispatch run within -5/+60 min of $at"; missing="$missing $wf"; fi
+          }
+          check scanner 01:17
+          check npm 19:37
+          check pypi 20:37
+          if [ -n "$missing" ]; then echo "late or missing:$missing"; exit 1; fi
+
       - name: Open issue on failure
         if: failure() && github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh issue create --repo "${{ github.repository }}" \
-            --title "sandbox 서버 멈춤 $(date -u +%F)" \
+            --title "sandbox 서버 멈춤 또는 정시 실행 지연 $(date -u +%F)" \
             --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
