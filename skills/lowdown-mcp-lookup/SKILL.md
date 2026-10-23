@@ -28,7 +28,7 @@ GET https://lowdown-proxy.vercel.app/api/reputation/{target}?ref=clawhub
 
 Fields come in this order:
 
-- `message`: one factual sentence saying which records exist. When a declared npm package is deprecated, a declared PyPI package's latest version is yanked or the project is quarantined or deprecated, or npm or PyPI answers 404 for it, that fact comes first.
+- `message`: one factual sentence saying which records exist. When a declared npm package is deprecated, a declared PyPI package's latest version is yanked or the project is archived, quarantined or deprecated, or npm or PyPI answers 404 for it, that fact comes first.
 - `registry`: what the official MCP Registry declares, as recorded by Lowdown since 2026-10-19.
   - `listed`, `declared_version`, `status`, `remote_hosts`, `removed_at`
   - `changes_30d`: Registry changes in the last 30 days (`new`, `version`, `status`, `remotes`, `packages`, `description`, `removed`, `restored`)
@@ -37,7 +37,7 @@ Fields come in this order:
   - `npm.latest`, `npm.latest_deprecated` (the version npm tags as latest only, not other versions), `npm.declared_is_latest`, `npm.checked_at`
   - `npm.status: not_found` only when npm answered HTTP 404. `npm.not_found_since` is the day it started answering 404 after being available, or `first_check` when it has answered 404 since Lowdown's first check.
   - `npm.recent_events`: `latest_changed`, `deprecated`, `undeprecated`, `not_found`, `restored` in the last 30 days
-  - PyPI packages are checked daily from PyPI's public JSON and Index APIs: `pypi.latest`, `pypi.latest_yanked` (that latest version only), `pypi.project_status` (`active`, `archived`, `quarantined`, `deprecated`), `pypi.latest_uploaded`, `pypi.declared_is_latest`, `pypi.checked_at`. `pypi.status: not_found` only when PyPI answered HTTP 404; `pypi.not_found_since` works like the npm field. `pypi.recent_events`: `latest_changed`, `yanked`, `unyanked`, `status_changed`, `not_found`, `restored` in the last 30 days.
+  - PyPI packages are checked daily from PyPI's public JSON and Index APIs: `pypi.latest`, `pypi.latest_yanked` (that latest version only), `pypi.project_status` (`active`, `archived`, `quarantined`, `deprecated`), `pypi.latest_uploaded`, `pypi.declared_is_latest`, `pypi.checked_at`. `pypi.status: not_found` only when PyPI answered HTTP 404; `pypi.not_found_since` works like the npm field; `pypi.not_found_kind` is `no_releases` (PyPI lists the project but it has no release) or `no_project` (no PyPI project of this name), or null when not known. `pypi.recent_events`: `latest_changed`, `yanked`, `unyanked`, `status_changed`, `not_found`, `restored` in the last 30 days.
   - Other package types (oci, nuget, ...) are listed and not checked.
 - `scanner`: daily observations (only for servers in the observed sample).
   - `latest.reached_level`: `2` = initialize and tools/list completed, `1` = initialize only, `0` = initialize did not complete

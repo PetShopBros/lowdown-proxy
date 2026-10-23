@@ -78,10 +78,13 @@ export function parseProjectStatus(doc: unknown): ProjectStatus | null {
   return typeof st === 'string' && (PROJECT_STATUSES as readonly string[]).includes(st) ? (st as ProjectStatus) : null;
 }
 
+/** Index API(/simple/<이름>/)가 이번에 실제로 답한 것: 200 = found, 404 = not_found, 오류·미확인 = null */
+export type IndexStatus = 'found' | 'not_found';
+
 export type PypiObservation =
-  /** project_status null = 이번에 알 수 없음(Index API 실패 등) → 직전 값을 유지 */
-  | { ident: string; kind: 'found'; facts: PypiFacts; project_status: ProjectStatus | null }
-  | { ident: string; kind: 'not_found'; project_status: ProjectStatus | null }
+  /** project_status null = 이번에 알 수 없음(Index API 실패 등) → 직전 값을 유지. 단 Index API 가 404 면 비운다. */
+  | { ident: string; kind: 'found'; facts: PypiFacts; project_status: ProjectStatus | null; index?: IndexStatus | null }
+  | { ident: string; kind: 'not_found'; project_status: ProjectStatus | null; index?: IndexStatus | null }
   | { ident: string; kind: 'error'; error: string };
 
 export interface PypiStateRow {
@@ -91,6 +94,11 @@ export interface PypiStateRow {
   latest_yanked: boolean | null;
   uploaded: string | null;
   project_status: ProjectStatus | null;
+  /**
+   * Index API 의 마지막 답(found/not_found). JSON API 가 404 일 때 둘을 가른다:
+   * found = PyPI 에 프로젝트는 있으나 릴리스가 없음, not_found = 그 이름의 프로젝트가 없음. null = 아직 모름(2026-10-24 이전 행 등).
+   */
+  index_status: IndexStatus | null;
   baseline: boolean;
   first_checked_at: string;
   checked_at: string;
@@ -132,11 +140,15 @@ export function diffPypiPackage(prev: PypiStateRow | undefined, obs: PypiObserva
     return { row: { ...prev, last_error: obs.error, last_error_at: ctx.now }, events: [] };
   }
 
-  const projectStatus = obs.project_status ?? prev?.project_status ?? null;
-  const next: Pick<PypiStateRow, 'status' | 'latest' | 'latest_yanked' | 'uploaded' | 'project_status'> =
+  // Index API 가 404 = 프로젝트 자체가 없다 → 직전 project_status 를 남기지 않는다(남기면 "이름은 있음"으로 읽힌다)
+  const index = obs.index ?? null;
+  // (JSON API 가 답한 found 쪽에서 Index 만 404 인 것은 일시적인 불일치로 보고 직전 값을 유지)
+  const projectStatus = obs.kind === 'not_found' && index === 'not_found' ? null : (obs.project_status ?? prev?.project_status ?? null);
+  const indexStatus = index ?? prev?.index_status ?? null;
+  const next: Pick<PypiStateRow, 'status' | 'latest' | 'latest_yanked' | 'uploaded' | 'project_status' | 'index_status'> =
     obs.kind === 'found'
-      ? { status: 'found', latest: obs.facts.latest, latest_yanked: obs.facts.latest_yanked, uploaded: obs.facts.uploaded, project_status: projectStatus }
-      : { status: 'not_found', latest: null, latest_yanked: null, uploaded: null, project_status: projectStatus };
+      ? { status: 'found', latest: obs.facts.latest, latest_yanked: obs.facts.latest_yanked, uploaded: obs.facts.uploaded, project_status: projectStatus, index_status: indexStatus }
+      : { status: 'not_found', latest: null, latest_yanked: null, uploaded: null, project_status: projectStatus, index_status: indexStatus };
 
   if (!prev) {
     return {
@@ -284,15 +296,16 @@ export async function fetchPypiPackage(ident: string, deps: PypiFetchDeps = {}):
   if (j.kind === 'error') return { ident, kind: 'error', error: j.error };
   const s = await getJson(pypiSimpleUrl(ident, deps.base), SIMPLE_JSON_ACCEPT, deps);
   const project_status = s.kind === 'ok' ? parseProjectStatus(s.body) : null;
-  if (j.kind === 'not_found') return { ident, kind: 'not_found', project_status };
-  return { ident, kind: 'found', facts: parsePypiJson(j.body), project_status };
+  const index: IndexStatus | null = s.kind === 'ok' ? 'found' : s.kind === 'not_found' ? 'not_found' : null;
+  if (j.kind === 'not_found') return { ident, kind: 'not_found', project_status, index };
+  return { ident, kind: 'found', facts: parsePypiJson(j.body), project_status, index };
 }
 
 // ─────────────────────────────────────────────
 // DB 입출력
 // ─────────────────────────────────────────────
 
-const STATE_COLUMNS = 'ident,status,latest,latest_yanked,uploaded,project_status,baseline,first_checked_at,checked_at,changed_at,last_error,last_error_at,scan_run_id';
+const STATE_COLUMNS = 'ident,status,latest,latest_yanked,uploaded,project_status,index_status,baseline,first_checked_at,checked_at,changed_at,last_error,last_error_at,scan_run_id';
 
 export function fetchPypiState(cfg: SupabaseConfig, deps: DiffIoDeps = {}): Promise<PypiStateRow[]> {
   return getKeyset<PypiStateRow & Record<string, unknown>>(cfg, 'pypi_package_state', STATE_COLUMNS, 'ident', [], deps);

@@ -33,6 +33,7 @@ const state = (ident: string, over: Partial<PypiStateRow> = {}): PypiStateRow =>
   latest_yanked: false,
   uploaded: '2026-09-01T00:00:00.000Z',
   project_status: 'active',
+  index_status: 'found',
   baseline: true,
   first_checked_at: '2026-10-22T20:40:00.000Z',
   checked_at: '2026-10-22T20:40:00.000Z',
@@ -152,6 +153,28 @@ describe('PyPI 패키지 — 상태와 이벤트', () => {
     const still = diffPypiPackage(state('a', { status: 'not_found', latest: null }), { ident: 'a', kind: 'not_found', project_status: null }, CTX);
     assert.deepEqual(still.events, []);
   });
+
+  test('404 두 종류: Index API 가 404 면 project_status 를 남기지 않고 index_status=not_found, Index 200 이면 found', () => {
+    // 있던 프로젝트가 통째로 사라짐: 직전 active 를 남기면 "이름은 있음"으로 읽히므로 비운다(이벤트는 not_found 하나)
+    const deleted = diffPypiPackage(state('a'), { ident: 'a', kind: 'not_found', project_status: null, index: 'not_found' }, CTX);
+    assert.equal(deleted.row!.project_status, null);
+    assert.equal(deleted.row!.index_status, 'not_found');
+    assert.deepEqual(deleted.events.map((e) => e.kind), ['not_found']);
+    // 릴리스만 모두 사라지고 프로젝트 페이지는 남음
+    const empty = diffPypiPackage(state('a'), { ident: 'a', kind: 'not_found', project_status: 'active', index: 'found' }, CTX);
+    assert.equal(empty.row!.project_status, 'active');
+    assert.equal(empty.row!.index_status, 'found');
+    // Index 확인 실패(null): 직전 값 유지
+    const unknown = diffPypiPackage(state('a', { index_status: 'found' }), { ident: 'a', kind: 'not_found', project_status: null, index: null }, CTX);
+    assert.equal(unknown.row!.index_status, 'found');
+    assert.equal(unknown.row!.project_status, 'active');
+    // JSON 은 found 인데 Index 만 404: 일시적 불일치로 보고 project_status 유지
+    const odd = diffPypiPackage(state('a'), { ident: 'a', kind: 'found', facts: { latest: '1.0.0', latest_yanked: false, uploaded: null }, project_status: null, index: 'not_found' }, CTX);
+    assert.equal(odd.row!.project_status, 'active');
+    // 기준선 행도 index_status 를 기록, 이전 행(null)은 그대로 null
+    assert.equal(diffPypiPackage(undefined, { ident: 'n', kind: 'not_found', project_status: null, index: 'not_found' }, CTX).row!.index_status, 'not_found');
+    assert.equal(diffPypiPackage(state('a', { index_status: null }), found('a', '1.0.0'), CTX).row!.index_status, null);
+  });
 });
 
 describe('PyPI 패키지 — 실행 단위 안전장치', () => {
@@ -184,7 +207,7 @@ describe('PyPI 패키지 — 읽기', () => {
       return String(u).includes('/simple/') ? res(200, { 'project-status': { status: 'archived' } }) : res(200, { info: { version: '1.2.3', yanked: false }, urls: [] });
     }) as typeof fetch;
     const r = await fetchPypiPackage('mcp-x', { fetchImpl: f });
-    assert.deepEqual(r, { ident: 'mcp-x', kind: 'found', facts: { latest: '1.2.3', latest_yanked: false, uploaded: null }, project_status: 'archived' });
+    assert.deepEqual(r, { ident: 'mcp-x', kind: 'found', facts: { latest: '1.2.3', latest_yanked: false, uploaded: null }, project_status: 'archived', index: 'found' });
     assert.equal(seen[0]!.url, 'https://pypi.org/pypi/mcp-x/json');
     assert.equal(seen[1]!.url, 'https://pypi.org/simple/mcp-x/');
     assert.equal(seen[1]!.headers.Accept, SIMPLE_JSON_ACCEPT);
@@ -194,7 +217,10 @@ describe('PyPI 패키지 — 읽기', () => {
 
   test('JSON API 404 만 not_found(Index 상태는 함께), JSON 오류면 Index 는 묻지 않는다, Index 실패는 상태 null', async () => {
     const nf = (async (u: string | URL | Request) => (String(u).includes('/simple/') ? res(200, { 'project-status': { status: 'quarantined' } }) : res(404))) as typeof fetch;
-    assert.deepEqual(await fetchPypiPackage('q', { fetchImpl: nf }), { ident: 'q', kind: 'not_found', project_status: 'quarantined' });
+    assert.deepEqual(await fetchPypiPackage('q', { fetchImpl: nf }), { ident: 'q', kind: 'not_found', project_status: 'quarantined', index: 'found' });
+    // 둘 다 404 = 그 이름의 프로젝트가 없다
+    const none = (async () => res(404)) as typeof fetch;
+    assert.deepEqual(await fetchPypiPackage('z', { fetchImpl: none }), { ident: 'z', kind: 'not_found', project_status: null, index: 'not_found' });
     let calls = 0;
     const err = (async () => {
       calls++;
@@ -206,6 +232,7 @@ describe('PyPI 패키지 — 읽기', () => {
     const r = await fetchPypiPackage('x', { fetchImpl: idxDown, sleep: async () => {} });
     assert.equal(r.kind, 'found');
     assert.equal((r as { project_status: unknown }).project_status, null);
+    assert.equal((r as { index: unknown }).index, null);
   });
 
   test('429·5xx·네트워크는 한 번만 다시 시도, Retry-After 존중(최대 60초)', async () => {

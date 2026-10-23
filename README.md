@@ -284,7 +284,7 @@ MCP 서버를 감싸는 stdio 프록시가 첫 번째 진입점입니다.
 
 Registry 항목이 npm 패키지를 선언했으면 응답에 `packages` 블록이 옵니다. npm 공개 메타데이터에서 매일 기록한 최신 버전, 최신 버전의 deprecated 여부(다른 버전은 뜻하지 않음), 404 여부를 보여 주고, deprecated나 404는 `message` 첫 문장에 적습니다. 404는 npm이 실제로 404를 답했을 때만 기록합니다. `npm:패키지명`으로도 조회할 수 있고, 여러 항목이 같은 패키지를 선언하면 고르지 않고 후보를 모두 돌려줍니다.
 
-PyPI 패키지도 같은 `packages` 블록에 `pypi` 상태로 옵니다. PyPI 공개 JSON·Index API에서 매일 기록한 최신 버전, 그 버전의 yanked 여부(다른 버전은 뜻하지 않음), 프로젝트 상태(`active`·`archived`·`quarantined`·`deprecated`, PEP 792), 404 여부를 보여 주고, yanked·quarantined·deprecated·404는 `message` 첫 문장에 적습니다. `pypi:패키지명`으로 조회할 수 있고, 이름은 PEP 503 정규화(대소문자·`-` `_` `.` 차이 무시)로 비교합니다.
+PyPI 패키지도 같은 `packages` 블록에 `pypi` 상태로 옵니다. PyPI 공개 JSON·Index API에서 매일 기록한 최신 버전, 그 버전의 yanked 여부(다른 버전은 뜻하지 않음), 프로젝트 상태(`active`·`archived`·`quarantined`·`deprecated`, PEP 792), 404 여부를 보여 주고, yanked·archived·quarantined·deprecated·404는 `message` 첫 문장에 적습니다. 404는 PyPI Index API로 "프로젝트는 있으나 릴리스 없음"(`no_releases`)과 "그 이름의 프로젝트 없음"(`no_project`)을 구분합니다(`not_found_kind`). `pypi:패키지명`으로 조회할 수 있고, 이름은 PEP 503 정규화(대소문자·`-` `_` `.` 차이 무시)로 비교합니다.
 
 공식 MCP Registry에 등록된 원격 MCP 서버는 응답에 `scanner` 블록이 함께 옵니다. `scanner.definition_changes`는 최근 30일 동안 매일 관찰한 도구 정의(스키마·설명·이름의 해시)가 같은 원격 주소의 직전 관찰과 비교해 언제 바뀌었는지, 얼마나 자주 바뀌는지를 사실로만 보여 줍니다. 오래 안정적이던 서버가 막 바뀐 것을 도구에 의존하기 전에 알아챌 수 있습니다. 설명문 원문은 돌려주지 않습니다. Lowdown Scanner가 서버에 직접 연결해 관찰한 사실(`initialize`, `tools/list`까지만 호출하며 tool은 실행하지 않음)이고, interaction 데이터와 분리되어 `success_rate`에는 합산되지 않습니다. HTTP 상태는 해석 없이 관찰된 값 그대로 보여줍니다.
 

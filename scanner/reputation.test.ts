@@ -66,6 +66,10 @@ const REGISTRY_ROWS: Row[] = [
   { name: 'io.github.pytest/py-quar', version: '1', status: 'active', remotes_key: '', packages_key: 'pypi quar-pkg 1 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
   { name: 'io.github.pytest/py-shared-a', version: '1', status: 'active', remotes_key: '', packages_key: 'pypi Shared.Py 1 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
   { name: 'io.github.pytest/py-shared-b', version: '2', status: 'active', remotes_key: '', packages_key: 'pypi shared_py 2 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
+  { name: 'io.github.pytest/py-empty', version: '1', status: 'active', remotes_key: '', packages_key: 'pypi empty-py 1 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
+  { name: 'io.github.pytest/py-noproj', version: '1', status: 'active', remotes_key: '', packages_key: 'pypi noproj-py 1 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
+  { name: 'io.github.pytest/py-deleted', version: '1', status: 'active', remotes_key: '', packages_key: 'pypi deleted-py 1 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
+  { name: 'io.github.pytest/py-arch', version: '1', status: 'active', remotes_key: '', packages_key: 'pypi arch-py 1 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
   { name: 'io.github.pytest/py-npm-same-name', version: '1', status: 'active', remotes_key: '', packages_key: 'npm shared-py 1 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
 ];
 const PYPI_STATE_ROWS: Row[] = [
@@ -76,7 +80,15 @@ const PYPI_STATE_ROWS: Row[] = [
   { ident: 'quar-pkg', status: 'found', latest: '1', latest_yanked: false, uploaded: null, project_status: 'quarantined', baseline: true, first_checked_at: '2026-10-22T05:00:00.000Z', checked_at: '2026-10-23T23:30:00.000Z' },
   { ident: 'shared-py', status: 'found', latest: '2', latest_yanked: false, uploaded: null, project_status: 'active', baseline: true, first_checked_at: '2026-10-22T05:00:00.000Z', checked_at: '2026-10-23T23:30:00.000Z' },
 ];
+const PYPI_EXTRA_STATE: Row[] = [
+  { ident: 'empty-py', status: 'not_found', latest: null, latest_yanked: null, uploaded: null, project_status: 'active', index_status: null, baseline: true, first_checked_at: '2026-10-22T05:00:00.000Z', checked_at: '2026-10-23T23:30:00.000Z' },
+  { ident: 'noproj-py', status: 'not_found', latest: null, latest_yanked: null, uploaded: null, project_status: null, index_status: 'not_found', baseline: true, first_checked_at: '2026-10-22T05:00:00.000Z', checked_at: '2026-10-23T23:30:00.000Z' },
+  { ident: 'deleted-py', status: 'not_found', latest: null, latest_yanked: null, uploaded: null, project_status: null, index_status: 'not_found', baseline: true, first_checked_at: '2026-10-22T05:00:00.000Z', checked_at: '2026-10-23T23:30:00.000Z' },
+  { ident: 'arch-py', status: 'found', latest: '3.0', latest_yanked: false, uploaded: null, project_status: 'archived', index_status: 'found', baseline: true, first_checked_at: '2026-10-22T05:00:00.000Z', checked_at: '2026-10-23T23:30:00.000Z' },
+];
+PYPI_STATE_ROWS.push(...PYPI_EXTRA_STATE);
 const PYPI_CHANGE_ROWS: Row[] = [
+  { ident: 'deleted-py', detected_on: dayAgo(1), kind: 'not_found', old_value: '0.4', new_value: null },
   { ident: 'my-py-pkg', detected_on: dayAgo(1), kind: 'latest_changed', old_value: '1.0.0', new_value: '1.1.0' },
   { ident: 'my-py-pkg', detected_on: dayAgo(2), kind: 'status_changed', old_value: 'archived', new_value: 'active' },
   { ident: 'my-py-pkg', detected_on: dayAgo(40), kind: 'latest_changed', old_value: '0.9.0', new_value: '1.0.0' },
@@ -766,6 +778,31 @@ describe('선언 패키지 (packages) — PyPI 일별 상태', () => {
     const q = await call('mcp:io.github.pytest/py-quar');
     assert.ok(q.body.message.startsWith('PyPI lists the project quar-pkg as quarantined (checked 2026-10-23).'), q.body.message);
     assert.equal(q.body.packages[0].pypi.project_status, 'quarantined');
+  });
+
+  test('404 두 종류: 프로젝트는 있으나 릴리스 없음 / 그 이름의 프로젝트 없음 / 모름 — 문장과 not_found_kind', async () => {
+    const empty = await call('mcp:io.github.pytest/py-empty');
+    assert.equal(empty.body.packages[0].pypi.not_found_kind, 'no_releases');
+    assert.ok(empty.body.message.startsWith('PyPI lists the project empty-py but has had no release of it at every Lowdown check since 2026-10-22 (checked 2026-10-23).'), empty.body.message);
+
+    const noproj = await call('mcp:io.github.pytest/py-noproj');
+    assert.equal(noproj.body.packages[0].pypi.not_found_kind, 'no_project');
+    assert.equal(noproj.body.packages[0].pypi.project_status, null);
+    assert.ok(noproj.body.message.startsWith('PyPI has had no project named noproj-py at any Lowdown check since 2026-10-22 (checked 2026-10-23).'), noproj.body.message);
+
+    const deleted = await call('mcp:io.github.pytest/py-deleted');
+    assert.equal(deleted.body.packages[0].pypi.not_found_kind, 'no_project');
+    assert.ok(deleted.body.message.startsWith(`PyPI has had no project named deleted-py since ${dayAgo(1)}; it existed before (checked 2026-10-23).`), deleted.body.message);
+
+    // index_status 기록 전, 있다가 404 가 된 행: 구분하지 않는다
+    const gone = await call('mcp:io.github.pytest/py-gone');
+    assert.equal(gone.body.packages[0].pypi.not_found_kind, null);
+    assert.match(gone.body.packages_note, /not_found_kind separates/);
+  });
+
+  test('archived 도 첫 문장에 오른다', async () => {
+    const r = await call('mcp:io.github.pytest/py-arch');
+    assert.ok(r.body.message.startsWith('PyPI lists the project arch-py as archived (checked 2026-10-23).'), r.body.message);
   });
 
   test('pypi: 입력 — 1건이면 그 항목으로, 표기·대소문자·구분자 차이는 같은 패키지로 본다', async () => {

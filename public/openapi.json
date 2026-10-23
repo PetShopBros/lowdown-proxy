@@ -67,7 +67,7 @@
                     },
                     "message": {
                       "type": "string",
-                      "description": "One factual sentence: whether a Registry record, Scanner observations, and reported interactions exist, and, for observed servers, when tool definitions last changed. When a declared npm package is marked deprecated on its latest version, a declared PyPI package's latest version is yanked or the project is quarantined or deprecated, or npm or PyPI answers 404 for it, that fact comes first. If the target contains a literal escape sequence such as \\n, a final sentence says so; the target is not changed."
+                      "description": "One factual sentence: whether a Registry record, Scanner observations, and reported interactions exist, and, for observed servers, when tool definitions last changed. When a declared npm package is marked deprecated on its latest version, a declared PyPI package's latest version is yanked or the project is archived, quarantined or deprecated, or npm or PyPI answers 404 for it (for PyPI, saying whether the project exists without releases or does not exist), that fact comes first. If the target contains a literal escape sequence such as \\n, a final sentence says so; the target is not changed."
                     },
                     "registry": {
                       "type": "object",
@@ -324,7 +324,7 @@
                                   "not_found",
                                   "not_checked"
                                 ],
-                                "description": "not_found only when PyPI answered HTTP 404. Network errors, 429 and 5xx do not change the recorded status. not_checked: not yet in Lowdown's PyPI records."
+                                "description": "not_found only when PyPI's JSON API answered HTTP 404. Network errors, 429 and 5xx do not change the recorded status. not_checked: not yet in Lowdown's PyPI records."
                               },
                               "latest": {
                                 "type": [
@@ -352,7 +352,7 @@
                                   "string",
                                   "null"
                                 ],
-                                "description": "PEP 792 project status: active, archived, quarantined or deprecated. null when not yet known."
+                                "description": "PEP 792 project status: active, archived, quarantined or deprecated. null when not known or when PyPI has no project of this name."
                               },
                               "declared_is_latest": {
                                 "type": [
@@ -367,6 +367,18 @@
                                   "null"
                                 ],
                                 "description": "status not_found only: the UTC day PyPI started answering 404 after the project had been available, or \"first_check\" when it has answered 404 since Lowdown's first check."
+                              },
+                              "not_found_kind": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "enum": [
+                                  "no_releases",
+                                  "no_project",
+                                  null
+                                ],
+                                "description": "status not_found only, from PyPI's Index API: no_releases = PyPI lists the project but it has no release; no_project = PyPI has no project of this name. null when not known (for example, records made before 2026-10-24)."
                               },
                               "first_checked_at": {
                                 "type": [

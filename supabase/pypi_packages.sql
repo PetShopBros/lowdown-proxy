@@ -50,3 +50,8 @@ revoke all on sequence pypi_package_changes_id_seq from anon, authenticated;
 -- 실행 뒤:
 -- select status, project_status, baseline, count(*) from pypi_package_state group by 1, 2, 3 order by 4 desc;
 -- select detected_on, kind, count(*) from pypi_package_changes group by 1, 2 order by 1 desc, 2;
+
+-- 2026-10-24: Index API 의 마지막 답. JSON API 가 404 일 때 둘을 가른다.
+--   found = PyPI 에 프로젝트는 있으나 릴리스가 없음, not_found = 그 이름의 프로젝트가 없음, null = 이 열 이전 행(아직 모름).
+--   Index API 가 404 면 project_status 도 비운다(직전 값을 남기면 "이름은 있음"으로 읽힌다).
+alter table pypi_package_state add column if not exists index_status text check (index_status in ('found', 'not_found'));

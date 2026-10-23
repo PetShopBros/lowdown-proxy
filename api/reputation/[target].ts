@@ -851,7 +851,7 @@ export type PackageInputType = "npm" | "pypi";
 const NPM_NOTE =
   "npm values are recorded daily by Lowdown from npm's public registry metadata (registry.npmjs.org); package code is not run. latest_deprecated refers only to the version npm tags as latest, not to other versions. not_found means npm answered HTTP 404; network errors and 429/5xx responses do not change the recorded status.";
 const PYPI_NOTE =
-  "PyPI values are recorded daily by Lowdown from PyPI's public JSON and Index APIs (pypi.org); package code is not run. latest_yanked refers only to the version PyPI lists as latest. project_status is the PEP 792 project status. not_found means PyPI answered HTTP 404; network errors and 429/5xx responses do not change the recorded status.";
+  "PyPI values are recorded daily by Lowdown from PyPI's public JSON and Index APIs (pypi.org); package code is not run. latest_yanked refers only to the version PyPI lists as latest. project_status is the PEP 792 project status. not_found means PyPI's JSON API answered HTTP 404; network errors and 429/5xx responses do not change the recorded status. not_found_kind separates a project PyPI lists but that has no release (no_releases) from a name with no PyPI project (no_project), using PyPI's Index API; null when not known.";
 /** 응답에 실린 패키지 종류에 해당하는 설명만 붙인다. */
 export function packagesNote(packages: ReadonlyArray<Record<string, unknown>>): string {
   const has = (t: string) => packages.some((p) => p.registry === t);
@@ -1009,6 +1009,20 @@ export function shapePackages(
   return { packages, facts: facts.slice(0, 3) };
 }
 
+/**
+ * PyPI JSON API 404 의 두 종류. Index API(/simple/) 가 마지막으로 답한 값으로 가른다.
+ *  - no_releases: Index API 200 — PyPI 에 프로젝트는 있으나 릴리스가 없음
+ *  - no_project:  Index API 404 — 그 이름의 프로젝트가 없음
+ *  - null:        모름(index_status 기록 전 행, Index 확인 실패). 단 첫 확인부터 404 이고 project_status 가 있는 기준선 행은
+ *                 직전 값이 남을 수 없으므로(첫 관찰) Index API 가 200 이었다는 뜻 → no_releases.
+ */
+export function pypiNotFoundKind(indexStatus: unknown, projectStatus: string | null, since: string | null): "no_releases" | "no_project" | null {
+  if (indexStatus === "found") return "no_releases";
+  if (indexStatus === "not_found") return "no_project";
+  if (since === "first_check" && projectStatus !== null) return "no_releases";
+  return null;
+}
+
 /** PyPI 선언 패키지 하나 → packages 항목(`pypi` 블록)과 첫 문장용 사실. 상태는 PEP 503 정규화 이름으로 찾는다. */
 function shapePypiPackage(
   d: DeclaredPackage,
@@ -1056,15 +1070,26 @@ function shapePypiPackage(
     if (s.latest_yanked === true) facts.push(`PyPI marks the latest version of ${d.identifier}${latest ? ` (${latest})` : ""} as yanked (checked ${checkedDay}).`);
   } else {
     const since = lastNotFound ? dayOf(lastNotFound.detected_on) : "first_check";
+    const kind = pypiNotFoundKind(s.index_status, projectStatus, since);
+    const firstDay = dayOf(s.first_checked_at);
     pypi.not_found_since = since;
+    pypi.not_found_kind = kind;
     facts.push(
-      since === "first_check"
-        ? `PyPI has returned 404 for ${d.identifier} at every Lowdown check since ${dayOf(s.first_checked_at)} (checked ${checkedDay}).`
-        : `PyPI has returned 404 for ${d.identifier} since ${since}; it was available before (checked ${checkedDay}).`,
+      kind === "no_releases"
+        ? since === "first_check"
+          ? `PyPI lists the project ${d.identifier} but has had no release of it at every Lowdown check since ${firstDay} (checked ${checkedDay}).`
+          : `PyPI has listed the project ${d.identifier} without any release since ${since}; it had releases before (checked ${checkedDay}).`
+        : kind === "no_project"
+          ? since === "first_check"
+            ? `PyPI has had no project named ${d.identifier} at any Lowdown check since ${firstDay} (checked ${checkedDay}).`
+            : `PyPI has had no project named ${d.identifier} since ${since}; it existed before (checked ${checkedDay}).`
+          : since === "first_check"
+            ? `PyPI has returned 404 for ${d.identifier} at every Lowdown check since ${firstDay} (checked ${checkedDay}).`
+            : `PyPI has returned 404 for ${d.identifier} since ${since}; it was available before (checked ${checkedDay}).`,
     );
   }
   pypi.project_status = projectStatus;
-  if (projectStatus === "quarantined" || projectStatus === "deprecated") facts.push(`PyPI lists the project ${d.identifier} as ${projectStatus} (checked ${checkedDay}).`);
+  if (projectStatus === "archived" || projectStatus === "quarantined" || projectStatus === "deprecated") facts.push(`PyPI lists the project ${d.identifier} as ${projectStatus} (checked ${checkedDay}).`);
   pypi.first_checked_at = isoOrNull(s.first_checked_at);
   pypi.checked_at = isoOrNull(s.checked_at);
   pypi.recent_events = recent;
@@ -1092,7 +1117,7 @@ async function attachPackages(supabase: any, ev: Evidence, declared: DeclaredPac
     if (pypiIdents.length > 0) {
       try {
         const [st, ch] = await Promise.all([
-          supabase.from("pypi_package_state").select("ident,status,latest,latest_yanked,uploaded,project_status,baseline,first_checked_at,checked_at").in("ident", pypiIdents),
+          supabase.from("pypi_package_state").select("ident,status,latest,latest_yanked,uploaded,project_status,index_status,baseline,first_checked_at,checked_at").in("ident", pypiIdents),
           supabase.from("pypi_package_changes").select("ident,detected_on,kind,old_value,new_value").in("ident", pypiIdents).order("detected_on", { ascending: false }).limit(200),
         ]);
         if (st.error) throw new Error("pypi_package_state");
