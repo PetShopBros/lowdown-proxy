@@ -673,12 +673,17 @@ describe('선언 패키지 (packages) — npm 일별 상태', () => {
     const none = await call('npm:nobody-declares-this');
     assert.equal(none.body.registry.listed, false);
     assert.match(none.body.registry.note, /declares this npm package/);
+    assert.equal(
+      none.body.message,
+      'No MCP Registry entry declares the npm package nobody-declares-this; no agent-reported interactions. Lowdown records npm package status only for packages that MCP Registry entries declare, so it has no package facts to report.',
+    );
     assert.deepEqual(none.body.packages[0].npm, { status: 'not_checked' });
     assert.equal(lookupsInserted[0]!.result_kind, 'none');
 
     lookupsInserted = [];
     const bad = await call('npm:Bad Name<script>');
     assert.equal(bad.body.registry.note, 'Not a valid npm package name.');
+    assert.match(bad.body.message, /^No MCP Registry record found;/);
     assert.ok(!('packages' in bad.body));
     assert.ok(!JSON.stringify(bad.body.registry).includes('<script>'));
   });

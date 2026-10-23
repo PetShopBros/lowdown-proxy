@@ -411,6 +411,8 @@ interface Evidence {
   scannerSince?: string | null;
   packages?: Array<Record<string, unknown>>;
   packageFacts?: string[];
+  /** npm: 입력인데 그 패키지를 선언한 Registry 항목이 없음(형식 검사 통과한 이름) */
+  npmUndeclared?: string;
 }
 
 const safeVersion = (v: unknown) => (typeof v === "string" && SAFE_VERSION.test(v) ? v : null);
@@ -728,13 +730,15 @@ async function buildEvidence(supabase: any, target: string, lookup: ScannerLooku
   // npm: 입력이 Registry 항목 하나로 정해지지 않으면(0건·여러 건) 이름 조회 없이 패키지 사실과 후보만
   if (npmQuery && npmQuery.names.length !== 1) {
     if (npmQuery.names.length > 1) ev.registryCandidates = npmQuery.names;
-    else if (!npmQuery.failed)
+    else if (!npmQuery.failed) {
+      if (npmQuery.ident) ev.npmUndeclared = npmQuery.ident;
       ev.registry = {
         listed: false,
         note: npmQuery.ident
           ? `No MCP Registry entry in Lowdown's records (kept since ${REGISTRY_RECORDS_SINCE}) declares this npm package.`
           : "Not a valid npm package name.",
       };
+    }
     if (npmQuery.ident) await attachPackages(supabase, ev, [{ type: "npm", identifier: npmQuery.ident, version: null }], now, true);
     return ev;
   }
@@ -794,6 +798,9 @@ function evidenceFields(ev: Evidence | null, lookup: ScannerLookup | null): Reco
   return out;
 }
 
+// npm: 입력에 선언 항목이 없을 때: Lowdown 이 이 패키지를 다루지 않는다는 사실(문제가 없다는 뜻이 아님)
+const NPM_SCOPE_NOTE = "Lowdown records npm package status only for packages that MCP Registry entries declare, so it has no package facts to report.";
+
 /** 첫머리: 확인된 Registry 이름과 사실 문장. 기록이 있는 쪽을 먼저 말한다. */
 function evidenceHead(ev: Evidence | null, lookup: ScannerLookup | null, interactions: number, inputNote: string | null = null): Record<string, unknown> {
   if (!ev && !lookup) return interactions === 0 ? { message: `No interactions recorded yet.${inputNote ? ` ${inputNote}` : ""}` } : {};
@@ -802,6 +809,7 @@ function evidenceHead(ev: Evidence | null, lookup: ScannerLookup | null, interac
   if (reg?.listed === true) parts.push("MCP Registry declaration recorded");
   else if (reg && reg.removed_at) parts.push("MCP Registry entry recorded as removed");
   else if (ev?.registryCandidates) parts.push("several MCP Registry names match (see registry_candidates)");
+  else if (ev?.npmUndeclared) parts.push(`no MCP Registry entry declares the npm package ${ev.npmUndeclared}`);
   else if (reg) parts.push("no MCP Registry record found");
   if (lookup?.summary) {
     parts.push(ev?.scannerSince ? `observed daily by Lowdown Scanner since ${String(ev.scannerSince).slice(0, 10)}` : "observed by Lowdown Scanner");
@@ -818,7 +826,7 @@ function evidenceHead(ev: Evidence | null, lookup: ScannerLookup | null, interac
   const lead = (ev?.packageFacts ?? []).join(" ");
   return {
     ...(ev?.name ? { resolved_target: `mcp:${ev.name}` } : {}),
-    message: `${lead ? `${lead} ` : ""}${text.charAt(0).toUpperCase()}${text.slice(1)}.${inputNote ? ` ${inputNote}` : ""}`,
+    message: `${lead ? `${lead} ` : ""}${text.charAt(0).toUpperCase()}${text.slice(1)}.${ev?.npmUndeclared ? ` ${NPM_SCOPE_NOTE}` : ""}${inputNote ? ` ${inputNote}` : ""}`,
   };
 }
 
