@@ -7,7 +7,8 @@ import { isNpmName } from '../scanner/npm-lib.ts';
 
 // 기록의 의미가 바뀌는 수정(판정·저장 필드·실행 조건)마다 올린다. 주 버전이 바뀌면 끝난 대상도 다시 돈다.
 //   0.1.0 — 2026-10-24 최초(인자 없이 실행) / 0.2.0 — Registry 선언 실행 인자(packageArguments)를 붙여 실행
-export const SANDBOX_RUNNER_VERSION = '0.2.0';
+//   0.2.1 — metadata.install_scripts 기록(실행 조건은 같음 → 주 버전 그대로)
+export const SANDBOX_RUNNER_VERSION = '0.2.1';
 export const SANDBOX_RUN_MAJOR = 2;
 
 /** 정확한 버전 문자열만(범위·태그 제외). npm 이 받는 semver 형식의 부분집합. */
@@ -231,6 +232,13 @@ export function chooseBin(pkgJson: unknown, ident: string): { bin: string | null
     return { bin: null, outcome: 'bin_ambiguous', count: names.length };
   }
   return { bin: null, outcome: 'no_bin', count: 0 };
+}
+
+/** 설치 스크립트(preinstall/install/postinstall) 선언 여부. --ignore-scripts 로 설치하므로 이 스크립트는 돌지 않았다. */
+export function hasInstallScripts(pkgJson: unknown): boolean {
+  const p = (pkgJson && typeof pkgJson === 'object' ? pkgJson : {}) as Record<string, unknown>;
+  const sc = p.scripts && typeof p.scripts === 'object' ? (p.scripts as Record<string, unknown>) : {};
+  return ['preinstall', 'install', 'postinstall'].some((k) => typeof sc[k] === 'string' && (sc[k] as string).trim().length > 0);
 }
 
 // ─────────────────────────────────────────────

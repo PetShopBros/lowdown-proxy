@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   chooseBin,
   classifyInstallFailure,
+  hasInstallScripts,
   installArgs,
   launchArgsOf,
   LineSplitter,
@@ -239,5 +240,15 @@ describe('Registry 선언 실행 인자', () => {
   test('실행 인자는 bin 뒤에 붙는다', () => {
     const a = runArgs({ image: 'i', runtime: 'runsc', uid: 1, name: 'n', workHost: '/w' }, 'srv', 60, ['mcp', '--stdio']);
     assert.deepEqual(a.slice(-3), ['/work/node_modules/.bin/srv', 'mcp', '--stdio']);
+  });
+});
+
+describe('설치 스크립트 선언', () => {
+  test('preinstall/install/postinstall 중 하나라도 있으면 true', () => {
+    assert.equal(hasInstallScripts({ scripts: { postinstall: 'node fetch-binary.js' } }), true);
+    assert.equal(hasInstallScripts({ scripts: { install: 'node-gyp rebuild' } }), true);
+    assert.equal(hasInstallScripts({ scripts: { build: 'tsc', prepare: 'x' } }), false);
+    assert.equal(hasInstallScripts({ scripts: { postinstall: '  ' } }), false);
+    assert.equal(hasInstallScripts(null), false);
   });
 });

@@ -20,6 +20,7 @@ import { insertToolDefs, insertToolSetVersions, ToolDefCollector, toolDefRows, t
 import {
   chooseBin,
   classifyInstallFailure,
+  hasInstallScripts,
   installArgs,
   nextState,
   pickLaunch,
@@ -134,6 +135,7 @@ interface TargetResult {
   install_error_code: string | null;
   bin_count: number | null;
   probe: StdioProbeResult | null;
+  install_scripts?: boolean;
   outcome: Outcome;
 }
 
@@ -163,16 +165,18 @@ async function runTarget(env: Env, t: Target, launch: LaunchSpec | null): Promis
     }
 
     // 2) 실행 파일 결정 (npx 와 같은 규칙)
-    const pick = chooseBin(readPackageJson(work, t.ident), t.ident);
+    const pkgJson = readPackageJson(work, t.ident);
+    const scripts = hasInstallScripts(pkgJson);
+    const pick = chooseBin(pkgJson, t.ident);
     if (pick.outcome !== 'ok' || !pick.bin || !existsSync(join(work, 'node_modules', '.bin', pick.bin))) {
-      return { install_ms: inst.ms, install_error_code: null, bin_count: pick.count, probe: null, outcome: pick.outcome === 'bin_ambiguous' ? 'bin_ambiguous' : 'no_bin' };
+      return { install_ms: inst.ms, install_error_code: null, bin_count: pick.count, probe: null, install_scripts: scripts, outcome: pick.outcome === 'bin_ambiguous' ? 'bin_ambiguous' : 'no_bin' };
     }
 
     // 3) 실행: initialize + tools/list
     const hardLimit = Math.ceil((DEFAULT_PROBE_OPTS.initTimeoutMs + DEFAULT_PROBE_OPTS.listTimeoutMs) / 1000) + 15;
     const probe = await probeStdio(['docker', ...runArgs({ ...ctx, name: `${name}-r` }, pick.bin, hardLimit, launch?.args ?? [])]);
     await docker(['rm', '-f', `${name}-r`]);
-    return { install_ms: inst.ms, install_error_code: null, bin_count: pick.count, probe, outcome: probe.outcome };
+    return { install_ms: inst.ms, install_error_code: null, bin_count: pick.count, probe, install_scripts: scripts, outcome: probe.outcome };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -339,6 +343,7 @@ async function main(): Promise<void> {
         duration_ms: p?.duration_ms ?? null,
         metadata: {
           ...(p?.metadata ?? {}),
+          ...(res.install_scripts !== undefined ? { install_scripts: res.install_scripts } : {}),
           ...(launch ? { args_unsatisfied: launch.args_unsatisfied, env_required: launch.env_required, env_secret: launch.env_secret } : { launch_spec: 'not_in_registry' }),
         },
       });

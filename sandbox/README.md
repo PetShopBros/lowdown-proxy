@@ -13,6 +13,8 @@ For each `npm:<package>@<version>`:
 - the same fields the remote Scanner records: capabilities, protocol version, server version, tool count, `schema_hash`, `desc_hash`, `names_hash`, `tool_set_hash`
 - full tool definitions go to the same private tables as the Scanner (`scanner_tool_defs`, `scanner_tool_set_versions`)
 
+Packages are installed with `--ignore-scripts`, so `preinstall`/`install`/`postinstall` scripts never run. When a package declares one, `metadata.install_scripts` is `true`; a package that downloads its binary in such a script will not start here, and the record says why it may not have.
+
 Not recorded: stderr or log text (byte count only), anything the package prints that is not JSON-RPC (line count only).
 
 The server is started the way its Registry entry says to start it: the fixed values of its declared `packageArguments` (for example `mcp` or `--stdio`) are passed. Secret arguments, template values and required arguments without a fixed value are not passed; their count is recorded (`args_unsatisfied`). It gets **no environment variables, no credentials, and no network**; the number of declared required and secret environment variables is recorded. A server that needs an API key or a network connection at startup records that fact (`exited`, `init_error`, ...). These are observations of one start under these conditions, not judgments. Each run row keeps the exact arguments used (`args`) and the Registry entry they came from (`registry_name`).
