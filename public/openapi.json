@@ -28,7 +28,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Identifier of the target: an MCP Registry name with the mcp: prefix, e.g. 'mcp:ai.agent-bev/bev-door' (the '/' may be sent as is or as %2F), a short name such as 'bev-door', or another id such as 'agent:some-agent-id'."
+            "description": "Identifier of the target: an MCP Registry name with the mcp: prefix, e.g. 'mcp:ai.agent-bev/bev-door' (the '/' may be sent as is or as %2F), a short name such as 'bev-door', an npm package with the npm: prefix, e.g. 'npm:@scope/name' (answers with the Registry entries that declare it; several entries are returned as registry_candidates, none is picked), or another id such as 'agent:some-agent-id'. Leading and trailing whitespace is removed; other characters are used as given."
           },
           {
             "name": "task_type",
@@ -67,7 +67,7 @@
                     },
                     "message": {
                       "type": "string",
-                      "description": "One factual sentence: whether a Registry record, Scanner observations, and reported interactions exist, and, for observed servers, when tool definitions last changed."
+                      "description": "One factual sentence: whether a Registry record, Scanner observations, and reported interactions exist, and, for observed servers, when tool definitions last changed. When a declared npm package is marked deprecated on its latest version or npm answers 404 for it, that fact comes first. If the target contains a literal escape sequence such as \\n, a final sentence says so; the target is not changed."
                     },
                     "registry": {
                       "type": "object",
@@ -174,7 +174,148 @@
                       "items": {
                         "type": "string"
                       },
-                      "description": "Returned instead of `registry` when a short name matches several Registry names."
+                      "description": "Returned instead of `registry` when a short name matches several Registry names, or when several Registry entries declare the npm package given as npm:<name> (up to 50, none is picked)."
+                    },
+                    "packages": {
+                      "type": "array",
+                      "description": "Packages declared by the Registry entry (or the npm package given as npm:<name>), in declaration order, up to 10. Only npm packages are checked.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "registry": {
+                            "type": "string",
+                            "description": "Package registry type as declared (npm, pypi, oci, nuget, mcpb, cargo)."
+                          },
+                          "name": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "declared_version": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "description": "Version declared in the Registry. Absent for npm: lookups."
+                          },
+                          "npm": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "description": "npm status recorded daily by Lowdown from npm's public registry metadata. null for packages Lowdown does not check (non-npm, or a declared name that is not a valid npm name).",
+                            "properties": {
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "found",
+                                  "not_found",
+                                  "not_checked"
+                                ],
+                                "description": "not_found only when npm answered HTTP 404. Network errors, 429 and 5xx do not change the recorded status. not_checked: not yet in Lowdown's npm records."
+                              },
+                              "latest": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "Version npm tags as latest (status found)."
+                              },
+                              "latest_deprecated": {
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ],
+                                "description": "Whether the version npm tags as latest is marked deprecated. It says nothing about other versions."
+                              },
+                              "modified": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "format": "date-time",
+                                "description": "npm's modified time for the package document."
+                              },
+                              "declared_is_latest": {
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ],
+                                "description": "Whether the version declared in the Registry equals npm's latest. Absent for npm: lookups."
+                              },
+                              "not_found_since": {
+                                "type": "string",
+                                "description": "status not_found only: the UTC day npm started answering 404 after the package had been available, or \"first_check\" when it has answered 404 since Lowdown's first check."
+                              },
+                              "first_checked_at": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "format": "date-time"
+                              },
+                              "checked_at": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "format": "date-time",
+                                "description": "Last time npm answered 200 or 404."
+                              },
+                              "recent_events": {
+                                "type": "array",
+                                "description": "Up to 5 changes in the last 30 days, newest first.",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "on": {
+                                      "type": "string",
+                                      "format": "date"
+                                    },
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "latest_changed",
+                                        "deprecated",
+                                        "undeprecated",
+                                        "not_found",
+                                        "restored"
+                                      ]
+                                    },
+                                    "old": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "new": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "last_seen_latest": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ],
+                                      "description": "not_found events: the latest version recorded before the 404."
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "note": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "packages_note": {
+                      "type": "string",
+                      "description": "How the npm values are recorded and what they do not mean."
                     },
                     "scanner": {
                       "type": "object",

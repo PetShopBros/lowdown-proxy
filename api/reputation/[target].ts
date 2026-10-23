@@ -19,7 +19,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
   // Registry 이름의 '/' 를 그대로 쓴 주소(/api/reputation/mcp:ns/name)는 vercel.json rewrite 가 _slash?t=ns/name 으로 넘긴다.
   const slashT = req.query.t;
-  const target = (req.query.target === "_slash" && typeof slashT === "string" && slashT.length > 0 ? slashT : req.query.target) as string;
+  const rawTarget = (req.query.target === "_slash" && typeof slashT === "string" && slashT.length > 0 ? slashT : req.query.target) as string;
+  // 앞뒤 공백·개행만 제거한다. 이름 안의 글자(역슬래시 등)는 고치지 않는다.
+  const target = typeof rawTarget === "string" ? rawTarget.trim() : rawTarget;
   if (!target || target === "_slash") return res.status(400).json({ error: "target required" });
   const taskType = (req.query.task_type as string) ?? null;
   // 조회 유입 측정용 태그 (예: ?ref=report). 안전한 문자만 허용.
@@ -88,9 +90,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Scanner 관찰 데이터: interactions/success_rate 와 합산하지 않고 별도 `scanner` 블록으로만 노출.
     // 실패해도 기존 응답에는 영향 없음. task_type 필터 요청에는 붙이지 않는다.
-    const scannerLookup = taskType ? null : await findScanner(supabase, target);
-    // Registry 선언 + Scanner 날짜별 기록. 실패해도 기존 응답에는 영향 없음. task_type 필터 요청에는 붙이지 않는다.
-    const evidence = taskType ? null : await buildEvidence(supabase, target, scannerLookup);
+    // npm:<패키지> 입력: 그 패키지를 선언한 Registry 항목을 찾는다. 1건이면 그 항목으로 조회, 여러 건이면 고르지 않고 후보 전부.
+    const npmQuery = !taskType && target.startsWith("npm:") ? await resolveNpmTarget(supabase, target.slice(4)) : null;
+    const effectiveTarget = npmQuery && npmQuery.names.length === 1 ? `mcp:${npmQuery.names[0]}` : target;
+    const scannerLookup = taskType || (npmQuery && npmQuery.names.length !== 1) ? null : await findScanner(supabase, effectiveTarget);
+    // Registry 선언 + Scanner 날짜별 기록 + 선언 패키지. 실패해도 기존 응답에는 영향 없음. task_type 필터 요청에는 붙이지 않는다.
+    const evidence = taskType ? null : await buildEvidence(supabase, effectiveTarget, scannerLookup, npmQuery);
+    const inputNote = escapeNote(target);
 
     // 조회 자체를 로깅 (organic vs seeded 구분)
     const source = req.headers["x-lowdown-source"] === "seeded" ? "seeded" : "organic";
@@ -100,7 +106,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const lookupRow = {
       requester,
-      target,
+      target: rawTarget,
       source,
       user_agent: userAgent,
       ...(ref ? { ref } : {}),
@@ -114,7 +120,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({
         target,
         task_type: taskType ?? undefined,
-        ...evidenceHead(evidence, scannerLookup, 0),
+        ...evidenceHead(evidence, scannerLookup, 0, inputNote),
         ...evidenceFields(evidence, scannerLookup),
         interactions: 0,
         success_rate: null,
@@ -137,7 +143,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const baseResponse = {
       target,
       task_type: taskType ?? undefined,
-      ...evidenceHead(evidence, scannerLookup, interactions),
+      ...evidenceHead(evidence, scannerLookup, interactions, inputNote),
       ...evidenceFields(evidence, scannerLookup),
       target_type: data.target_type,
       interactions,
@@ -290,6 +296,7 @@ export function resultKind(taskType: string | null, lookup: ScannerLookup | null
   if ((lookup?.candidates.length ?? 0) > 0 || (ev?.registryCandidates?.length ?? 0) > 0) return "candidates";
   const reg = ev?.registry as Record<string, unknown> | undefined;
   if (reg && (reg.listed === true || reg.removed_at)) return "registry_only";
+  if (ev?.packages?.some((p) => p.npm && (p.npm as Record<string, unknown>).status !== "not_checked")) return "package_only";
   if (data) return "interactions_only";
   return "none";
 }
@@ -402,6 +409,8 @@ interface Evidence {
   registryCandidates?: string[];
   scannerExtra?: Record<string, unknown>;
   scannerSince?: string | null;
+  packages?: Array<Record<string, unknown>>;
+  packageFacts?: string[];
 }
 
 const safeVersion = (v: unknown) => (typeof v === "string" && SAFE_VERSION.test(v) ? v : null);
@@ -712,10 +721,23 @@ async function scannerHistory(supabase: any, targetId: string, registryRow: any 
   };
 }
 
-async function buildEvidence(supabase: any, target: string, lookup: ScannerLookup | null): Promise<Evidence | null> {
+async function buildEvidence(supabase: any, target: string, lookup: ScannerLookup | null, npmQuery: NpmQuery | null = null): Promise<Evidence | null> {
   const now = Date.now();
   const ev: Evidence = { name: null };
   let registryRow: any | null = null;
+  // npm: 입력이 Registry 항목 하나로 정해지지 않으면(0건·여러 건) 이름 조회 없이 패키지 사실과 후보만
+  if (npmQuery && npmQuery.names.length !== 1) {
+    if (npmQuery.names.length > 1) ev.registryCandidates = npmQuery.names;
+    else if (!npmQuery.failed)
+      ev.registry = {
+        listed: false,
+        note: npmQuery.ident
+          ? `No MCP Registry entry in Lowdown's records (kept since ${REGISTRY_RECORDS_SINCE}) declares this npm package.`
+          : "Not a valid npm package name.",
+      };
+    if (npmQuery.ident) await attachPackages(supabase, ev, [{ type: "npm", identifier: npmQuery.ident, version: null }], now, true);
+    return ev;
+  }
   try {
     const r = await resolveRegistryName(supabase, target, lookup);
     ev.name = r.name;
@@ -730,6 +752,8 @@ async function buildEvidence(supabase: any, target: string, lookup: ScannerLooku
         .order("detected_on", { ascending: false })
         .limit(20);
       ev.registry = shapeRegistry(r.row, ch.error ? [] : (ch.data ?? []));
+      const declared = declaredPackages(r.row.packages_key);
+      if (declared.length > 0) await attachPackages(supabase, ev, declared, now, false);
     } else if (r.candidates.length > 1) {
       ev.registryCandidates = r.candidates;
     } else if (r.name === null && !(target.includes(":") && !target.startsWith("mcp:"))) {
@@ -758,6 +782,10 @@ function evidenceFields(ev: Evidence | null, lookup: ScannerLookup | null): Reco
   const out: Record<string, unknown> = {};
   if (ev?.registry) out.registry = ev.registry;
   if (ev?.registryCandidates) out.registry_candidates = ev.registryCandidates;
+  if (ev?.packages && ev.packages.length > 0) {
+    out.packages = ev.packages;
+    out.packages_note = PACKAGES_NOTE;
+  }
   const scanner = scannerFields(lookup);
   if (scanner.scanner && ev?.scannerExtra && lookup?.summary) {
     const { note, ...rest } = scanner.scanner as Record<string, unknown>;
@@ -767,8 +795,8 @@ function evidenceFields(ev: Evidence | null, lookup: ScannerLookup | null): Reco
 }
 
 /** 첫머리: 확인된 Registry 이름과 사실 문장. 기록이 있는 쪽을 먼저 말한다. */
-function evidenceHead(ev: Evidence | null, lookup: ScannerLookup | null, interactions: number): Record<string, unknown> {
-  if (!ev && !lookup) return interactions === 0 ? { message: "No interactions recorded yet." } : {};
+function evidenceHead(ev: Evidence | null, lookup: ScannerLookup | null, interactions: number, inputNote: string | null = null): Record<string, unknown> {
+  if (!ev && !lookup) return interactions === 0 ? { message: `No interactions recorded yet.${inputNote ? ` ${inputNote}` : ""}` } : {};
   const parts: string[] = [];
   const reg = ev?.registry as Record<string, unknown> | undefined;
   if (reg?.listed === true) parts.push("MCP Registry declaration recorded");
@@ -786,8 +814,172 @@ function evidenceHead(ev: Evidence | null, lookup: ScannerLookup | null, interac
   else if (lookup?.unobserved) parts.push("not in the Lowdown Scanner sample");
   parts.push(interactions > 0 ? `${interactions} agent-reported interactions` : "no agent-reported interactions");
   const text = parts.join("; ");
+  // 첫 문장: 설치 판단을 바꿀 수 있는 패키지 사실(deprecated·404)만. 새 버전 발행은 packages 이력에만.
+  const lead = (ev?.packageFacts ?? []).join(" ");
   return {
     ...(ev?.name ? { resolved_target: `mcp:${ev.name}` } : {}),
-    message: `${text.charAt(0).toUpperCase()}${text.slice(1)}.`,
+    message: `${lead ? `${lead} ` : ""}${text.charAt(0).toUpperCase()}${text.slice(1)}.${inputNote ? ` ${inputNote}` : ""}`,
   };
+}
+
+// ── 선언 패키지 블록 (npm 일별 상태, scanner/npm-snapshot.ts 가 기록) ─────────
+// npm 공개 메타데이터에서 Lowdown 이 기록한 값만: 최신 버전·수정 시각·최신 버전의 deprecated 여부·404.
+// 404 만 not_found 로 기록되고, 네트워크 오류·429·5xx 는 상태를 바꾸지 않는다(기록 쪽 규칙). npm 원문은 없다.
+
+const NPM_NAME = /^(?:@[A-Za-z0-9~-][A-Za-z0-9._~-]*\/)?[A-Za-z0-9~-][A-Za-z0-9._~-]*$/;
+const PACKAGE_TYPES = new Set(["npm", "pypi", "oci", "nuget", "mcpb", "cargo"]);
+const SAFE_PACKAGE_ID = /^[A-Za-z0-9@._~\/:+=-]{1,300}$/;
+const NPM_EVENT_KINDS = new Set(["latest_changed", "deprecated", "undeprecated", "not_found", "restored"]);
+const MAX_PACKAGES = 10;
+const MAX_PACKAGE_EVENTS = 5;
+export const MAX_NPM_CANDIDATES = 50;
+export const PACKAGES_NOTE =
+  "npm values are recorded daily by Lowdown from npm's public registry metadata (registry.npmjs.org); package code is not run. latest_deprecated refers only to the version npm tags as latest, not to other versions. not_found means npm answered HTTP 404; network errors and 429/5xx responses do not change the recorded status. Only npm packages are checked.";
+
+export const isNpmName = (s: string) => s.length > 0 && s.length <= 214 && NPM_NAME.test(s);
+
+export interface DeclaredPackage {
+  type: string;
+  identifier: string | null;
+  version: string | null;
+}
+
+interface NpmQuery {
+  ident: string | null;
+  names: string[];
+  failed?: boolean;
+}
+
+/** registry_state.packages_key(줄마다 "종류 식별자 버전 전송방식") → 선언 패키지. 형식이 아닌 값은 null. */
+export function declaredPackages(key: unknown): DeclaredPackage[] {
+  if (typeof key !== "string" || key.length === 0) return [];
+  const out: DeclaredPackage[] = [];
+  for (const line of key.split("\n")) {
+    const [type = "", identifier = "", version = ""] = line.split(" ");
+    if (!PACKAGE_TYPES.has(type)) continue;
+    const okId = type === "npm" ? isNpmName(identifier) : SAFE_PACKAGE_ID.test(identifier);
+    out.push({ type, identifier: okId ? identifier : null, version: safeVersion(version) });
+    if (out.length >= MAX_PACKAGES) break;
+  }
+  return out;
+}
+
+/** npm:<이름> → 그 패키지를 선언한 (지금 목록에 있는) Registry 이름들. 고르지 않는다. */
+async function resolveNpmTarget(supabase: any, ident: string): Promise<NpmQuery> {
+  if (!isNpmName(ident)) return { ident: null, names: [] };
+  try {
+    const pattern = `%npm ${ident.replace(/[\\%_]/g, "\\$&")} %`;
+    const { data, error } = await supabase
+      .from("registry_state")
+      .select("name,packages_key")
+      .ilike("packages_key", pattern)
+      .is("removed_at", null)
+      .order("name", { ascending: true })
+      .limit(MAX_NPM_CANDIDATES);
+    if (error) return { ident, names: [], failed: true };
+    const names = ((data ?? []) as any[])
+      .filter((r) => declaredPackages(r.packages_key).some((p) => p.type === "npm" && p.identifier === ident))
+      .map((r) => String(r.name))
+      .filter((n) => SAFE_NAME.test(n));
+    return { ident, names };
+  } catch {
+    return { ident, names: [], failed: true };
+  }
+}
+
+const dayOf = (v: unknown) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null);
+const isoOrNull = (v: unknown) => (typeof v === "string" && Number.isFinite(Date.parse(v)) ? new Date(Date.parse(v)).toISOString() : null);
+
+/**
+ * 선언 패키지 + npm 상태 + npm 이벤트 → packages 블록과 첫 문장용 사실.
+ * not_found_since: 있다가 404 가 된 날(not_found 이벤트) 또는 "first_check"(Lowdown 의 첫 확인부터 404).
+ * latest_deprecated 는 npm 이 latest 로 표시한 버전에 대한 값이다. 다른 버전의 상태는 뜻하지 않는다.
+ */
+export function shapePackages(
+  declared: DeclaredPackage[],
+  stateRows: any[],
+  changeRows: any[],
+  now: number,
+  fromNpmInput: boolean,
+): { packages: Array<Record<string, unknown>>; facts: string[] } {
+  const state = new Map<string, any>();
+  for (const s of stateRows) if (typeof s?.ident === "string") state.set(s.ident, s);
+  const windowStart = utcDay(now - WINDOW_DAYS * DAY_MS);
+  const packages: Array<Record<string, unknown>> = [];
+  const facts: string[] = [];
+  for (const d of declared) {
+    const base: Record<string, unknown> = { registry: d.type, name: d.identifier, ...(fromNpmInput ? {} : { declared_version: d.version }) };
+    if (d.type !== "npm" || d.identifier === null) {
+      packages.push({ ...base, npm: null, note: d.type === "npm" ? "Declared name is not a valid npm package name." : "Not checked by Lowdown (only npm packages are checked)." });
+      continue;
+    }
+    const s = state.get(d.identifier);
+    if (!s || (s.status !== "found" && s.status !== "not_found")) {
+      packages.push({ ...base, npm: { status: "not_checked" } });
+      continue;
+    }
+    const events = changeRows.filter((c) => c?.ident === d.identifier && NPM_EVENT_KINDS.has(c.kind) && dayOf(c.detected_on));
+    const lastNotFound = events.find((c) => c.kind === "not_found");
+    const recent = events
+      .filter((c) => (dayOf(c.detected_on) ?? "") >= windowStart)
+      .slice(0, MAX_PACKAGE_EVENTS)
+      .map((c) => ({
+        on: dayOf(c.detected_on),
+        kind: c.kind,
+        ...(c.kind === "latest_changed" ? { old: safeVersion(c.old_value), new: safeVersion(c.new_value) } : {}),
+        ...(c.kind === "not_found" ? { last_seen_latest: safeVersion(c.old_value) } : {}),
+      }));
+    const checkedDay = dayOf(s.checked_at);
+    const npm: Record<string, unknown> = { status: s.status };
+    if (s.status === "found") {
+      const latest = safeVersion(s.latest);
+      npm.latest = latest;
+      npm.latest_deprecated = typeof s.deprecated === "boolean" ? s.deprecated : null;
+      npm.modified = isoOrNull(s.modified);
+      if (!fromNpmInput) npm.declared_is_latest = d.version && latest ? d.version === latest : null;
+      if (s.deprecated === true) facts.push(`npm marks the latest version of ${d.identifier}${latest ? ` (${latest})` : ""} as deprecated (checked ${checkedDay}).`);
+    } else {
+      const since = lastNotFound ? dayOf(lastNotFound.detected_on) : "first_check";
+      npm.not_found_since = since;
+      facts.push(
+        since === "first_check"
+          ? `npm has returned 404 for ${d.identifier} at every Lowdown check since ${dayOf(s.first_checked_at)} (checked ${checkedDay}).`
+          : `npm has returned 404 for ${d.identifier} since ${since}; it was available before (checked ${checkedDay}).`,
+      );
+    }
+    npm.first_checked_at = isoOrNull(s.first_checked_at);
+    npm.checked_at = isoOrNull(s.checked_at);
+    npm.recent_events = recent;
+    packages.push({ ...base, npm });
+  }
+  return { packages, facts: facts.slice(0, 3) };
+}
+
+async function attachPackages(supabase: any, ev: Evidence, declared: DeclaredPackage[], now: number, fromNpmInput: boolean): Promise<void> {
+  const idents = [...new Set(declared.filter((d) => d.type === "npm" && d.identifier).map((d) => d.identifier as string))];
+  try {
+    let stateRows: any[] = [];
+    let changeRows: any[] = [];
+    if (idents.length > 0) {
+      const [st, ch] = await Promise.all([
+        supabase.from("npm_package_state").select("ident,status,latest,modified,deprecated,baseline,first_checked_at,checked_at").in("ident", idents),
+        supabase.from("npm_package_changes").select("ident,detected_on,kind,old_value,new_value").in("ident", idents).order("detected_on", { ascending: false }).limit(200),
+      ]);
+      if (st.error) throw new Error("npm_package_state");
+      stateRows = st.data ?? [];
+      changeRows = ch.error ? [] : (ch.data ?? []);
+    }
+    const shaped = shapePackages(declared, stateRows, changeRows, now, fromNpmInput);
+    ev.packages = shaped.packages;
+    ev.packageFacts = shaped.facts;
+  } catch {
+    // npm 상태 조회 실패 → 선언 목록만(상태 없이)
+    ev.packages = declared.map((d) => ({ registry: d.type, name: d.identifier, ...(fromNpmInput ? {} : { declared_version: d.version }) }));
+  }
+}
+
+/** 입력에 글자 그대로의 이스케이프(\n, < 등)가 있으면 그 사실만 알린다. 입력은 고치지 않는다. */
+export function escapeNote(target: string): string | null {
+  const m = target.match(/\\(?:u[0-9A-Fa-f]{4}|[nrt"\\/])/);
+  return m ? `The target contains a literal escape sequence (${m[0]}); it was looked up as given.` : null;
 }
