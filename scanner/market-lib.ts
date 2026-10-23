@@ -109,7 +109,14 @@ export interface MarketDay {
     /** 허용 형식이 아니어서 이름을 싣지 않은 이벤트 수 */
     unlisted: number;
     items: Record<RegistryKind, RegistryItem[]>;
+    /** false = 그날 Registry 목록을 받지 못해 비교하지 않았다(counts 의 0 은 "변경 없음"이 아니다). 비교한 날에는 없다. */
+    compared?: false;
+    not_compared_reason?: string;
+    /** 직전 날(들)을 비교하지 못했을 때: 이 날의 변경은 이 날짜부터 쌓인 것이다 */
+    covers_since?: string;
   };
+  /** 지난 날짜를 나중에 정정한 기록. 정정 외에는 과거 기록을 고치지 않는다. */
+  corrections?: Array<{ on: string; note: string }>;
   observations: { current: ObservationSummary; previous: ObservationSummary | null };
   tool_definitions: ToolDefinitionSummary | null;
   first_observed: Array<{ kind: string; value: string }>;
@@ -220,6 +227,10 @@ export function buildDay(input: {
   firstSeenRows: readonly FirstSeenInput[];
   /** 주면 출처(source)를 싣는다. 끝에 / 포함 */
   siteBaseUrl?: string;
+  /** false 면 그날 Registry 비교를 하지 않았다(목록 미수신) */
+  registryCompared?: boolean;
+  /** 직전 날(들)이 비교되지 않았으면 그 첫 날짜 */
+  registryCoversSince?: string | null;
 }): MarketDay {
   if (!DAY.test(input.day)) throw new Error(`invalid day ${input.day}`);
   return {
@@ -228,10 +239,52 @@ export function buildDay(input: {
     data_as_of: input.dataAsOf,
     scan_run_id: input.scanRunId,
     ...(input.siteBaseUrl ? { source: daySource(input.day, input.dataAsOf, input.siteBaseUrl) } : {}),
-    registry: registrySection(input.registryRows),
+    registry: {
+      ...registrySection(input.registryRows),
+      ...(input.registryCompared === false ? { compared: false as const, not_compared_reason: REGISTRY_NOT_COMPARED_NOTE } : {}),
+      ...(input.registryCompared !== false && input.registryCoversSince ? { covers_since: input.registryCoversSince } : {}),
+    },
     observations: input.observations,
     tool_definitions: input.toolDefinitions,
     first_observed: firstObservedSection(input.firstSeenRows),
+  };
+}
+
+export const REGISTRY_NOT_COMPARED_NOTE =
+  "The Registry list was not received in full during this run, so Registry declarations were not compared on this day. Changes since the previous comparison appear on the next compared day.";
+
+/**
+ * 직전에 비교하지 못한 날들의 첫 날짜. 바로 앞 날이 비교됐으면 null.
+ * days: 디스크에 있는 하루 기록(오늘 이전). 날짜가 빠진 경우(기록 없는 날)는 따지지 않는다.
+ */
+export function registryCoversSince(previousDays: readonly MarketDay[], day: string): string | null {
+  const before = [...previousDays].filter((d) => d.day < day).sort((a, b) => (a.day < b.day ? 1 : -1));
+  let first: string | null = null;
+  for (const d of before) {
+    if (d.registry.compared !== false) break;
+    first = d.day;
+  }
+  return first;
+}
+
+/** 명시적 정정 목록. 잠긴 과거 날짜는 이 목록으로만 고친다(정정 기록을 함께 남긴다). */
+export const DAY_CORRECTIONS: ReadonlyArray<{ day: string; on: string; reason: string }> = [
+  {
+    day: '2026-10-23',
+    on: '2026-10-24',
+    reason:
+      'Registry list fetch stopped at the time limit (294 of 491 pages), so Registry declarations were not compared on this day. The zero counts first published for this day did not mean "no changes".',
+  },
+];
+
+/** 정정 적용(멱등). 이미 적용된 날은 그대로 돌려준다. */
+export function applyCorrection(d: MarketDay): MarketDay {
+  const c = DAY_CORRECTIONS.find((x) => x.day === d.day);
+  if (!c || d.registry.compared === false) return d;
+  return {
+    ...d,
+    registry: { ...d.registry, compared: false, not_compared_reason: REGISTRY_NOT_COMPARED_NOTE },
+    corrections: [...(d.corrections ?? []), { on: c.on, note: c.reason }],
   };
 }
 
@@ -286,8 +339,12 @@ const pl = (v: number, one: string, many: string) => `${n(v)} ${v === 1 ? one : 
 export function daySummaryText(d: MarketDay): string {
   const r = d.registry.counts;
   const o = d.observations.current;
+  const regText =
+    d.registry.compared === false
+      ? 'Registry: not compared on this day (list not received).'
+      : `Registry${d.registry.covers_since ? ` (changes since ${d.registry.covers_since})` : ''}: ${pl(r.new, 'new name', 'new names')}, ${pl(r.removed, 'removal', 'removals')}, ${pl(r.version, 'version change', 'version changes')}, ${pl(r.status, 'status change', 'status changes')}, ${pl(r.remotes, 'remote change', 'remote changes')}, ${pl(r.description, 'description change', 'description changes')}.`;
   const parts = [
-    `Registry: ${pl(r.new, 'new name', 'new names')}, ${pl(r.removed, 'removal', 'removals')}, ${pl(r.version, 'version change', 'version changes')}, ${pl(r.status, 'status change', 'status changes')}, ${pl(r.remotes, 'remote change', 'remote changes')}, ${pl(r.description, 'description change', 'description changes')}.`,
+    regText,
     `Observed sample: ${n(o.targets_observed)} of ${pl(o.cohort_size, 'server', 'servers')}; tools/list reached on ${n(o.reached_level['2'])} of ${pl(o.probe_attempts, 'attempt', 'attempts')}.`,
   ];
   if (d.tool_definitions) {
@@ -377,11 +434,20 @@ export function renderDayHtml(d: MarketDay, cfg: SiteConfig, opts: { canonical: 
   const p = d.observations.previous ?? undefined;
   const parts: string[] = [];
   parts.push(`<h1>MCP daily record — ${esc(d.day)}</h1>`);
+  for (const c of d.corrections ?? []) parts.push(`<p><strong>Correction (${esc(c.on)}):</strong> ${esc(c.note)}</p>`);
   parts.push(`<p class="muted">Data as of ${esc(d.data_as_of.slice(0, 16).replace('T', ' '))} UTC. Machine-readable: <a href="${esc(cfg.baseUrl)}days/${esc(d.day)}.json">${esc(d.day)}.json</a>.${opts.prev ? ` Previous: <a href="${esc(cfg.baseUrl)}days/${esc(opts.prev)}.html">${esc(opts.prev)}</a>.` : ''}${opts.next ? ` Next: <a href="${esc(cfg.baseUrl)}days/${esc(opts.next)}.html">${esc(opts.next)}</a>.` : ''}</p>`);
 
   parts.push(`<h2>1. Registry declarations</h2>`);
-  parts.push(`<p class="muted">Changes in what the official MCP Registry declares, compared with the previous day's list.</p>`);
-  parts.push(`<div class="nums">${REGISTRY_KINDS.map((k) => numBox(KIND_TITLE[k], n(r.counts[k]))).join('')}</div>`);
+  if (r.compared === false) {
+    parts.push(`<p><strong>Not compared on this day.</strong> ${esc(r.not_compared_reason ?? REGISTRY_NOT_COMPARED_NOTE)}</p>`);
+  } else {
+    parts.push(
+      r.covers_since
+        ? `<p class="muted">Changes in what the official MCP Registry declares since ${esc(r.covers_since)} (the Registry was not compared on the day(s) before this one).</p>`
+        : `<p class="muted">Changes in what the official MCP Registry declares, compared with the previous day's list.</p>`,
+    );
+    parts.push(`<div class="nums">${REGISTRY_KINDS.map((k) => numBox(KIND_TITLE[k], n(r.counts[k]))).join('')}</div>`);
+  }
   if (r.unlisted > 0) parts.push(`<p class="muted">${n(r.unlisted)} events are counted but not listed (name outside the allowed format).</p>`);
   for (const k of REGISTRY_KINDS) {
     if (r.items[k].length === 0) continue;
@@ -432,9 +498,12 @@ export function renderDayHtml(d: MarketDay, cfg: SiteConfig, opts: { canonical: 
 export function renderArchiveHtml(days: readonly MarketDay[], cfg: SiteConfig): string {
   const sorted = [...days].sort((a, b) => (a.day < b.day ? 1 : -1));
   const rows = sorted
-    .map((d) => `<tr><td><a href="${esc(cfg.baseUrl)}days/${esc(d.day)}.html">${esc(d.day)}</a></td><td>${n(d.registry.counts.new)}</td><td>${n(d.registry.counts.removed)}</td><td>${n(d.registry.counts.version)}</td><td>${n(d.observations.current.reached_level['2'])}</td><td><a href="${esc(cfg.baseUrl)}days/${esc(d.day)}.json">json</a></td></tr>`)
+    .map((d) => {
+      const reg = (v: number) => (d.registry.compared === false ? 'not compared' : n(v));
+      return `<tr><td><a href="${esc(cfg.baseUrl)}days/${esc(d.day)}.html">${esc(d.day)}</a></td><td>${reg(d.registry.counts.new)}</td><td>${reg(d.registry.counts.removed)}</td><td>${reg(d.registry.counts.version)}</td><td>${n(d.observations.current.reached_level['2'])}</td><td><a href="${esc(cfg.baseUrl)}days/${esc(d.day)}.json">json</a></td></tr>`;
+    })
     .join('');
-  const body = `<h1>Archive</h1><p class="muted">One record per UTC day. Past days are not rewritten.</p>
+  const body = `<h1>Archive</h1><p class="muted">One record per UTC day. Past days are not rewritten, except for corrections that are stated on the day's page and in its JSON (<code>corrections</code>).</p>
 <table><thead><tr><th>Day</th><th>New</th><th>Removed</th><th>Version changes</th><th>Reached tools/list</th><th>Data</th></tr></thead><tbody>${rows}</tbody></table>`;
   return page('Archive — Lowdown MCP daily record', body, cfg, `${cfg.baseUrl}days/`, 'Daily records of MCP Registry changes and Lowdown observations.');
 }

@@ -12,7 +12,7 @@ import { dirname, join } from 'node:path';
 import { fetchRegistryChangesDay } from './archive-lib.ts';
 import { fetchCohort, supabaseHeaders } from './lib.ts';
 import type { SupabaseConfig } from './lib.ts';
-import { buildDay, dayWriteDecision, parseDay, renderSite, serializeDay, toolDefinitionSection } from './market-lib.ts';
+import { applyCorrection, buildDay, dayWriteDecision, parseDay, registryCoversSince, renderSite, serializeDay, toolDefinitionSection } from './market-lib.ts';
 import type { DefRowInput, FirstSeenInput, MarketDay, ObservationSummary, RegistryChangeInput } from './market-lib.ts';
 import { buildReport, fetchReportRows, MIN_RUN_COVERAGE, WINDOW_DAYS } from './report-lib.ts';
 import type { ReportRow } from './report-lib.ts';
@@ -111,7 +111,16 @@ async function main(): Promise<void> {
   const day = latest.start.slice(0, 10);
 
   // 2) 사실 종류별 입력
-  const registryRows = await fetchRegistryChangesDay(cfg, day);
+  // 그날 Registry 목록을 받지 못했으면(fallback) 비교를 건너뛴 날이다 — 0 을 "변경 없음"으로 싣지 않는다
+  const fbQs = new URLSearchParams({ select: 'registry_fallback:metadata->>registry_fallback', scan_run_id: `eq.${latest.id}`, limit: '1' });
+  const fbRes = await fetch(`${cfg.url.replace(/\/+$/, '')}/rest/v1/scanner_observations?${fbQs.toString()}`, {
+    headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!fbRes.ok) throw new Error(`scanner_observations read failed: HTTP ${fbRes.status}`);
+  const fb = (await fbRes.json()) as Array<{ registry_fallback: string | null }>;
+  const registryCompared = !(Array.isArray(fb) && fb[0]?.registry_fallback === 'true');
+  const registryRows = registryCompared ? await fetchRegistryChangesDay(cfg, day) : [];
   const firstSeenRows = await getAll<FirstSeenInput>(cfg, 'scanner_first_seen', { select: 'id,kind,value,hosts,namespaces', first_seen_on: `eq.${day}`, baseline: 'is.false' }, true);
   let toolDefinitions = null;
   if (previous) {
@@ -121,6 +130,12 @@ async function main(): Promise<void> {
     toolDefinitions = toolDefinitionSection(cur, prev, previous.run.end);
   }
 
+  const daysDirEarly = join(docs, 'days');
+  const priorDays: MarketDay[] = existsSync(daysDirEarly)
+    ? readdirSync(daysDirEarly)
+        .filter((f) => /^\d{4}-\d{2}-\d{2}\.json$/.test(f) && f.slice(0, 10) < day)
+        .map((f) => applyCorrection(parseDay(readFileSync(join(daysDirEarly, f), 'utf8'))))
+    : [];
   const d = buildDay({
     day,
     dataAsOf: latest.end,
@@ -130,7 +145,10 @@ async function main(): Promise<void> {
     toolDefinitions,
     firstSeenRows,
     siteBaseUrl: site.baseUrl,
+    registryCompared,
+    registryCoversSince: registryCoversSince(priorDays, day),
   });
+  if (!registryCompared) console.log(`::warning::market day ${day}: Registry not compared (registry fallback)`);
 
   // 3) 하루 JSON (멱등, 과거 날짜 잠금)
   const daysDir = join(docs, 'days');
@@ -141,6 +159,17 @@ async function main(): Promise<void> {
   const decision = dayWriteDecision(day, existingDays, existsSync(dayPath) ? readFileSync(dayPath, 'utf8') : null, nextText);
   if (decision === 'write') writeFileSync(dayPath, nextText);
   console.log(`market day ${day}: ${decision} (run ${latest.id}, data_as_of ${latest.end})`);
+
+  // 3b) 명시적 정정(DAY_CORRECTIONS)만 잠긴 과거 날짜에 반영한다. 정정 기록이 그 날 JSON 에 함께 남는다.
+  for (const f of readdirSync(daysDir).filter((x) => /^\d{4}-\d{2}-\d{2}\.json$/.test(x))) {
+    const path = join(daysDir, f);
+    const text = readFileSync(path, 'utf8');
+    const fixed = serializeDay(applyCorrection(parseDay(text)));
+    if (fixed !== text) {
+      writeFileSync(path, fixed);
+      console.log(`market day ${f.slice(0, 10)}: correction applied`);
+    }
+  }
 
   // 4) 사이트 전체를 하루 JSON 들에서만 다시 만든다
   const all: MarketDay[] = readdirSync(daysDir)

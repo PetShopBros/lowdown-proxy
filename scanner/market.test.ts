@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
+  applyCorrection,
   buildDay,
+  DAY_CORRECTIONS,
+  registryCoversSince,
   dayWriteDecision,
   daySummaryText,
   FEED_DAYS,
@@ -217,5 +220,43 @@ describe('시장판 — 사이트 렌더링', () => {
     const f = JSON.parse(renderSite(valid, SITE).get('feed.json')!) as { items: Array<{ id: string }> };
     assert.ok(f.items[0]!.id.endsWith(`${valid.at(-1)!.day}.html`));
     assert.equal(f.items.length, FEED_DAYS);
+  });
+});
+
+describe('시장판 — Registry 를 비교하지 못한 날', () => {
+  const rows = [{ name: 'io.github.a/one', kind: 'new', old_value: null, new_value: null, hosts: [] }];
+  test('비교 안 한 날: compared=false, 이유, 0 을 변경 없음으로 쓰지 않는다', () => {
+    const d = day('2026-10-30', { registryCompared: false });
+    assert.equal(d.registry.compared, false);
+    assert.match(d.registry.not_compared_reason ?? '', /not compared/);
+    assert.match(daySummaryText(d), /^Registry: not compared on this day/);
+    const html = renderSite([d], SITE).get('days/2026-10-30.html')!;
+    assert.match(html, /Not compared on this day\./);
+    assert.ok(!html.includes('New names'));
+    assert.match(renderSite([d], SITE).get('days/index.html')!, /<td>not compared<\/td>/);
+  });
+  test('비교한 날은 필드가 없다(기존 파일과 같은 바이트)', () => {
+    const d = day('2026-10-30', { registryRows: rows as never });
+    assert.ok(!('compared' in d.registry));
+    assert.ok(!('covers_since' in d.registry));
+    assert.ok(!('corrections' in d));
+  });
+  test('직전 날들을 비교 못 했으면 그 첫 날짜부터 쌓인 변경', () => {
+    const prev = [day('2026-10-27'), day('2026-10-28', { registryCompared: false }), day('2026-10-29', { registryCompared: false })];
+    assert.equal(registryCoversSince(prev, '2026-10-30'), '2026-10-28');
+    assert.equal(registryCoversSince([day('2026-10-29')], '2026-10-30'), null);
+    const d = day('2026-10-30', { registryRows: rows as never, registryCoversSince: '2026-10-28' });
+    assert.equal(d.registry.covers_since, '2026-10-28');
+    assert.match(daySummaryText(d), /^Registry \(changes since 2026-10-28\)/);
+  });
+  test('정정: 목록에 있는 날만, 정정 기록과 함께, 두 번 적용해도 같다', () => {
+    const c = DAY_CORRECTIONS[0]!;
+    const fixed = applyCorrection(day(c.day));
+    assert.equal(fixed.registry.compared, false);
+    assert.deepEqual(fixed.corrections, [{ on: c.on, note: c.reason }]);
+    assert.equal(serializeDay(applyCorrection(parseDay(serializeDay(fixed)))), serializeDay(fixed));
+    assert.equal(applyCorrection(day('2026-10-22')).corrections, undefined);
+    const html = renderSite([fixed], SITE).get(`days/${c.day}.html`)!;
+    assert.match(html, /Correction \(2026-10-24\):/);
   });
 });

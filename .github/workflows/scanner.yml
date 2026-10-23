@@ -62,6 +62,7 @@ jobs:
     timeout-minutes: 45
     outputs:
       scanned: ${{ steps.run.outputs.scanned }}
+      registry_fallback: ${{ steps.run.outputs.registry_fallback }}
     steps:
       - uses: actions/checkout@v4
 
@@ -99,6 +100,15 @@ jobs:
           path: scanner-unsaved-*.jsonl
           if-no-files-found: ignore
           retention-days: 90
+
+      - name: Open issue on registry fallback
+        if: steps.run.outputs.registry_fallback == '1' && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "Registry 비교 건너뜀 $(date -u +%F) (목록 미수신, fallback)" \
+            --body "관찰은 직전 주소로 진행됨. 시장판에는 'not compared'로 실림. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Open issue on failure
         if: failure() && github.event_name == 'schedule'

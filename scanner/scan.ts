@@ -557,6 +557,8 @@ async function main(): Promise<void> {
   // 전체 관찰을 실제로 저장했을 때만 report job 이 돈다(scanner.yml: needs.scan.outputs.scanned). 샘플(limit)·dry-run·건너뛴 예비 실행은 제외
   const outputFile = process.env.GITHUB_OUTPUT;
   if (outputFile && !dryRun && !limit && inserted > 0) appendFileSync(outputFile, 'scanned=1\n');
+  // Registry 목록을 받지 못해 비교를 건너뛴 날은 알림(이슈)을 연다 — 시장판에는 '비교 안 함'으로 실린다
+  if (outputFile && !dryRun && fallbackMeta.registry_fallback === true) appendFileSync(outputFile, 'registry_fallback=1\n');
   // 저장하지 못한 행이 있으면 실패로 끝낸다(이슈 자동 생성). 나머지 단계는 이미 다 돌았다.
   if (unsavedRows > 0) process.exitCode = 1;
 }
