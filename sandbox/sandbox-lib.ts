@@ -6,8 +6,9 @@
 import { isNpmName } from '../scanner/npm-lib.ts';
 
 // 기록의 의미가 바뀌는 수정(판정·저장 필드·실행 조건)마다 올린다. 주 버전이 바뀌면 끝난 대상도 다시 돈다.
-export const SANDBOX_RUNNER_VERSION = '0.1.0';
-export const SANDBOX_RUN_MAJOR = 1;
+//   0.1.0 — 2026-10-24 최초(인자 없이 실행) / 0.2.0 — Registry 선언 실행 인자(packageArguments)를 붙여 실행
+export const SANDBOX_RUNNER_VERSION = '0.2.0';
+export const SANDBOX_RUN_MAJOR = 2;
 
 /** 정확한 버전 문자열만(범위·태그 제외). npm 이 받는 semver 형식의 부분집합. */
 export const EXACT_VERSION = /^\d{1,9}\.\d{1,9}\.\d{1,9}(?:-[0-9A-Za-z.-]{1,64})?(?:\+[0-9A-Za-z.-]{1,64})?$/;
@@ -280,7 +281,7 @@ export function installArgs(c: DockerCtx & { cacheHost: string }, ident: string,
 }
 
 /** 실행: 네트워크 없음, 작업 폴더 읽기 전용, 환경변수·인자 없음. 컨테이너 안에서도 timeout 으로 스스로 끝난다. */
-export function runArgs(c: DockerCtx, bin: string, hardLimitSec: number): string[] {
+export function runArgs(c: DockerCtx, bin: string, hardLimitSec: number, pkgArgs: readonly string[] = []): string[] {
   return [
     'run', '-i',
     ...COMMON_ISOLATION(c),
@@ -294,7 +295,78 @@ export function runArgs(c: DockerCtx, bin: string, hardLimitSec: number): string
     c.image,
     'timeout', '-s', 'KILL', String(hardLimitSec),
     `/work/node_modules/.bin/${bin}`,
+    ...pkgArgs,
   ];
+}
+
+// ─────────────────────────────────────────────
+// Registry 선언 실행 인자 (packageArguments)
+//   Registry 가 "이렇게 띄우라"고 적은 고정값만 붙인다. 비밀값·템플릿({...})·값 없는 필수 인자는 넣지 않는다.
+//   runtimeArguments(npx -y 같은 실행기 옵션)는 bin 을 직접 실행하므로 쓰지 않는다. 환경변수는 계속 주지 않는다(개수만 기록).
+// ─────────────────────────────────────────────
+
+export interface LaunchSpec {
+  registry_name: string;
+  declared_version: string;
+  args: string[];
+  /** 필수인데 고정값이 없거나 비밀값이라 넣지 못한 인자 수 */
+  args_unsatisfied: number;
+  env_required: number;
+  env_secret: number;
+}
+
+const MAX_ARGS = 20;
+const ARG_VALUE = /^[^\u0000-\u001f\u007f{}]{1,200}$/;
+const ARG_NAME = /^-{1,2}[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** Registry packages[] 원소 하나 → 붙일 인자 */
+export function launchArgsOf(pkg: Record<string, unknown>): Pick<LaunchSpec, 'args' | 'args_unsatisfied' | 'env_required' | 'env_secret'> {
+  const args: string[] = [];
+  let unsatisfied = 0;
+  const list = Array.isArray(pkg.packageArguments) ? (pkg.packageArguments as unknown[]) : [];
+  for (const raw of list) {
+    if (!raw || typeof raw !== 'object') continue;
+    const a = raw as Record<string, unknown>;
+    const fixed = typeof a.value === 'string' ? a.value : typeof a.default === 'string' ? a.default : null;
+    const usable = fixed !== null && a.isSecret !== true && ARG_VALUE.test(fixed);
+    if (a.type === 'positional') {
+      if (usable) args.push(fixed);
+      else if (a.isRequired === true || fixed !== null) unsatisfied++;
+    } else if (a.type === 'named') {
+      const name = typeof a.name === 'string' && ARG_NAME.test(a.name) ? a.name : null;
+      if (!name) {
+        unsatisfied++;
+        continue;
+      }
+      if (fixed === null && a.isSecret !== true && a.valueHint === undefined && a.format === undefined) {
+        args.push(name); // 값 없는 플래그(예: --stdio)
+      } else if (usable) {
+        args.push(name, fixed);
+      } else if (a.isRequired === true) {
+        unsatisfied++;
+      }
+    }
+  }
+  const envs = Array.isArray(pkg.environmentVariables) ? (pkg.environmentVariables as unknown[]) : [];
+  let envRequired = 0;
+  let envSecret = 0;
+  for (const e of envs) {
+    if (!e || typeof e !== 'object') continue;
+    if ((e as Record<string, unknown>).isRequired === true) envRequired++;
+    if ((e as Record<string, unknown>).isSecret === true) envSecret++;
+  }
+  if (args.length > MAX_ARGS) {
+    unsatisfied += args.length - MAX_ARGS;
+    args.length = MAX_ARGS;
+  }
+  return { args, args_unsatisfied: unsatisfied, env_required: envRequired, env_secret: envSecret };
+}
+
+/** 패키지 → 실행 방법. 같은 버전을 선언한 항목을 우선, 없으면 이름순 첫 항목. */
+export function pickLaunch(specs: readonly LaunchSpec[] | undefined, version: string): LaunchSpec | null {
+  if (!specs || specs.length === 0) return null;
+  const sorted = [...specs].sort((a, b) => (a.registry_name < b.registry_name ? -1 : a.registry_name > b.registry_name ? 1 : 0));
+  return sorted.find((s) => s.declared_version === version) ?? sorted[0]!;
 }
 
 // ─────────────────────────────────────────────

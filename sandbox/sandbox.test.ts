@@ -6,7 +6,9 @@ import {
   chooseBin,
   classifyInstallFailure,
   installArgs,
+  launchArgsOf,
   LineSplitter,
+  pickLaunch,
   nextState,
   planTargets,
   retryLimit,
@@ -54,9 +56,9 @@ describe('planTargets', () => {
 
   test('끝난 대상은 빼고, 주 버전이 바뀌면 다시 돈다. limit', () => {
     const base = { registry_type: 'npm' as const, ident: 'two', version: '2.0.0', first_run_at: 'x', last_run_at: 'x' };
-    const done = [{ ...base, target_key: targetKey('two', '2.0.0'), attempts: 1, done: true, last_outcome: 'ok', run_major: 1 }];
+    const done = [{ ...base, target_key: targetKey('two', '2.0.0'), attempts: 1, done: true, last_outcome: 'ok', run_major: 2 }];
     assert.ok(!planTargets(registry, npm, done, { limit: 100 }).targets.some((t) => t.ident === 'two'));
-    assert.ok(planTargets(registry, npm, done, { limit: 100, runMajor: 2 }).targets.some((t) => t.ident === 'two'));
+    assert.ok(planTargets(registry, npm, done, { limit: 100, runMajor: 3 }).targets.some((t) => t.ident === 'two'));
     const notDone = [{ ...done[0]!, done: false, last_outcome: 'install_network' }];
     assert.ok(planTargets(registry, npm, notDone, { limit: 100 }).targets.some((t) => t.ident === 'two'));
     assert.equal(planTargets(registry, npm, [], { limit: 2 }).targets.length, 2);
@@ -202,5 +204,40 @@ describe('probeStdio (가짜 서버)', () => {
   test('실행 파일 없음 → runner_error', async () => {
     const r = await probeStdio(['/nonexistent/binary-xyz'], fast);
     assert.equal(r.outcome, 'runner_error');
+  });
+});
+
+describe('Registry 선언 실행 인자', () => {
+  test('positional 고정값, 값 없는 named 플래그, named 값, 비밀값·템플릿·값 없는 필수는 넣지 않음, 환경변수는 개수만', () => {
+    const r = launchArgsOf({
+      packageArguments: [
+        { type: 'positional', value: 'mcp' },
+        { type: 'named', name: '--stdio' },
+        { type: 'named', name: '--port', default: '3000' },
+        { type: 'named', name: '--token', value: 'x', isSecret: true, isRequired: true },
+        { type: 'positional', valueHint: 'path', isRequired: true },
+        { type: 'positional', value: '{workspace}' },
+        { type: 'named', name: 'bad name', value: 'v' },
+        { type: 'named', name: '--optional-hint', valueHint: 'n' },
+      ],
+      environmentVariables: [{ name: 'API_KEY', isRequired: true, isSecret: true }, { name: 'LOG' }],
+    });
+    assert.deepEqual(r.args, ['mcp', '--stdio', '--port', '3000']);
+    assert.equal(r.args_unsatisfied, 4);
+    assert.deepEqual([r.env_required, r.env_secret], [1, 1]);
+  });
+  test('선언 없음 → 인자 없음', () => {
+    assert.deepEqual(launchArgsOf({}).args, []);
+  });
+  test('같은 버전을 선언한 항목 우선, 없으면 이름순 첫 항목', () => {
+    const a = { registry_name: 'b/x', declared_version: '1.0.0', args: ['a'], args_unsatisfied: 0, env_required: 0, env_secret: 0 };
+    const b = { ...a, registry_name: 'a/x', declared_version: '0.9.0', args: ['b'] };
+    assert.equal(pickLaunch([a, b], '1.0.0')?.args[0], 'a');
+    assert.equal(pickLaunch([a, b], '2.0.0')?.args[0], 'b');
+    assert.equal(pickLaunch(undefined, '1.0.0'), null);
+  });
+  test('실행 인자는 bin 뒤에 붙는다', () => {
+    const a = runArgs({ image: 'i', runtime: 'runsc', uid: 1, name: 'n', workHost: '/w' }, 'srv', 60, ['mcp', '--stdio']);
+    assert.deepEqual(a.slice(-3), ['/work/node_modules/.bin/srv', 'mcp', '--stdio']);
   });
 });

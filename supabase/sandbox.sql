@@ -84,3 +84,8 @@ revoke all on sequence sandbox_runs_id_seq from anon, authenticated;
 -- select started_at, finished_at, planned, attempted, outcomes, note from sandbox_batches order by started_at desc limit 5;
 -- select outcome, count(*) from sandbox_runs group by 1 order by 2 desc;
 -- select reached_level, count(*), round(avg((metadata->>'tool_count')::int), 1) as avg_tools from sandbox_runs group by 1 order by 1;
+
+-- 0.2.0 (2026-10-24): Registry 선언 실행 인자(packageArguments)를 붙여 실행한다. 붙인 인자와 그 근거 항목을 기록한다.
+--   metadata 에 args_unsatisfied(필수인데 넣지 못한 인자 수), env_required, env_secret(선언된 환경변수 수 — 값은 주지 않는다)
+alter table sandbox_runs add column if not exists registry_name text;
+alter table sandbox_runs add column if not exists args text[] not null default '{}';

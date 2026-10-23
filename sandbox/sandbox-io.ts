@@ -4,10 +4,10 @@
 //         도구 정의 원문은 Scanner 와 같은 비공개 테이블(scanner_tool_defs / scanner_tool_set_versions)
 
 import { spawn } from 'node:child_process';
-import { supabaseHeaders, type SupabaseConfig } from '../scanner/lib.ts';
+import { DEFAULT_REGISTRY_URL, supabaseHeaders, USER_AGENT, type SupabaseConfig } from '../scanner/lib.ts';
 import { getKeyset } from '../scanner/npm-lib.ts';
 import { postBatches, type DiffIoDeps } from '../scanner/registry-diff.ts';
-import type { NpmStateLite, RegistryRowLite, SandboxStateRow } from './sandbox-lib.ts';
+import { launchArgsOf, type LaunchSpec, type NpmStateLite, type RegistryRowLite, type SandboxStateRow } from './sandbox-lib.ts';
 
 export interface SandboxRunRow {
   run_id: string;
@@ -23,6 +23,8 @@ export interface SandboxRunRow {
   install_ms: number | null;
   install_error_code: string | null;
   bin_count: number | null;
+  registry_name: string | null;
+  args: string[];
   outcome: string;
   reached_level: number;
   exit_code: number | null;
@@ -132,4 +134,63 @@ export function runCmd(file: string, args: readonly string[], opts: { timeoutMs:
     child.on('error', () => done(null, null));
     child.on('close', (code, signal) => done(code, signal));
   });
+}
+
+// ─────────────────────────────────────────────
+// Registry 선언 실행 인자 — 실행 시점에 공개 Registry API 를 직접 읽는다(registry_state 에는 인자가 없다)
+// ─────────────────────────────────────────────
+
+export async function fetchLaunchSpecs(
+  deps: { baseUrl?: string; fetchImpl?: typeof fetch; sleep?: (ms: number) => Promise<void>; maxPages?: number } = {},
+): Promise<{ specs: Map<string, LaunchSpec[]>; pages: number; entries: number }> {
+  const base = (deps.baseUrl ?? DEFAULT_REGISTRY_URL).replace(/\/+$/, '');
+  const f = deps.fetchImpl ?? fetch;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const maxPages = deps.maxPages ?? 2000;
+  const specs = new Map<string, LaunchSpec[]>();
+  let cursor: string | undefined;
+  let pages = 0;
+  let entries = 0;
+  for (;;) {
+    if (pages >= maxPages) throw new Error('registry: too many pages');
+    const qs = new URLSearchParams({ limit: '100', version: 'latest' });
+    if (cursor) qs.set('cursor', cursor);
+    let data: unknown;
+    for (let attempt = 1; ; attempt++) {
+      let status = 0;
+      try {
+        const res = await f(`${base}/v0.1/servers?${qs.toString()}`, { headers: { Accept: 'application/json', 'User-Agent': USER_AGENT }, signal: AbortSignal.timeout(30_000) });
+        status = res.status;
+        if (res.ok) {
+          data = await res.json();
+          break;
+        }
+      } catch {
+        // 재시도
+      }
+      if (!(status === 0 || status >= 500 || status === 429) || attempt >= 5) throw new Error(`registry: page ${pages + 1} failed (HTTP ${status || 'network'})`);
+      await sleep(1000 * 2 ** attempt);
+    }
+    const page = data as { servers?: unknown; metadata?: { nextCursor?: unknown } } | null;
+    if (!page || !Array.isArray(page.servers)) throw new Error('registry: unexpected response');
+    pages++;
+    for (const entry of page.servers as Array<{ server?: Record<string, unknown> }>) {
+      const s = entry?.server;
+      if (!s || typeof s.name !== 'string') continue;
+      entries++;
+      for (const raw of Array.isArray(s.packages) ? (s.packages as unknown[]) : []) {
+        if (!raw || typeof raw !== 'object') continue;
+        const p = raw as Record<string, unknown>;
+        const t = p.transport as { type?: unknown } | undefined;
+        if (p.registryType !== 'npm' || t?.type !== 'stdio' || typeof p.identifier !== 'string') continue;
+        const list = specs.get(p.identifier) ?? [];
+        list.push({ registry_name: s.name, declared_version: typeof p.version === 'string' ? p.version : '', ...launchArgsOf(p) });
+        specs.set(p.identifier, list);
+      }
+    }
+    const next = page.metadata?.nextCursor;
+    if (typeof next !== 'string' || next.length === 0 || next === cursor) break;
+    cursor = next;
+  }
+  return { specs, pages, entries };
 }

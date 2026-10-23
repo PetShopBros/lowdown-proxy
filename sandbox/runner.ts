@@ -22,16 +22,19 @@ import {
   classifyInstallFailure,
   installArgs,
   nextState,
+  pickLaunch,
   planTargets,
   runArgs,
   SANDBOX_RUN_MAJOR,
   SANDBOX_RUNNER_VERSION,
   type DockerCtx,
+  type LaunchSpec,
   type Outcome,
   type SandboxStateRow,
   type Target,
 } from './sandbox-lib.ts';
 import {
+  fetchLaunchSpecs,
   fetchNpmLite,
   fetchRegistryLite,
   fetchSandboxState,
@@ -144,7 +147,7 @@ function readPackageJson(work: string, ident: string): unknown {
   }
 }
 
-async function runTarget(env: Env, t: Target): Promise<TargetResult> {
+async function runTarget(env: Env, t: Target, launch: LaunchSpec | null): Promise<TargetResult> {
   const work = mkdtempSync(join(env.root, 'work', 't-'));
   chmodSync(work, 0o700);
   const name = `lds-${randomUUID().slice(0, 12)}`;
@@ -167,7 +170,7 @@ async function runTarget(env: Env, t: Target): Promise<TargetResult> {
 
     // 3) 실행: initialize + tools/list
     const hardLimit = Math.ceil((DEFAULT_PROBE_OPTS.initTimeoutMs + DEFAULT_PROBE_OPTS.listTimeoutMs) / 1000) + 15;
-    const probe = await probeStdio(['docker', ...runArgs({ ...ctx, name: `${name}-r` }, pick.bin, hardLimit)]);
+    const probe = await probeStdio(['docker', ...runArgs({ ...ctx, name: `${name}-r` }, pick.bin, hardLimit, launch?.args ?? [])]);
     await docker(['rm', '-f', `${name}-r`]);
     return { install_ms: inst.ms, install_error_code: null, bin_count: pick.count, probe, outcome: probe.outcome };
   } finally {
@@ -233,11 +236,15 @@ async function main(): Promise<void> {
 
   const started = Date.now();
   const runId = randomUUID();
-  const [registry, npm, state] = await Promise.all([fetchRegistryLite(cfg), fetchNpmLite(cfg), fetchSandboxState(cfg)]);
+  const [registry, npm, state, launches] = await Promise.all([fetchRegistryLite(cfg), fetchNpmLite(cfg), fetchSandboxState(cfg), fetchLaunchSpecs()]);
   const { targets, stats } = planTargets(registry, npm, state, { limit });
   console.log(`plan: ${JSON.stringify(stats)}`);
+  console.log(`registry launch specs: ${launches.specs.size} npm stdio packages (${launches.entries} entries, ${launches.pages} pages)`);
   if (planOnly) {
-    for (const t of targets.slice(0, 20)) console.log(`  ${t.key} [${t.sources.join(',')}] ${t.fresh_at}`);
+    for (const t of targets.slice(0, 20)) {
+      const l = pickLaunch(launches.specs.get(t.ident), t.version);
+      console.log(`  ${t.key} [${t.sources.join(',')}] args=${JSON.stringify(l?.args ?? null)} env_required=${l?.env_required ?? '-'}`);
+    }
     return;
   }
 
@@ -298,9 +305,10 @@ async function main(): Promise<void> {
         stopping = true;
         return;
       }
+      const launch = pickLaunch(launches.specs.get(t.ident), t.version);
       let res: TargetResult;
       try {
-        res = await runTarget(env, t);
+        res = await runTarget(env, t, launch);
       } catch {
         res = { install_ms: null, install_error_code: null, bin_count: null, probe: null, outcome: 'runner_error' };
       }
@@ -320,6 +328,8 @@ async function main(): Promise<void> {
         install_ms: res.install_ms,
         install_error_code: res.install_error_code,
         bin_count: res.bin_count,
+        registry_name: launch?.registry_name ?? null,
+        args: launch?.args ?? [],
         outcome: res.outcome,
         reached_level: p?.reached_level ?? 0,
         exit_code: p?.exit_code ?? null,
@@ -327,7 +337,10 @@ async function main(): Promise<void> {
         init_ms: p?.init_ms ?? null,
         list_ms: p?.list_ms ?? null,
         duration_ms: p?.duration_ms ?? null,
-        metadata: p?.metadata ?? {},
+        metadata: {
+          ...(p?.metadata ?? {}),
+          ...(launch ? { args_unsatisfied: launch.args_unsatisfied, env_required: launch.env_required, env_secret: launch.env_secret } : { launch_spec: 'not_in_registry' }),
+        },
       });
       if (p?.tool_defs) defs.add(p.metadata.tool_set_hash, p.tool_defs);
       states.push(nextState(prevState.get(t.key), t, res.outcome, now));

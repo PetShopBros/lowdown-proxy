@@ -15,7 +15,7 @@ For each `npm:<package>@<version>`:
 
 Not recorded: stderr or log text (byte count only), anything the package prints that is not JSON-RPC (line count only).
 
-The server is started **with no environment variables, no arguments, no credentials, and no network**. A server that needs an API key or a network connection at startup records that fact (`exited`, `init_error`, ...). These are observations of one start under these conditions, not judgments.
+The server is started the way its Registry entry says to start it: the fixed values of its declared `packageArguments` (for example `mcp` or `--stdio`) are passed. Secret arguments, template values and required arguments without a fixed value are not passed; their count is recorded (`args_unsatisfied`). It gets **no environment variables, no credentials, and no network**; the number of declared required and secret environment variables is recorded. A server that needs an API key or a network connection at startup records that fact (`exited`, `init_error`, ...). These are observations of one start under these conditions, not judgments. Each run row keeps the exact arguments used (`args`) and the Registry entry they came from (`registry_name`).
 
 ### Which versions
 
@@ -57,6 +57,7 @@ Equal versions are merged. Each `package@version` runs once (transient failures 
 | user | uid 10001, all capabilities dropped, `no-new-privileges` | same |
 | limits | 1 GB memory, 1 CPU, 256 pids, 180 s | 512 MB memory, 1 CPU, 128 pids, `timeout -s KILL` inside the container |
 | environment | `HOME=/tmp` and npm settings | `HOME=/tmp` only |
+| arguments | package spec only | fixed values of declared `packageArguments` |
 
 Egress from containers (`egress.sh`): DNS to the host's resolver is allowed; cloud metadata (169.254.0.0/16), private ranges and the host itself are dropped. `--self-test` checks all of this before the first run.
 
