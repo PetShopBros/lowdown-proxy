@@ -55,7 +55,7 @@ The same package ships an MCP server (stdio) that lets an agent query Lowdown di
 
 | Tool | What it returns |
 |---|---|
-| `get_lowdown` | Interactions reported for a target and, for MCP Registry servers, the Scanner observations (see [Scanner observations](#scanner-observations)) |
+| `get_lowdown` | Recorded facts about an MCP server before you install or connect to it: Registry declaration, npm status of declared packages, Scanner observations (see [Scanner observations](#scanner-observations)), and reported interactions. Accepts `mcp:` names, short names and `npm:` package names |
 | `compare_tools` | 2 to 5 targets side by side, ordered by reported success rate; Scanner data is not used for the ordering |
 | `record_interaction` | Records the outcome of using a tool or service |
 | `get_node_stats` | Contribution stats of your node |
@@ -142,6 +142,9 @@ curl https://lowdown-proxy.vercel.app/api/reputation/mcp:ai.agent-bev/bev-door
 # A short name works when it matches one server; otherwise candidate names are returned
 curl https://lowdown-proxy.vercel.app/api/reputation/bev-door
 
+# An npm package: answers with the Registry entries that declare it (several are all returned as candidates)
+curl https://lowdown-proxy.vercel.app/api/reputation/npm:maplith-bridge
+
 # With node identity: adds task_breakdown and recent_trends for reported interactions
 curl https://lowdown-proxy.vercel.app/api/reputation/mcp:ai.agent-bev/bev-door \
   -H "x-lowdown-node-id: ld_your_node_id"
@@ -196,6 +199,7 @@ Response for that server on 2026-10-20 (trimmed: the full response has 14 daily 
 ```
 
 - `registry`: what the official MCP Registry declares for the server, as recorded by Lowdown since 2026-10-19, with changes in the last 30 days. It answers for any Registry entry, observed or not.
+- `packages`: the packages the Registry entry declares. For npm packages, recorded daily from npm's public metadata: `latest`, `latest_deprecated` (the version npm tags as latest only, not other versions), `declared_is_latest`, `checked_at`, and recent changes. `not_found` is recorded only when npm answers HTTP 404; `not_found_since` gives the day a package that had been available started answering 404, or `first_check` when it has answered 404 since Lowdown's first check. A deprecated latest version or a 404 is stated in the first sentence of `message`. Other package types are listed and marked as not checked.
 - `scanner.definition_changes`: changes in the server's tool definitions across Lowdown's daily observations of the last 30 days. Each day is compared with the previous observation from the same remote URL using hashes of tool schemas, descriptions and names: `pattern` (`no_change_observed`, `changed`, `changes_on_most_days`, or `not_enough_observations`), `last_change`, `stable_days_before_last_change`, and up to 5 recent `events`. Use it to notice that a server which had been stable has just changed its tools, before relying on them. Description text is never returned, and a change is a recorded fact, not a judgment.
 - `source` (last field): dataset, license (CC BY 4.0 for the `registry` and `scanner` blocks), retrieval time and a citation line. Keep it with any record you republish.
 - `scanner`: what Lowdown Scanner observed when it connected (`initialize` and `tools/list` only; it never calls a tool): one entry per day for the last 30 days, days without an observation and the recorded reason, the tool names returned by `tools/list`, and declared values next to observed ones. HTTP statuses are reported as observed: a `401` is a `401`, not "dead". A server outside the observed sample returns `observed: false`, which says nothing about its status.
@@ -277,6 +281,8 @@ MCP 서버를 감싸는 stdio 프록시가 첫 번째 진입점입니다.
 프록시를 실행하는 것 자체가 노드 참여입니다. 기여할수록 더 상세한 데이터를 조회할 수 있습니다.
 
 ### Scanner 관찰 데이터
+
+Registry 항목이 npm 패키지를 선언했으면 응답에 `packages` 블록이 옵니다. npm 공개 메타데이터에서 매일 기록한 최신 버전, 최신 버전의 deprecated 여부(다른 버전은 뜻하지 않음), 404 여부를 보여 주고, deprecated나 404는 `message` 첫 문장에 적습니다. 404는 npm이 실제로 404를 답했을 때만 기록합니다. `npm:패키지명`으로도 조회할 수 있고, 여러 항목이 같은 패키지를 선언하면 고르지 않고 후보를 모두 돌려줍니다.
 
 공식 MCP Registry에 등록된 원격 MCP 서버는 응답에 `scanner` 블록이 함께 옵니다. `scanner.definition_changes`는 최근 30일 동안 매일 관찰한 도구 정의(스키마·설명·이름의 해시)가 같은 원격 주소의 직전 관찰과 비교해 언제 바뀌었는지, 얼마나 자주 바뀌는지를 사실로만 보여 줍니다. 오래 안정적이던 서버가 막 바뀐 것을 도구에 의존하기 전에 알아챌 수 있습니다. 설명문 원문은 돌려주지 않습니다. Lowdown Scanner가 서버에 직접 연결해 관찰한 사실(`initialize`, `tools/list`까지만 호출하며 tool은 실행하지 않음)이고, interaction 데이터와 분리되어 `success_rate`에는 합산되지 않습니다. HTTP 상태는 해석 없이 관찰된 값 그대로 보여줍니다.
 

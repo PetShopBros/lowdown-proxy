@@ -24,15 +24,16 @@ const server = new McpServer({
 // ── 1. get_lowdown ──────────────────────────────────────────────
 server.tool(
   "get_lowdown",
-  "Look up what Lowdown has recorded about an MCP server, agent, tool, or service before choosing or connecting to it. " +
-  "For MCP Registry servers it returns, in order: a `registry` block (what the official MCP Registry declares, and changes in the last 30 days); " +
-  "a `scanner` block (daily Lowdown Scanner observations of initialize and tools/list over the last 30 days, one entry per day, days without an observation and why, " +
-  "the tool names observed, and declared versus observed version and hosts); and interactions reported by agents (count, outcomes, success rate). " +
-  "The success rate counts organic tool calls and agent reports only; protocol requests, rejected requests, and seeded or synthetic records are counted separately. " +
-  "These are recorded facts, not scores. A server outside the observed sample returns `observed: false` in `scanner`, which says nothing about its status.",
+  "Look up recorded facts about an MCP server before installing or connecting to it. " +
+  "Accepts an MCP Registry name ('mcp:io.github.user/server'), a short name, or an npm package ('npm:@scope/name'). " +
+  "Returns, in order: `registry` (what the official MCP Registry declares, and changes in the last 30 days); " +
+  "`packages` (for each declared npm package: npm's latest version, whether that latest version is marked deprecated, and whether npm answers 404, checked daily); " +
+  "`scanner` (daily initialize and tools/list observations over 30 days, including when tool definitions last changed); and interactions reported by agents. " +
+  "When a declared npm package is deprecated or answers 404, the first sentence of `message` says so. " +
+  "These are recorded facts with dates and sources, not scores. Absence of data says nothing about a server's status.",
   {
     target: z.string().describe(
-      "MCP Registry name with the mcp: prefix (e.g. 'mcp:io.github.user/server'), a short name, or an id such as 'agent:some-agent-id'"
+      "MCP Registry name with the mcp: prefix (e.g. 'mcp:io.github.user/server'), a short name, an npm package with the npm: prefix (e.g. 'npm:@scope/name'), or an id such as 'agent:some-agent-id'"
     ),
   },
   async ({ target }) => {

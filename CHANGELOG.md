@@ -24,6 +24,11 @@ All notable changes to this project will be documented in this file.
 - Daily record pages (market board, stage 3): one page per UTC day with Registry declaration changes, Lowdown observation counts, server-level tool definition change counts, and values first observed by Lowdown. RSS and JSON Feed (last 30 days), a JSON file per day, an archive, and an About page that defines each section. Published from `lowdown-data/docs` on GitHub Pages; pages and feeds are generated only from the daily JSON files. No scores or rankings.
 - Private backup of raw tool definitions (`scanner/private-archive.ts`, run by the `backup` workflow). For each closed UTC day it writes `tool_defs`, `tool_set_versions` and `tool_flags` as JSONL.gz plus a `MANIFEST.csv` to a private repository. Files are written once and never rewritten. A day is skipped if its row count differs from the database, and each definition's `sha256(body)` is checked against its `def_hash` before writing. Workflow logs contain counts and hash prefixes only.
 
+## [0.1.19] - 2026-10-23
+
+### Changed
+- `get_lowdown` (MCP) description says when the lookup helps (before installing or connecting to an MCP server), accepts `npm:<package>`, and lists the `packages` block. The tool itself still forwards the hosted API response unchanged.
+
 ## [0.1.18] - 2026-10-20
 
 ### Changed
