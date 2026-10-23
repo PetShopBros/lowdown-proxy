@@ -1,0 +1,24 @@
+# Lowdown stdio 샌드박스 — 하루 한 번(타이머). 키는 EnvironmentFile 로 이 프로세스에만 들어간다.
+[Unit]
+Description=Lowdown stdio sandbox run
+Wants=network-online.target
+After=network-online.target docker.service lowdown-egress.service
+Requires=docker.service lowdown-egress.service
+
+[Service]
+Type=oneshot
+User=lowdown
+Group=lowdown
+EnvironmentFile=/etc/lowdown/sandbox.env
+Environment=HOME=/var/lib/lowdown SANDBOX_ROOT=/var/lib/lowdown
+WorkingDirectory=@REPO_DIR@
+ExecStart=/usr/local/bin/node @REPO_DIR@/sandbox/runner.ts
+TimeoutStartSec=5h
+KillSignal=SIGTERM
+TimeoutStopSec=120
+Nice=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/lowdown

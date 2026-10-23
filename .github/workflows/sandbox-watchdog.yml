@@ -1,0 +1,35 @@
+name: sandbox-watchdog
+
+# stdio 샌드박스 서버(별도 VPS)가 멈췄는지 확인한다. 읽기만 한다. 샌드박스 실행은 여기서 하지 않는다.
+
+on:
+  schedule:
+    - cron: '17 4 * * *' # 매일 13:17 KST (UTC 04:17)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check last sandbox batch
+        run: node sandbox/watchdog.ts
+        env:
+          LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
+          LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
+      - name: Open issue on failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "sandbox 서버 멈춤 $(date -u +%F)" \
+            --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

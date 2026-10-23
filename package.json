@@ -18,7 +18,9 @@
     "scanner:typecheck": "tsc -p scanner",
     "scanner:test": "node --test scanner/lib.test.ts scanner/registry-diff.test.ts scanner/first-seen.test.ts scanner/archive.test.ts scanner/reputation.test.ts scanner/report.test.ts scanner/tool-defs.test.ts scanner/market.test.ts scanner/private-archive.test.ts scanner/npm.test.ts scanner/pypi.test.ts",
     "scanner:dry": "node scanner/scan.ts --dry-run --limit=30",
-    "test": "npm run build && node --test test/p0.test.ts"
+    "test": "npm run build && node --test test/p0.test.ts",
+    "sandbox:test": "node --test sandbox/sandbox.test.ts",
+    "sandbox:typecheck": "tsc -p sandbox"
   },
   "keywords": [
     "mcp",

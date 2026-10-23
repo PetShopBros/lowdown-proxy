@@ -1,0 +1,11 @@
+# 매일 06:47 KST (UTC 21:47) — npm(04:37)·PyPI(05:37) 스냅샷 뒤. 꺼져 있던 동안 놓친 실행은 켜질 때 한 번.
+[Unit]
+Description=Daily Lowdown stdio sandbox run
+
+[Timer]
+OnCalendar=*-*-* 21:47:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,14 @@
+# 컨테이너 바깥 연결 제한(sandbox/egress.sh). docker 가 켜진 뒤 매번 적용.
+[Unit]
+Description=Lowdown sandbox container egress rules
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/lowdown-egress
+
+[Install]
+WantedBy=multi-user.target docker.service
