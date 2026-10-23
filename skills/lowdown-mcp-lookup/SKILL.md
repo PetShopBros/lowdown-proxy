@@ -22,13 +22,13 @@ GET https://lowdown-proxy.vercel.app/api/reputation/{target}?ref=clawhub
 ```
 
 - `target` is the Registry name with the `mcp:` prefix, e.g. `mcp:io.github.example/server`. The `/` can be sent as is or encoded as `%2F`. A short name also works when it matches one server; otherwise candidate names are returned.
-- `target` can also be an npm package with the `npm:` prefix, e.g. `npm:@scope/name`. The answer is the Registry entry that declares it; when several entries declare it, all are returned as `registry_candidates` and none is picked.
+- `target` can also be an npm or PyPI package with the `npm:` or `pypi:` prefix, e.g. `npm:@scope/name` or `pypi:package-name` (PyPI names match after PEP 503 normalization). The answer is the Registry entry that declares it; when several entries declare it, all are returned as `registry_candidates` and none is picked.
 
 ### Reading the response
 
 Fields come in this order:
 
-- `message`: one factual sentence saying which records exist. When a declared npm package is deprecated or npm answers 404 for it, that fact comes first.
+- `message`: one factual sentence saying which records exist. When a declared npm package is deprecated, a declared PyPI package's latest version is yanked or the project is quarantined or deprecated, or npm or PyPI answers 404 for it, that fact comes first.
 - `registry`: what the official MCP Registry declares, as recorded by Lowdown since 2026-10-19.
   - `listed`, `declared_version`, `status`, `remote_hosts`, `removed_at`
   - `changes_30d`: Registry changes in the last 30 days (`new`, `version`, `status`, `remotes`, `packages`, `description`, `removed`, `restored`)
@@ -37,7 +37,8 @@ Fields come in this order:
   - `npm.latest`, `npm.latest_deprecated` (the version npm tags as latest only, not other versions), `npm.declared_is_latest`, `npm.checked_at`
   - `npm.status: not_found` only when npm answered HTTP 404. `npm.not_found_since` is the day it started answering 404 after being available, or `first_check` when it has answered 404 since Lowdown's first check.
   - `npm.recent_events`: `latest_changed`, `deprecated`, `undeprecated`, `not_found`, `restored` in the last 30 days
-  - Other package types (pypi, oci, ...) are listed with `npm: null` and are not checked.
+  - PyPI packages are checked daily from PyPI's public JSON and Index APIs: `pypi.latest`, `pypi.latest_yanked` (that latest version only), `pypi.project_status` (`active`, `archived`, `quarantined`, `deprecated`), `pypi.latest_uploaded`, `pypi.declared_is_latest`, `pypi.checked_at`. `pypi.status: not_found` only when PyPI answered HTTP 404; `pypi.not_found_since` works like the npm field. `pypi.recent_events`: `latest_changed`, `yanked`, `unyanked`, `status_changed`, `not_found`, `restored` in the last 30 days.
+  - Other package types (oci, nuget, ...) are listed and not checked.
 - `scanner`: daily observations (only for servers in the observed sample).
   - `latest.reached_level`: `2` = initialize and tools/list completed, `1` = initialize only, `0` = initialize did not complete
   - `latest.http_status`: HTTP status as observed. `401` means auth is required; it is not a failure.

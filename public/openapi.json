@@ -28,7 +28,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Identifier of the target: an MCP Registry name with the mcp: prefix, e.g. 'mcp:ai.agent-bev/bev-door' (the '/' may be sent as is or as %2F), a short name such as 'bev-door', an npm package with the npm: prefix, e.g. 'npm:@scope/name' (answers with the Registry entries that declare it; several entries are returned as registry_candidates, none is picked), or another id such as 'agent:some-agent-id'. Leading and trailing whitespace is removed; other characters are used as given."
+            "description": "Identifier of the target: an MCP Registry name with the mcp: prefix, e.g. 'mcp:ai.agent-bev/bev-door' (the '/' may be sent as is or as %2F), a short name such as 'bev-door', an npm or PyPI package with the npm: or pypi: prefix, e.g. 'npm:@scope/name' or 'pypi:package-name' (answers with the Registry entries that declare it; several entries are returned as registry_candidates, none is picked; PyPI names match after PEP 503 normalization), or another id such as 'agent:some-agent-id'. Leading and trailing whitespace is removed; other characters are used as given."
           },
           {
             "name": "task_type",
@@ -67,7 +67,7 @@
                     },
                     "message": {
                       "type": "string",
-                      "description": "One factual sentence: whether a Registry record, Scanner observations, and reported interactions exist, and, for observed servers, when tool definitions last changed. When a declared npm package is marked deprecated on its latest version or npm answers 404 for it, that fact comes first. If the target contains a literal escape sequence such as \\n, a final sentence says so; the target is not changed."
+                      "description": "One factual sentence: whether a Registry record, Scanner observations, and reported interactions exist, and, for observed servers, when tool definitions last changed. When a declared npm package is marked deprecated on its latest version, a declared PyPI package's latest version is yanked or the project is quarantined or deprecated, or npm or PyPI answers 404 for it, that fact comes first. If the target contains a literal escape sequence such as \\n, a final sentence says so; the target is not changed."
                     },
                     "registry": {
                       "type": "object",
@@ -174,11 +174,11 @@
                       "items": {
                         "type": "string"
                       },
-                      "description": "Returned instead of `registry` when a short name matches several Registry names, or when several Registry entries declare the npm package given as npm:<name> (up to 50, none is picked)."
+                      "description": "Returned instead of `registry` when a short name matches several Registry names, or when several Registry entries declare the npm or PyPI package given as npm:<name> or pypi:<name> (up to 50, none is picked)."
                     },
                     "packages": {
                       "type": "array",
-                      "description": "Packages declared by the Registry entry (or the npm package given as npm:<name>), in declaration order, up to 10. Only npm packages are checked.",
+                      "description": "Packages declared by the Registry entry (or the package given as npm:<name> or pypi:<name>), in declaration order, up to 10. Only npm and PyPI packages are checked.",
                       "items": {
                         "type": "object",
                         "properties": {
@@ -197,14 +197,14 @@
                               "string",
                               "null"
                             ],
-                            "description": "Version declared in the Registry. Absent for npm: lookups."
+                            "description": "Version declared in the Registry. Absent for npm: and pypi: lookups that return several candidates."
                           },
                           "npm": {
                             "type": [
                               "object",
                               "null"
                             ],
-                            "description": "npm status recorded daily by Lowdown from npm's public registry metadata. null for packages Lowdown does not check (non-npm, or a declared name that is not a valid npm name).",
+                            "description": "npm status recorded daily by Lowdown from npm's public registry metadata. Present for npm packages; null when the declared name is not a valid npm name.",
                             "properties": {
                               "status": {
                                 "type": "string",
@@ -309,13 +309,146 @@
                           },
                           "note": {
                             "type": "string"
+                          },
+                          "pypi": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "description": "PyPI status recorded daily by Lowdown from PyPI's public JSON and Index APIs. Present for pypi packages; null when the declared name is not a valid PyPI project name. Package code is not run; descriptions, yank reasons and vulnerability data are not read.",
+                            "properties": {
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "found",
+                                  "not_found",
+                                  "not_checked"
+                                ],
+                                "description": "not_found only when PyPI answered HTTP 404. Network errors, 429 and 5xx do not change the recorded status. not_checked: not yet in Lowdown's PyPI records."
+                              },
+                              "latest": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "Version PyPI lists as latest (status found)."
+                              },
+                              "latest_yanked": {
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ],
+                                "description": "Whether that latest version is yanked. It says nothing about other versions."
+                              },
+                              "latest_uploaded": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "Latest upload time of that version's files."
+                              },
+                              "project_status": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "PEP 792 project status: active, archived, quarantined or deprecated. null when not yet known."
+                              },
+                              "declared_is_latest": {
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ],
+                                "description": "Whether the version declared in the Registry equals PyPI's latest. Absent when the package was given as pypi:<name>."
+                              },
+                              "not_found_since": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "status not_found only: the UTC day PyPI started answering 404 after the project had been available, or \"first_check\" when it has answered 404 since Lowdown's first check."
+                              },
+                              "first_checked_at": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "First time Lowdown checked this project."
+                              },
+                              "checked_at": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "Last time PyPI answered 200 or 404."
+                              },
+                              "recent_events": {
+                                "type": "array",
+                                "description": "Up to 5 changes in the last 30 days, newest first.",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "on": {
+                                      "type": "string",
+                                      "description": "UTC day detected."
+                                    },
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "latest_changed",
+                                        "yanked",
+                                        "unyanked",
+                                        "status_changed",
+                                        "not_found",
+                                        "restored"
+                                      ]
+                                    },
+                                    "old": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ],
+                                      "description": "latest_changed: previous version. status_changed: previous project status."
+                                    },
+                                    "new": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ],
+                                      "description": "latest_changed: new version. status_changed: new project status."
+                                    },
+                                    "version": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ],
+                                      "description": "yanked / unyanked: the version concerned."
+                                    },
+                                    "latest": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ],
+                                      "description": "restored: the latest version when it came back."
+                                    },
+                                    "last_seen_latest": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ],
+                                      "description": "not_found: the latest version recorded before the 404."
+                                    }
+                                  }
+                                }
+                              }
+                            }
                           }
                         }
                       }
                     },
                     "packages_note": {
                       "type": "string",
-                      "description": "How the npm values are recorded and what they do not mean."
+                      "description": "How the npm and PyPI values are recorded and what they do not mean."
                     },
                     "scanner": {
                       "type": "object",

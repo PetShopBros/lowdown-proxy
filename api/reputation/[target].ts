@@ -90,8 +90,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Scanner 관찰 데이터: interactions/success_rate 와 합산하지 않고 별도 `scanner` 블록으로만 노출.
     // 실패해도 기존 응답에는 영향 없음. task_type 필터 요청에는 붙이지 않는다.
-    // npm:<패키지> 입력: 그 패키지를 선언한 Registry 항목을 찾는다. 1건이면 그 항목으로 조회, 여러 건이면 고르지 않고 후보 전부.
-    const npmQuery = !taskType && target.startsWith("npm:") ? await resolveNpmTarget(supabase, target.slice(4)) : null;
+    // npm:<패키지> / pypi:<패키지> 입력: 그 패키지를 선언한 Registry 항목을 찾는다. 1건이면 그 항목으로 조회, 여러 건이면 고르지 않고 후보 전부.
+    const pkgInput = !taskType ? packageInputOf(target) : null;
+    const npmQuery = pkgInput ? await resolvePackageTarget(supabase, pkgInput.type, pkgInput.ident) : null;
     const effectiveTarget = npmQuery && npmQuery.names.length === 1 ? `mcp:${npmQuery.names[0]}` : target;
     const scannerLookup = taskType || (npmQuery && npmQuery.names.length !== 1) ? null : await findScanner(supabase, effectiveTarget);
     // Registry 선언 + Scanner 날짜별 기록 + 선언 패키지. 실패해도 기존 응답에는 영향 없음. task_type 필터 요청에는 붙이지 않는다.
@@ -296,7 +297,7 @@ export function resultKind(taskType: string | null, lookup: ScannerLookup | null
   if ((lookup?.candidates.length ?? 0) > 0 || (ev?.registryCandidates?.length ?? 0) > 0) return "candidates";
   const reg = ev?.registry as Record<string, unknown> | undefined;
   if (reg && (reg.listed === true || reg.removed_at)) return "registry_only";
-  if (ev?.packages?.some((p) => p.npm && (p.npm as Record<string, unknown>).status !== "not_checked")) return "package_only";
+  if (ev?.packages?.some((p) => [p.npm, p.pypi].some((s) => s && (s as Record<string, unknown>).status !== "not_checked"))) return "package_only";
   if (data) return "interactions_only";
   return "none";
 }
@@ -411,8 +412,8 @@ interface Evidence {
   scannerSince?: string | null;
   packages?: Array<Record<string, unknown>>;
   packageFacts?: string[];
-  /** npm: 입력인데 그 패키지를 선언한 Registry 항목이 없음(형식 검사 통과한 이름) */
-  npmUndeclared?: string;
+  /** npm:/pypi: 입력인데 그 패키지를 선언한 Registry 항목이 없음(형식 검사 통과한 이름) */
+  undeclared?: { type: PackageInputType; ident: string };
 }
 
 const safeVersion = (v: unknown) => (typeof v === "string" && SAFE_VERSION.test(v) ? v : null);
@@ -723,23 +724,24 @@ async function scannerHistory(supabase: any, targetId: string, registryRow: any 
   };
 }
 
-async function buildEvidence(supabase: any, target: string, lookup: ScannerLookup | null, npmQuery: NpmQuery | null = null): Promise<Evidence | null> {
+async function buildEvidence(supabase: any, target: string, lookup: ScannerLookup | null, npmQuery: PackageQuery | null = null): Promise<Evidence | null> {
   const now = Date.now();
   const ev: Evidence = { name: null };
   let registryRow: any | null = null;
-  // npm: 입력이 Registry 항목 하나로 정해지지 않으면(0건·여러 건) 이름 조회 없이 패키지 사실과 후보만
+  // npm:/pypi: 입력이 Registry 항목 하나로 정해지지 않으면(0건·여러 건) 이름 조회 없이 패키지 사실과 후보만
   if (npmQuery && npmQuery.names.length !== 1) {
+    const label = npmQuery.type === "pypi" ? "PyPI" : "npm";
     if (npmQuery.names.length > 1) ev.registryCandidates = npmQuery.names;
     else if (!npmQuery.failed) {
-      if (npmQuery.ident) ev.npmUndeclared = npmQuery.ident;
+      if (npmQuery.ident) ev.undeclared = { type: npmQuery.type, ident: npmQuery.ident };
       ev.registry = {
         listed: false,
         note: npmQuery.ident
-          ? `No MCP Registry entry in Lowdown's records (kept since ${REGISTRY_RECORDS_SINCE}) declares this npm package.`
-          : "Not a valid npm package name.",
+          ? `No MCP Registry entry in Lowdown's records (kept since ${REGISTRY_RECORDS_SINCE}) declares this ${label} package.`
+          : `Not a valid ${label} package name.`,
       };
     }
-    if (npmQuery.ident) await attachPackages(supabase, ev, [{ type: "npm", identifier: npmQuery.ident, version: null }], now, true);
+    if (npmQuery.ident) await attachPackages(supabase, ev, [{ type: npmQuery.type, identifier: npmQuery.ident, version: null }], now, true);
     return ev;
   }
   try {
@@ -788,7 +790,7 @@ function evidenceFields(ev: Evidence | null, lookup: ScannerLookup | null): Reco
   if (ev?.registryCandidates) out.registry_candidates = ev.registryCandidates;
   if (ev?.packages && ev.packages.length > 0) {
     out.packages = ev.packages;
-    out.packages_note = PACKAGES_NOTE;
+    out.packages_note = packagesNote(ev.packages);
   }
   const scanner = scannerFields(lookup);
   if (scanner.scanner && ev?.scannerExtra && lookup?.summary) {
@@ -798,8 +800,9 @@ function evidenceFields(ev: Evidence | null, lookup: ScannerLookup | null): Reco
   return out;
 }
 
-// npm: 입력에 선언 항목이 없을 때: Lowdown 이 이 패키지를 다루지 않는다는 사실(문제가 없다는 뜻이 아님)
-const NPM_SCOPE_NOTE = "Lowdown records npm package status only for packages that MCP Registry entries declare, so it has no package facts to report.";
+// npm:/pypi: 입력에 선언 항목이 없을 때: Lowdown 이 이 패키지를 다루지 않는다는 사실(문제가 없다는 뜻이 아님)
+const scopeNote = (type: PackageInputType) =>
+  `Lowdown records ${type === "pypi" ? "PyPI" : "npm"} package status only for packages that MCP Registry entries declare, so it has no package facts to report.`;
 
 /** 첫머리: 확인된 Registry 이름과 사실 문장. 기록이 있는 쪽을 먼저 말한다. */
 function evidenceHead(ev: Evidence | null, lookup: ScannerLookup | null, interactions: number, inputNote: string | null = null): Record<string, unknown> {
@@ -809,7 +812,7 @@ function evidenceHead(ev: Evidence | null, lookup: ScannerLookup | null, interac
   if (reg?.listed === true) parts.push("MCP Registry declaration recorded");
   else if (reg && reg.removed_at) parts.push("MCP Registry entry recorded as removed");
   else if (ev?.registryCandidates) parts.push("several MCP Registry names match (see registry_candidates)");
-  else if (ev?.npmUndeclared) parts.push(`no MCP Registry entry declares the npm package ${ev.npmUndeclared}`);
+  else if (ev?.undeclared) parts.push(`no MCP Registry entry declares the ${ev.undeclared.type === "pypi" ? "PyPI" : "npm"} package ${ev.undeclared.ident}`);
   else if (reg) parts.push("no MCP Registry record found");
   if (lookup?.summary) {
     parts.push(ev?.scannerSince ? `observed daily by Lowdown Scanner since ${String(ev.scannerSince).slice(0, 10)}` : "observed by Lowdown Scanner");
@@ -826,7 +829,7 @@ function evidenceHead(ev: Evidence | null, lookup: ScannerLookup | null, interac
   const lead = (ev?.packageFacts ?? []).join(" ");
   return {
     ...(ev?.name ? { resolved_target: `mcp:${ev.name}` } : {}),
-    message: `${lead ? `${lead} ` : ""}${text.charAt(0).toUpperCase()}${text.slice(1)}.${ev?.npmUndeclared ? ` ${NPM_SCOPE_NOTE}` : ""}${inputNote ? ` ${inputNote}` : ""}`,
+    message: `${lead ? `${lead} ` : ""}${text.charAt(0).toUpperCase()}${text.slice(1)}.${ev?.undeclared ? ` ${scopeNote(ev.undeclared.type)}` : ""}${inputNote ? ` ${inputNote}` : ""}`,
   };
 }
 
@@ -841,10 +844,35 @@ const NPM_EVENT_KINDS = new Set(["latest_changed", "deprecated", "undeprecated",
 const MAX_PACKAGES = 10;
 const MAX_PACKAGE_EVENTS = 5;
 export const MAX_NPM_CANDIDATES = 50;
-export const PACKAGES_NOTE =
-  "npm values are recorded daily by Lowdown from npm's public registry metadata (registry.npmjs.org); package code is not run. latest_deprecated refers only to the version npm tags as latest, not to other versions. not_found means npm answered HTTP 404; network errors and 429/5xx responses do not change the recorded status. Only npm packages are checked.";
+const PYPI_NAME = /^([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9])$/;
+const PYPI_EVENT_KINDS = new Set(["latest_changed", "yanked", "unyanked", "status_changed", "not_found", "restored"]);
+const PYPI_PROJECT_STATUSES = new Set(["active", "archived", "quarantined", "deprecated"]);
+export type PackageInputType = "npm" | "pypi";
+const NPM_NOTE =
+  "npm values are recorded daily by Lowdown from npm's public registry metadata (registry.npmjs.org); package code is not run. latest_deprecated refers only to the version npm tags as latest, not to other versions. not_found means npm answered HTTP 404; network errors and 429/5xx responses do not change the recorded status.";
+const PYPI_NOTE =
+  "PyPI values are recorded daily by Lowdown from PyPI's public JSON and Index APIs (pypi.org); package code is not run. latest_yanked refers only to the version PyPI lists as latest. project_status is the PEP 792 project status. not_found means PyPI answered HTTP 404; network errors and 429/5xx responses do not change the recorded status.";
+/** 응답에 실린 패키지 종류에 해당하는 설명만 붙인다. */
+export function packagesNote(packages: ReadonlyArray<Record<string, unknown>>): string {
+  const has = (t: string) => packages.some((p) => p.registry === t);
+  const parts: string[] = [];
+  if (has("npm")) parts.push(NPM_NOTE);
+  if (has("pypi")) parts.push(PYPI_NOTE);
+  parts.push("Other package types are not checked.");
+  return parts.join(" ");
+}
 
 export const isNpmName = (s: string) => s.length > 0 && s.length <= 214 && NPM_NAME.test(s);
+export const isPypiName = (s: string) => s.length > 0 && s.length <= 200 && PYPI_NAME.test(s);
+/** PEP 503 정규화: 소문자, 연속된 - _ . 는 - 하나로 */
+export const normalizePypiName = (s: string) => s.replace(/[-_.]+/g, "-").toLowerCase();
+
+/** "npm:x" / "pypi:x" 입력 → 종류와 이름 */
+export function packageInputOf(target: string): { type: PackageInputType; ident: string } | null {
+  if (target.startsWith("npm:")) return { type: "npm", ident: target.slice(4) };
+  if (target.startsWith("pypi:")) return { type: "pypi", ident: target.slice(5) };
+  return null;
+}
 
 export interface DeclaredPackage {
   type: string;
@@ -852,7 +880,9 @@ export interface DeclaredPackage {
   version: string | null;
 }
 
-interface NpmQuery {
+interface PackageQuery {
+  type: PackageInputType;
+  /** 형식 검사를 통과한 이름(pypi 는 PEP 503 정규화). 형식이 아니면 null */
   ident: string | null;
   names: string[];
   failed?: boolean;
@@ -865,18 +895,24 @@ export function declaredPackages(key: unknown): DeclaredPackage[] {
   for (const line of key.split("\n")) {
     const [type = "", identifier = "", version = ""] = line.split(" ");
     if (!PACKAGE_TYPES.has(type)) continue;
-    const okId = type === "npm" ? isNpmName(identifier) : SAFE_PACKAGE_ID.test(identifier);
+    const okId = type === "npm" ? isNpmName(identifier) : type === "pypi" ? isPypiName(identifier) : SAFE_PACKAGE_ID.test(identifier);
     out.push({ type, identifier: okId ? identifier : null, version: safeVersion(version) });
     if (out.length >= MAX_PACKAGES) break;
   }
   return out;
 }
 
-/** npm:<이름> → 그 패키지를 선언한 (지금 목록에 있는) Registry 이름들. 고르지 않는다. */
-async function resolveNpmTarget(supabase: any, ident: string): Promise<NpmQuery> {
-  if (!isNpmName(ident)) return { ident: null, names: [] };
+/**
+ * npm:<이름> / pypi:<이름> → 그 패키지를 선언한 (지금 목록에 있는) Registry 이름들. 고르지 않는다.
+ * pypi 는 PEP 503 정규화 이름이 같으면 같은 패키지다(대소문자·구분자 차이 무시).
+ */
+async function resolvePackageTarget(supabase: any, type: PackageInputType, rawIdent: string): Promise<PackageQuery> {
+  if (type === "npm" ? !isNpmName(rawIdent) : !isPypiName(rawIdent)) return { type, ident: null, names: [] };
+  const ident = type === "pypi" ? normalizePypiName(rawIdent) : rawIdent;
   try {
-    const pattern = `%npm ${ident.replace(/[\\%_]/g, "\\$&")} %`;
+    // pypi 는 선언 표기가 정규화 이름과 다를 수 있어(My_Pkg 등) 구분자 자리를 와일드카드로 두고, 정확한 비교는 아래에서 한다.
+    const escaped = (type === "pypi" ? ident.split("-").map((p) => p.replace(/[\\%_]/g, "\\$&")).join("%") : ident.replace(/[\\%_]/g, "\\$&"));
+    const pattern = `%${type} ${escaped} %`;
     const { data, error } = await supabase
       .from("registry_state")
       .select("name,packages_key")
@@ -884,14 +920,15 @@ async function resolveNpmTarget(supabase: any, ident: string): Promise<NpmQuery>
       .is("removed_at", null)
       .order("name", { ascending: true })
       .limit(MAX_NPM_CANDIDATES);
-    if (error) return { ident, names: [], failed: true };
+    if (error) return { type, ident, names: [], failed: true };
+    const same = (p: DeclaredPackage) => p.type === type && p.identifier !== null && (type === "pypi" ? normalizePypiName(p.identifier) === ident : p.identifier === ident);
     const names = ((data ?? []) as any[])
-      .filter((r) => declaredPackages(r.packages_key).some((p) => p.type === "npm" && p.identifier === ident))
+      .filter((r) => declaredPackages(r.packages_key).some(same))
       .map((r) => String(r.name))
       .filter((n) => SAFE_NAME.test(n));
-    return { ident, names };
+    return { type, ident, names };
   } catch {
-    return { ident, names: [], failed: true };
+    return { type, ident, names: [], failed: true };
   }
 }
 
@@ -909,16 +946,25 @@ export function shapePackages(
   changeRows: any[],
   now: number,
   fromNpmInput: boolean,
+  pypi: { stateRows: any[]; changeRows: any[] } = { stateRows: [], changeRows: [] },
 ): { packages: Array<Record<string, unknown>>; facts: string[] } {
   const state = new Map<string, any>();
   for (const s of stateRows) if (typeof s?.ident === "string") state.set(s.ident, s);
+  const pypiState = new Map<string, any>();
+  for (const s of pypi.stateRows) if (typeof s?.ident === "string") pypiState.set(s.ident, s);
   const windowStart = utcDay(now - WINDOW_DAYS * DAY_MS);
   const packages: Array<Record<string, unknown>> = [];
   const facts: string[] = [];
   for (const d of declared) {
     const base: Record<string, unknown> = { registry: d.type, name: d.identifier, ...(fromNpmInput ? {} : { declared_version: d.version }) };
+    if (d.type === "pypi") {
+      const shaped = shapePypiPackage(d, base, pypiState, pypi.changeRows, windowStart, fromNpmInput);
+      packages.push(shaped.entry);
+      facts.push(...shaped.facts);
+      continue;
+    }
     if (d.type !== "npm" || d.identifier === null) {
-      packages.push({ ...base, npm: null, note: d.type === "npm" ? "Declared name is not a valid npm package name." : "Not checked by Lowdown (only npm packages are checked)." });
+      packages.push({ ...base, npm: null, note: d.type === "npm" ? "Declared name is not a valid npm package name." : "Not checked by Lowdown (only npm and PyPI packages are checked)." });
       continue;
     }
     const s = state.get(d.identifier);
@@ -963,8 +1009,71 @@ export function shapePackages(
   return { packages, facts: facts.slice(0, 3) };
 }
 
+/** PyPI 선언 패키지 하나 → packages 항목(`pypi` 블록)과 첫 문장용 사실. 상태는 PEP 503 정규화 이름으로 찾는다. */
+function shapePypiPackage(
+  d: DeclaredPackage,
+  base: Record<string, unknown>,
+  state: Map<string, any>,
+  changeRows: any[],
+  windowStart: string,
+  fromInput: boolean,
+): { entry: Record<string, unknown>; facts: string[] } {
+  if (d.identifier === null) return { entry: { ...base, pypi: null, note: "Declared name is not a valid PyPI project name." }, facts: [] };
+  const ident = normalizePypiName(d.identifier);
+  const s = state.get(ident);
+  if (!s || (s.status !== "found" && s.status !== "not_found")) return { entry: { ...base, pypi: { status: "not_checked" } }, facts: [] };
+  const facts: string[] = [];
+  const events = changeRows.filter((c) => c?.ident === ident && PYPI_EVENT_KINDS.has(c.kind) && dayOf(c.detected_on));
+  const lastNotFound = events.find((c) => c.kind === "not_found");
+  const recent = events
+    .filter((c) => (dayOf(c.detected_on) ?? "") >= windowStart)
+    .slice(0, MAX_PACKAGE_EVENTS)
+    .map((c) => {
+      const on = dayOf(c.detected_on);
+      switch (c.kind) {
+        case "latest_changed":
+          return { on, kind: c.kind, old: safeVersion(c.old_value), new: safeVersion(c.new_value) };
+        case "status_changed":
+          return { on, kind: c.kind, old: PYPI_PROJECT_STATUSES.has(c.old_value) ? c.old_value : null, new: PYPI_PROJECT_STATUSES.has(c.new_value) ? c.new_value : null };
+        case "not_found":
+          return { on, kind: c.kind, last_seen_latest: safeVersion(c.old_value) };
+        case "yanked":
+        case "unyanked":
+          return { on, kind: c.kind, version: safeVersion(c.old_value) };
+        default:
+          return { on, kind: c.kind, latest: safeVersion(c.new_value) };
+      }
+    });
+  const checkedDay = dayOf(s.checked_at);
+  const projectStatus = PYPI_PROJECT_STATUSES.has(s.project_status) ? (s.project_status as string) : null;
+  const pypi: Record<string, unknown> = { status: s.status };
+  if (s.status === "found") {
+    const latest = safeVersion(s.latest);
+    pypi.latest = latest;
+    pypi.latest_yanked = typeof s.latest_yanked === "boolean" ? s.latest_yanked : null;
+    pypi.latest_uploaded = isoOrNull(s.uploaded);
+    if (!fromInput) pypi.declared_is_latest = d.version && latest ? d.version === latest : null;
+    if (s.latest_yanked === true) facts.push(`PyPI marks the latest version of ${d.identifier}${latest ? ` (${latest})` : ""} as yanked (checked ${checkedDay}).`);
+  } else {
+    const since = lastNotFound ? dayOf(lastNotFound.detected_on) : "first_check";
+    pypi.not_found_since = since;
+    facts.push(
+      since === "first_check"
+        ? `PyPI has returned 404 for ${d.identifier} at every Lowdown check since ${dayOf(s.first_checked_at)} (checked ${checkedDay}).`
+        : `PyPI has returned 404 for ${d.identifier} since ${since}; it was available before (checked ${checkedDay}).`,
+    );
+  }
+  pypi.project_status = projectStatus;
+  if (projectStatus === "quarantined" || projectStatus === "deprecated") facts.push(`PyPI lists the project ${d.identifier} as ${projectStatus} (checked ${checkedDay}).`);
+  pypi.first_checked_at = isoOrNull(s.first_checked_at);
+  pypi.checked_at = isoOrNull(s.checked_at);
+  pypi.recent_events = recent;
+  return { entry: { ...base, pypi }, facts };
+}
+
 async function attachPackages(supabase: any, ev: Evidence, declared: DeclaredPackage[], now: number, fromNpmInput: boolean): Promise<void> {
   const idents = [...new Set(declared.filter((d) => d.type === "npm" && d.identifier).map((d) => d.identifier as string))];
+  const pypiIdents = [...new Set(declared.filter((d) => d.type === "pypi" && d.identifier).map((d) => normalizePypiName(d.identifier as string)))];
   try {
     let stateRows: any[] = [];
     let changeRows: any[] = [];
@@ -977,7 +1086,26 @@ async function attachPackages(supabase: any, ev: Evidence, declared: DeclaredPac
       stateRows = st.data ?? [];
       changeRows = ch.error ? [] : (ch.data ?? []);
     }
-    const shaped = shapePackages(declared, stateRows, changeRows, now, fromNpmInput);
+    // PyPI 조회 실패는 npm 쪽 응답을 막지 않는다(그 항목만 상태 없이).
+    let pypiRows = { stateRows: [] as any[], changeRows: [] as any[] };
+    let pypiFailed = false;
+    if (pypiIdents.length > 0) {
+      try {
+        const [st, ch] = await Promise.all([
+          supabase.from("pypi_package_state").select("ident,status,latest,latest_yanked,uploaded,project_status,baseline,first_checked_at,checked_at").in("ident", pypiIdents),
+          supabase.from("pypi_package_changes").select("ident,detected_on,kind,old_value,new_value").in("ident", pypiIdents).order("detected_on", { ascending: false }).limit(200),
+        ]);
+        if (st.error) throw new Error("pypi_package_state");
+        pypiRows = { stateRows: st.data ?? [], changeRows: ch.error ? [] : (ch.data ?? []) };
+      } catch {
+        pypiFailed = true;
+      }
+    }
+    const shaped = shapePackages(declared, stateRows, changeRows, now, fromNpmInput, pypiRows);
+    if (pypiFailed) {
+      // PyPI 상태를 읽지 못함 → 해당 항목은 선언만(상태 블록 없이)
+      shaped.packages = shaped.packages.map((p) => (p.registry === "pypi" && p.name !== null ? { registry: "pypi", name: p.name, ...("declared_version" in p ? { declared_version: p.declared_version } : {}) } : p));
+    }
     ev.packages = shaped.packages;
     ev.packageFacts = shaped.facts;
   } catch {

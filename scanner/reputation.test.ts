@@ -58,6 +58,30 @@ const REGISTRY_ROWS: Row[] = [
   { name: 'io.github.pkgtest/shared-b', version: '0.9.0', status: 'active', remotes_key: '', packages_key: 'npm shared-pkg 0.9.0 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
   { name: 'io.github.pkgtest/shared-old', version: '0.1.0', status: 'active', remotes_key: '', packages_key: 'npm shared-pkg 0.1.0 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: '2026-10-20T00:00:00+00:00', updated_at: 'x' },
   { name: 'io.github.pkgtest/prefix-only', version: '1', status: 'active', remotes_key: '', packages_key: 'npm shared-pkg-extra 1 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
+  // 선언 패키지 (PyPI 일별 상태)
+  { name: 'io.github.pytest/py-ok', version: '1.0.0', status: 'active', remotes_key: '', packages_key: 'pypi My_Py.Pkg 1.0.0 stdio\npypi bad/name 1 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
+  { name: 'io.github.pytest/py-yanked', version: '2.0', status: 'active', remotes_key: '', packages_key: 'pypi yank-pkg 2.0 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
+  { name: 'io.github.pytest/py-gone', version: '1.0', status: 'active', remotes_key: '', packages_key: 'pypi gone-py 1.0 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
+  { name: 'io.github.pytest/py-never', version: '1', status: 'active', remotes_key: '', packages_key: 'pypi never-py 1 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
+  { name: 'io.github.pytest/py-quar', version: '1', status: 'active', remotes_key: '', packages_key: 'pypi quar-pkg 1 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
+  { name: 'io.github.pytest/py-shared-a', version: '1', status: 'active', remotes_key: '', packages_key: 'pypi Shared.Py 1 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
+  { name: 'io.github.pytest/py-shared-b', version: '2', status: 'active', remotes_key: '', packages_key: 'pypi shared_py 2 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
+  { name: 'io.github.pytest/py-npm-same-name', version: '1', status: 'active', remotes_key: '', packages_key: 'npm shared-py 1 stdio', desc_hash: 'd', hosts: [], first_seen_at: 'x', baseline: true, removed_at: null, updated_at: 'x' },
+];
+const PYPI_STATE_ROWS: Row[] = [
+  { ident: 'my-py-pkg', status: 'found', latest: '1.1.0', latest_yanked: false, uploaded: '2026-10-22T09:00:00.000Z', project_status: 'active', baseline: true, first_checked_at: '2026-10-22T05:00:00.000Z', checked_at: '2026-10-23T23:30:00.000Z' },
+  { ident: 'yank-pkg', status: 'found', latest: '2.0', latest_yanked: true, uploaded: '2026-10-20T09:00:00.000Z', project_status: 'active', baseline: true, first_checked_at: '2026-10-22T05:00:00.000Z', checked_at: '2026-10-23T23:30:00.000Z' },
+  { ident: 'gone-py', status: 'not_found', latest: null, latest_yanked: null, uploaded: null, project_status: null, baseline: true, first_checked_at: '2026-10-22T05:00:00.000Z', checked_at: '2026-10-23T23:30:00.000Z' },
+  { ident: 'never-py', status: 'not_found', latest: null, latest_yanked: null, uploaded: null, project_status: null, baseline: true, first_checked_at: '2026-10-22T05:00:00.000Z', checked_at: '2026-10-23T23:30:00.000Z' },
+  { ident: 'quar-pkg', status: 'found', latest: '1', latest_yanked: false, uploaded: null, project_status: 'quarantined', baseline: true, first_checked_at: '2026-10-22T05:00:00.000Z', checked_at: '2026-10-23T23:30:00.000Z' },
+  { ident: 'shared-py', status: 'found', latest: '2', latest_yanked: false, uploaded: null, project_status: 'active', baseline: true, first_checked_at: '2026-10-22T05:00:00.000Z', checked_at: '2026-10-23T23:30:00.000Z' },
+];
+const PYPI_CHANGE_ROWS: Row[] = [
+  { ident: 'my-py-pkg', detected_on: dayAgo(1), kind: 'latest_changed', old_value: '1.0.0', new_value: '1.1.0' },
+  { ident: 'my-py-pkg', detected_on: dayAgo(2), kind: 'status_changed', old_value: 'archived', new_value: 'active' },
+  { ident: 'my-py-pkg', detected_on: dayAgo(40), kind: 'latest_changed', old_value: '0.9.0', new_value: '1.0.0' },
+  { ident: 'yank-pkg', detected_on: dayAgo(1), kind: 'yanked', old_value: '2.0', new_value: null },
+  { ident: 'gone-py', detected_on: dayAgo(1), kind: 'not_found', old_value: '1.0', new_value: null },
 ];
 const NPM_STATE_ROWS: Row[] = [
   { ident: 'maplith-bridge', status: 'found', latest: '1.0.0-rc.1', modified: '2026-10-22T10:00:00.000Z', deprecated: true, baseline: true, first_checked_at: '2026-10-22T05:00:00.000Z', checked_at: '2026-10-22T23:30:00.000Z' },
@@ -180,6 +204,8 @@ before(async () => {
         scanner_tool_sets: TOOL_SET_ROWS,
         npm_package_state: NPM_STATE_ROWS,
         npm_package_changes: NPM_CHANGE_ROWS,
+        pypi_package_state: PYPI_STATE_ROWS,
+        pypi_package_changes: PYPI_CHANGE_ROWS,
       };
       const source = tables[table] ?? [];
       const rows = query(source, url.searchParams);
@@ -612,9 +638,12 @@ describe('선언 패키지 (packages) — npm 일별 상태', () => {
     assert.equal(npmPkg.npm.declared_is_latest, true);
     assert.ok(!('deprecated' in npmPkg.npm));
     assert.deepEqual(npmPkg.npm.recent_events, [{ on: dayAgo(1), kind: 'deprecated' }]);
-    assert.deepEqual(pyPkg, { registry: 'pypi', name: 'some-py', declared_version: '1.0', npm: null, note: 'Not checked by Lowdown (only npm packages are checked).' });
+    // PyPI 상태 기록이 아직 없는 패키지는 not_checked
+    assert.deepEqual(pyPkg, { registry: 'pypi', name: 'some-py', declared_version: '1.0', pypi: { status: 'not_checked' } });
     assert.match(r.body.packages_note, /latest_deprecated refers only to the version npm tags as latest, not to other versions/);
     assert.match(r.body.packages_note, /not_found means npm answered HTTP 404; network errors and 429\/5xx responses do not change/);
+    assert.match(r.body.packages_note, /PyPI values are recorded daily/);
+    assert.match(r.body.packages_note, /Other package types are not checked\.$/);
   });
 
   test('not_found: 있다가 404 가 된 경우는 날짜, 처음부터 404 는 first_check — 문장도 다르다', async () => {
@@ -694,6 +723,101 @@ describe('선언 패키지 (packages) — npm 일별 상태', () => {
     assert.equal(r.status, 200);
     assert.deepEqual(r.body.packages[0], { registry: 'npm', name: 'maplith-bridge', declared_version: '1.0.0-rc.1' });
     assert.ok(r.body.message.startsWith('MCP Registry declaration recorded;'));
+  });
+});
+
+describe('선언 패키지 (packages) — PyPI 일별 상태', () => {
+  test('found: 선언 표기(My_Py.Pkg)와 달라도 정규화 이름으로 상태를 찾고, 이력·형식 아닌 이름 처리', async () => {
+    const r = await call('mcp:io.github.pytest/py-ok');
+    assert.ok(r.body.message.startsWith('MCP Registry declaration recorded;'), r.body.message);
+    const p = r.body.packages[0];
+    assert.equal(p.registry, 'pypi');
+    assert.equal(p.name, 'My_Py.Pkg');
+    assert.equal(p.declared_version, '1.0.0');
+    assert.equal(p.pypi.status, 'found');
+    assert.equal(p.pypi.latest, '1.1.0');
+    assert.equal(p.pypi.latest_yanked, false);
+    assert.equal(p.pypi.latest_uploaded, '2026-10-22T09:00:00.000Z');
+    assert.equal(p.pypi.project_status, 'active');
+    assert.equal(p.pypi.declared_is_latest, false);
+    assert.deepEqual(p.pypi.recent_events, [
+      { on: dayAgo(1), kind: 'latest_changed', old: '1.0.0', new: '1.1.0' },
+      { on: dayAgo(2), kind: 'status_changed', old: 'archived', new: 'active' },
+    ]);
+    assert.deepEqual(r.body.packages[1], { registry: 'pypi', name: null, declared_version: '1', pypi: null, note: 'Declared name is not a valid PyPI project name.' });
+    assert.match(r.body.packages_note, /^PyPI values are recorded daily/);
+    assert.doesNotMatch(r.body.packages_note, /npm values/);
+  });
+
+  test('yanked·404·quarantined 는 첫 문장에 올린다 (404 는 날짜 / first_check 구분)', async () => {
+    const y = await call('mcp:io.github.pytest/py-yanked');
+    assert.ok(y.body.message.startsWith('PyPI marks the latest version of yank-pkg (2.0) as yanked (checked 2026-10-23).'), y.body.message);
+    assert.deepEqual(y.body.packages[0].pypi.recent_events, [{ on: dayAgo(1), kind: 'yanked', version: '2.0' }]);
+
+    const gone = await call('mcp:io.github.pytest/py-gone');
+    assert.equal(gone.body.packages[0].pypi.not_found_since, dayAgo(1));
+    assert.ok(gone.body.message.startsWith(`PyPI has returned 404 for gone-py since ${dayAgo(1)}; it was available before (checked 2026-10-23).`), gone.body.message);
+    assert.ok(!('latest' in gone.body.packages[0].pypi));
+
+    const never = await call('mcp:io.github.pytest/py-never');
+    assert.equal(never.body.packages[0].pypi.not_found_since, 'first_check');
+    assert.ok(never.body.message.startsWith('PyPI has returned 404 for never-py at every Lowdown check since 2026-10-22 (checked 2026-10-23).'), never.body.message);
+
+    const q = await call('mcp:io.github.pytest/py-quar');
+    assert.ok(q.body.message.startsWith('PyPI lists the project quar-pkg as quarantined (checked 2026-10-23).'), q.body.message);
+    assert.equal(q.body.packages[0].pypi.project_status, 'quarantined');
+  });
+
+  test('pypi: 입력 — 1건이면 그 항목으로, 표기·대소문자·구분자 차이는 같은 패키지로 본다', async () => {
+    const r = await call('pypi:My-Py-Pkg');
+    assert.equal(r.body.resolved_target, 'mcp:io.github.pytest/py-ok');
+    assert.equal(r.body.packages[0].registry, 'pypi');
+    // 1건으로 정해지면 그 항목의 선언 그대로(표기·선언 버전 포함)
+    assert.equal(r.body.packages[0].name, 'My_Py.Pkg');
+    assert.equal(r.body.packages[0].declared_version, '1.0.0');
+    assert.equal(r.body.packages[0].pypi.latest, '1.1.0');
+  });
+
+  test('pypi: 입력 — 여러 항목이 정규화 이름으로 같은 패키지를 선언하면 고르지 않고 후보 전부, 같은 이름의 npm 선언은 제외', async () => {
+    const r = await call('pypi:shared.py');
+    assert.deepEqual(r.body.registry_candidates, ['io.github.pytest/py-shared-a', 'io.github.pytest/py-shared-b']);
+    assert.ok(!('resolved_target' in r.body));
+    assert.ok(!('registry' in r.body));
+    assert.equal(r.body.packages.length, 1);
+    assert.equal(r.body.packages[0].pypi.latest, '2');
+    assert.equal(lookupsInserted[0]!.result_kind, 'candidates');
+  });
+
+  test('pypi: 입력 — 선언한 항목이 없거나 형식이 아니면 그렇게 말한다 (npm 문구와 섞이지 않는다)', async () => {
+    const none = await call('pypi:nobody-declares-this');
+    assert.equal(none.body.registry.listed, false);
+    assert.match(none.body.registry.note, /declares this PyPI package/);
+    assert.equal(
+      none.body.message,
+      'No MCP Registry entry declares the PyPI package nobody-declares-this; no agent-reported interactions. Lowdown records PyPI package status only for packages that MCP Registry entries declare, so it has no package facts to report.',
+    );
+    assert.deepEqual(none.body.packages[0].pypi, { status: 'not_checked' });
+    assert.equal(lookupsInserted[0]!.result_kind, 'none');
+
+    const bad = await call('pypi:Bad Name<script>');
+    assert.equal(bad.body.registry.note, 'Not a valid PyPI package name.');
+    assert.ok(!('packages' in bad.body));
+    assert.ok(!JSON.stringify(bad.body.registry).includes('<script>'));
+  });
+
+  test('pypi: 입력 — quarantined 사실이 첫 문장에 오른다', async () => {
+    const r = await call('pypi:quar-pkg');
+    assert.equal(r.body.resolved_target, 'mcp:io.github.pytest/py-quar');
+    assert.ok(r.body.message.startsWith('PyPI lists the project quar-pkg as quarantined'), r.body.message);
+  });
+
+  test('PyPI 상태 조회가 실패해도 응답은 정상, npm 쪽은 그대로, PyPI 항목은 선언만', async () => {
+    failTables = new Set(['pypi_package_state']);
+    const r = await call('mcp:io.github.pkgtest/dep-one');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.packages[0].npm.status, 'found');
+    assert.deepEqual(r.body.packages[1], { registry: 'pypi', name: 'some-py', declared_version: '1.0' });
+    assert.ok(r.body.message.startsWith('npm marks the latest version of maplith-bridge'));
   });
 });
 
