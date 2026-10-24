@@ -34,7 +34,7 @@ Equal versions are merged. Each `package@version` runs once (transient failures 
 |---|---|---|
 | `ok` | answered `initialize` and `tools/list` | no |
 | `install_not_found` | npm E404 | no |
-| `install_version_not_found` | npm ETARGET / ENOVERSIONS | no |
+| `install_version_not_found` | npm ETARGET / ENOVERSIONS, also after one more try with `--prefer-online` in the same run | no |
 | `install_failed` | other npm error (`install_error_code`) | no |
 | `install_timeout` | install over 180 s | 2 tries |
 | `install_network` | network or registry error | 3 tries |
@@ -76,7 +76,7 @@ sudo bash /opt/lowdown/lowdown-proxy/sandbox/setup.sh
 
 `setup.sh` prints the remaining steps: key, SQL (`supabase/sandbox.sql`), `--self-test`, `--plan`, a first run of 10, then the daily timer (06:47 KST).
 
-Defaults: 2 targets at a time, up to 400 per day, 4 h budget. npm requests go through a shared cache with `--prefer-offline`.
+Defaults: 2 targets at a time, up to 400 per day, 4 h budget. npm requests go through a shared cache with `--prefer-offline`. When an install answers ETARGET/ENOVERSIONS, the cached package information may predate the version, so the install is tried once more with `--prefer-online` and `metadata.install_retry` is `prefer_online`. Runs before runner 0.2.2 did not do this.
 
 ## Monitoring
 

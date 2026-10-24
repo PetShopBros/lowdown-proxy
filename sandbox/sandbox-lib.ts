@@ -8,7 +8,8 @@ import { isNpmName } from '../scanner/npm-lib.ts';
 // 기록의 의미가 바뀌는 수정(판정·저장 필드·실행 조건)마다 올린다. 주 버전이 바뀌면 끝난 대상도 다시 돈다.
 //   0.1.0 — 2026-10-24 최초(인자 없이 실행) / 0.2.0 — Registry 선언 실행 인자(packageArguments)를 붙여 실행
 //   0.2.1 — metadata.install_scripts 기록(실행 조건은 같음 → 주 버전 그대로)
-export const SANDBOX_RUNNER_VERSION = '0.2.1';
+//   0.2.2 — 설치가 ETARGET/ENOVERSIONS 이면 --prefer-online 으로 한 번 더 시도(캐시의 오래된 패키지 정보로 생긴 오판 방지)
+export const SANDBOX_RUNNER_VERSION = '0.2.2';
 export const SANDBOX_RUN_MAJOR = 2;
 
 /** 정확한 버전 문자열만(범위·태그 제외). npm 이 받는 semver 형식의 부분집합. */
@@ -267,7 +268,11 @@ const COMMON_ISOLATION = (c: DockerCtx) => [
 ];
 
 /** 설치: 네트워크 있음(레지스트리), 스크립트 실행 안 함(--ignore-scripts), 패키지 코드는 실행되지 않는다. */
-export function installArgs(c: DockerCtx & { cacheHost: string }, ident: string, version: string): string[] {
+/**
+ * 설치. 기본은 --prefer-offline(캐시 우선, npm 요청을 줄인다).
+ * preferOnline: 캐시의 패키지 정보를 npm 에 다시 확인한다. 캐시가 새 버전을 모를 때(ETARGET)의 재시도에만 쓴다.
+ */
+export function installArgs(c: DockerCtx & { cacheHost: string }, ident: string, version: string, opts: { preferOnline?: boolean } = {}): string[] {
   return [
     'run',
     ...COMMON_ISOLATION(c),
@@ -283,7 +288,7 @@ export function installArgs(c: DockerCtx & { cacheHost: string }, ident: string,
     '-e', 'npm_config_fund=false',
     '-e', 'npm_config_audit=false',
     c.image,
-    'npm', 'install', '--prefix', '/work', '--ignore-scripts', '--omit=dev', '--prefer-offline', '--no-package-lock', '--loglevel=error',
+    'npm', 'install', '--prefix', '/work', '--ignore-scripts', '--omit=dev', opts.preferOnline ? '--prefer-online' : '--prefer-offline', '--no-package-lock', '--loglevel=error',
     `${ident}@${version}`,
   ];
 }

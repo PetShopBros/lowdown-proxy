@@ -114,6 +114,13 @@ describe('docker 인자', () => {
     const a = installArgs({ ...c, cacheHost: '/var/lib/lowdown/npm-cache' }, '@a/b', '1.0.0');
     for (const must of ['--ignore-scripts', '--read-only', 'no-new-privileges', 'ALL', 'runsc', '10001:10001', '@a/b@1.0.0']) assert.ok(a.includes(must), must);
     assert.equal(a[a.indexOf('--network') + 1], 'bridge');
+    assert.ok(a.includes('--prefer-offline') && !a.includes('--prefer-online'));
+  });
+  test('설치 재시도: --prefer-online 으로 바뀌고 나머지는 같다', () => {
+    const base = installArgs({ ...c, cacheHost: '/var/lib/lowdown/npm-cache' }, '@a/b', '1.0.0');
+    const a = installArgs({ ...c, cacheHost: '/var/lib/lowdown/npm-cache' }, '@a/b', '1.0.0', { preferOnline: true });
+    assert.ok(a.includes('--prefer-online') && !a.includes('--prefer-offline'));
+    assert.deepEqual(a.map((v) => (v === '--prefer-online' ? '--prefer-offline' : v)), base);
   });
   test('실행: 네트워크 없음, 작업 폴더 읽기 전용, 환경변수는 HOME 만, 컨테이너 안 timeout', () => {
     const a = runArgs(c, 'srv', 60);

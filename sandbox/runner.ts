@@ -136,6 +136,8 @@ interface TargetResult {
   bin_count: number | null;
   probe: StdioProbeResult | null;
   install_scripts?: boolean;
+  /** 첫 설치가 ETARGET/ENOVERSIONS 여서 --prefer-online 으로 다시 시도했다 */
+  install_retry?: 'prefer_online';
   outcome: Outcome;
 }
 
@@ -156,12 +158,25 @@ async function runTarget(env: Env, t: Target, launch: LaunchSpec | null): Promis
   const ctx: DockerCtx = { image: env.image, runtime: env.runtime, uid: env.uid, name, workHost: work };
   try {
     // 1) 설치 (스크립트 실행 없음)
-    const inst = await docker(installArgs({ ...ctx, cacheHost: join(env.root, 'npm-cache') }, t.ident, t.version), INSTALL_TIMEOUT_MS);
-    await docker(['rm', '-f', name]);
+    const install = async (preferOnline: boolean) => {
+      const r = await docker(installArgs({ ...ctx, cacheHost: join(env.root, 'npm-cache') }, t.ident, t.version, { preferOnline }), INSTALL_TIMEOUT_MS);
+      await docker(['rm', '-f', name]);
+      return r;
+    };
+    let inst = await install(false);
+    let retry: TargetResult['install_retry'];
+    // 캐시(--prefer-offline)의 패키지 정보가 새 버전을 모르면 ETARGET 이 난다 → npm 에 다시 확인하고 한 번만 더 시도
+    if (inst.code !== 0 && inst.code !== 125 && classifyInstallFailure(inst.stderr, inst.timedOut).outcome === 'install_version_not_found') {
+      const first = inst.ms;
+      inst = await install(true);
+      inst = { ...inst, ms: first + inst.ms };
+      retry = 'prefer_online';
+    }
+    const extra = retry ? { install_retry: retry } : {};
     if (inst.code !== 0) {
-      if (inst.code === 125 && !inst.timedOut) return { install_ms: inst.ms, install_error_code: null, bin_count: null, probe: null, outcome: 'runner_error' };
+      if (inst.code === 125 && !inst.timedOut) return { install_ms: inst.ms, install_error_code: null, bin_count: null, probe: null, ...extra, outcome: 'runner_error' };
       const c = classifyInstallFailure(inst.stderr, inst.timedOut);
-      return { install_ms: inst.ms, install_error_code: c.code, bin_count: null, probe: null, outcome: c.outcome };
+      return { install_ms: inst.ms, install_error_code: c.code, bin_count: null, probe: null, ...extra, outcome: c.outcome };
     }
 
     // 2) 실행 파일 결정 (npx 와 같은 규칙)
@@ -169,14 +184,14 @@ async function runTarget(env: Env, t: Target, launch: LaunchSpec | null): Promis
     const scripts = hasInstallScripts(pkgJson);
     const pick = chooseBin(pkgJson, t.ident);
     if (pick.outcome !== 'ok' || !pick.bin || !existsSync(join(work, 'node_modules', '.bin', pick.bin))) {
-      return { install_ms: inst.ms, install_error_code: null, bin_count: pick.count, probe: null, install_scripts: scripts, outcome: pick.outcome === 'bin_ambiguous' ? 'bin_ambiguous' : 'no_bin' };
+      return { install_ms: inst.ms, install_error_code: null, bin_count: pick.count, probe: null, install_scripts: scripts, ...extra, outcome: pick.outcome === 'bin_ambiguous' ? 'bin_ambiguous' : 'no_bin' };
     }
 
     // 3) 실행: initialize + tools/list
     const hardLimit = Math.ceil((DEFAULT_PROBE_OPTS.initTimeoutMs + DEFAULT_PROBE_OPTS.listTimeoutMs) / 1000) + 15;
     const probe = await probeStdio(['docker', ...runArgs({ ...ctx, name: `${name}-r` }, pick.bin, hardLimit, launch?.args ?? [])]);
     await docker(['rm', '-f', `${name}-r`]);
-    return { install_ms: inst.ms, install_error_code: null, bin_count: pick.count, probe, install_scripts: scripts, outcome: probe.outcome };
+    return { install_ms: inst.ms, install_error_code: null, bin_count: pick.count, probe, install_scripts: scripts, ...extra, outcome: probe.outcome };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -344,6 +359,7 @@ async function main(): Promise<void> {
         metadata: {
           ...(p?.metadata ?? {}),
           ...(res.install_scripts !== undefined ? { install_scripts: res.install_scripts } : {}),
+          ...(res.install_retry ? { install_retry: res.install_retry } : {}),
           ...(launch ? { args_unsatisfied: launch.args_unsatisfied, env_required: launch.env_required, env_secret: launch.env_secret } : { launch_spec: 'not_in_registry' }),
         },
       });

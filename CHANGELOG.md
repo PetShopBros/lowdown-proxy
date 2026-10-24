@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- stdio sandbox (runner 0.2.2): an install that answers ETARGET/ENOVERSIONS is tried once more with `--prefer-online` before being recorded as `install_version_not_found`. With `--prefer-offline`, the shared npm cache could hold package information older than the version being installed; 57 of the 59 such results in the 2026-10-25 batch were packages installed before. Earlier rows are kept; retried runs record `metadata.install_retry`.
+
 ### Added
 - `GET /api/reputation/{target}`: `pypi.not_found_kind` separates a PyPI 404 for a project that PyPI lists but that has no release (`no_releases`) from a name with no PyPI project (`no_project`), and the first sentence says which. An archived PyPI project is now stated in the first sentence as well. The PyPI snapshot records the Index API's answer (`pypi_package_state.index_status`, `supabase/pypi_packages.sql`) and no longer keeps the previous project status when the Index API answers 404.
 - `GET /api/reputation/{target}`: PyPI packages in `packages`. Each declared PyPI package carries a `pypi` block with the latest version, `latest_yanked` (that version only), `project_status` (PEP 792), `latest_uploaded`, `declared_is_latest`, `not_found_since` and up to 5 changes in the last 30 days, from the daily PyPI snapshot. A yanked latest version, a quarantined or deprecated project, or an HTTP 404 is stated in the first sentence; new versions are listed only in the history. `pypi:<package>` lookups work like `npm:<package>`: one declaring Registry entry answers directly, several are returned as `registry_candidates` and none is picked, none says so by name. PyPI names are compared after PEP 503 normalization. `packages_note` describes only the package types present. A failure reading PyPI state does not affect the npm part of the answer.
