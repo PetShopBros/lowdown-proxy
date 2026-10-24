@@ -29,7 +29,7 @@ create index if not exists idx_interactions_created_at on interactions(created_a
 -- 2. 평가 (선택적, interaction에 종속)
 create table if not exists reviews (
   id uuid primary key default gen_random_uuid(),
-  interaction_id uuid not null references interactions(id) on delete cascade,
+  interaction_id uuid not null references interactions(id) on delete restrict, -- 관측 원칙: 지우지 않음 (2026-10-24_reviews_fk_restrict.sql)
   rating integer check (rating between 1 and 5),
   comment text,
   created_at timestamptz not null default now()
