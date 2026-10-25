@@ -4,6 +4,7 @@
 //   node sandbox/runner.ts --plan        대상 선정만(docker 안 씀, DB 쓰기 없음)
 //   node sandbox/runner.ts --self-test   격리 확인: 컨테이너가 MCP 로 응답하는지, 네트워크가 막혔는지 (DB 안 씀)
 //   --limit=N                            이번 실행의 대상 수 상한
+//   --only=pypi|npm                      한 종류만 돈다(새 종류의 첫 확인용). 예: --only=pypi --limit=10
 // 환경변수(/etc/lowdown/sandbox.env, systemd 가 읽는다):
 //   필수 LOWDOWN_SUPABASE_URL, LOWDOWN_SANDBOX_KEY (없으면 LOWDOWN_SCANNER_KEY)
 //   선택 SANDBOX_IMAGE(lowdown-sandbox-node:1) SANDBOX_IMAGE_PY(lowdown-sandbox-python:1) SANDBOX_PYPI(0 이면 PyPI 제외)
@@ -327,6 +328,8 @@ async function main(): Promise<void> {
   if (args.includes('--self-test')) return selfTest(env);
 
   const planOnly = args.includes('--plan');
+  const onlyArg = args.find((a) => a.startsWith('--only='))?.slice('--only='.length);
+  if (onlyArg !== undefined && onlyArg !== 'pypi' && onlyArg !== 'npm') fail('--only 는 pypi 또는 npm 입니다.');
   const limitArg = args.find((a) => a.startsWith('--limit='));
   const limit = limitArg ? Math.max(0, Number(limitArg.slice(8)) || 0) : env.maxTargets;
   const url = process.env.LOWDOWN_SUPABASE_URL?.trim();
@@ -354,7 +357,10 @@ async function main(): Promise<void> {
     fetchLaunchSpecs(),
     pyEnabled ? fetchPypiLite(cfg) : Promise.resolve(undefined),
   ]);
-  const { targets, stats } = planTargets(registry, npm, state, { limit, ...(pypiState ? { pypiState } : {}) });
+  if (onlyArg === 'pypi' && !pyEnabled) fail(`--only=pypi 인데 PyPI 를 쓸 수 없습니다: ${pyNote}`);
+  const planned = planTargets(registry, npm, state, { limit: onlyArg ? 1_000_000 : limit, ...(pypiState ? { pypiState } : {}) });
+  const targets = onlyArg ? planned.targets.filter((t) => t.registry_type === onlyArg).slice(0, limit) : planned.targets;
+  const stats = { ...planned.stats, planned: targets.length };
   console.log(`plan: ${JSON.stringify(stats)}`);
   console.log(`registry launch specs: ${launches.specs.size} npm + ${launches.pypiSpecs.size} pypi stdio packages (${launches.entries} entries, ${launches.pages} pages)`);
   const launchOf = (t: Target) => pickLaunch(t.registry_type === 'pypi' ? launches.pypiSpecs.get(normalizePypiName(t.ident)) : launches.specs.get(t.ident), t.version);
