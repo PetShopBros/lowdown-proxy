@@ -1,13 +1,14 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 
-// /llms.txt, /openapi.json 을 내려주면서 방문을 기록한다 (vercel.json rewrites → /api/discovery?file=...).
+// /llms.txt, /openapi.json, /robots.txt 를 내려주면서 방문을 기록한다 (vercel.json rewrites → /api/discovery?file=...).
 // 목적: AI 크롤러·에이전트가 발견용 파일을 읽었는지 이름(user_agent)까지 남기기. IP 는 저장하지 않는다.
 // 기록이 실패해도 파일은 항상 내려준다.
 
 const FILES: Record<string, string> = {
   "llms.txt": "text/plain; charset=utf-8",
   "openapi.json": "application/json; charset=utf-8",
+  "robots.txt": "text/plain; charset=utf-8",
 };
 
 function getSupabase() {

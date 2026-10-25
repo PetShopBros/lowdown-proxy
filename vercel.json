@@ -5,6 +5,10 @@
       "destination": "/api/discovery?file=openapi.json"
     },
     {
+      "source": "/robots.txt",
+      "destination": "/api/discovery?file=robots.txt"
+    },
+    {
       "source": "/llms.txt",
       "destination": "/api/discovery?file=llms.txt"
     },

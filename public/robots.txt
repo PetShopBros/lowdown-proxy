@@ -1,0 +1,17 @@
+# Lowdown — facts about AI agents and tools (reputation lookups, daily observations).
+# Everything here is public data. Crawlers are welcome, including search and training crawlers.
+# Please keep requests slow: a burst of lookups (one per Registry entry) once overloaded the database.
+# Bulk data: https://github.com/PetShopBros/lowdown-data (daily files, no crawling needed). Description for agents: /llms.txt
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: *
+Allow: /
+Crawl-delay: 2
