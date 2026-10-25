@@ -16,6 +16,7 @@ import {
   serializePrivateManifest,
   SPECS,
   toJsonl,
+  type PrivateDataset,
   type PrivateManifestEntry,
 } from './private-archive-lib.ts';
 
@@ -37,17 +38,25 @@ async function main(): Promise<void> {
   const manifestPath = join(outDir, 'MANIFEST.csv');
   const manifest: PrivateManifestEntry[] = existsSync(manifestPath) ? parsePrivateManifest(readFileSync(manifestPath, 'utf8')) : [];
   const exists = (p: string) => existsSync(join(outDir, p));
-  const days = closedDays(PRIVATE_FROM, new Date());
+  // 데이터셋마다 시작일·대기일이 다르다
+  const daysFor = (d: PrivateDataset) => {
+    const spec = SPECS[d];
+    return closedDays(spec.from ?? PRIVATE_FROM, new Date(Date.now() - (spec.settleDays ?? 0) * 86_400_000));
+  };
 
-  const plans = PRIVATE_DATASETS.map((d) => ({ dataset: d, ...planPrivateDays(d, days, manifest, exists) }));
+  const plans = PRIVATE_DATASETS.map((d) => ({ dataset: d, ...planPrivateDays(d, daysFor(d), manifest, exists) }));
   const conflicts = plans.flatMap((p) => p.conflicts);
   for (const e of manifest) if (!exists(e.path)) conflicts.push(`${e.path}: in MANIFEST but file missing`);
   if (conflicts.length > 0) fail(`보관 파일과 MANIFEST 가 어긋납니다(아무것도 쓰지 않음):\n${[...new Set(conflicts)].join('\n')}`);
   console.log(`private plan: ${plans.map((p) => `${p.dataset} ${p.todo.length} day(s)`).join(', ')}, dry_run=${dryRun}`);
 
   let written = 0;
+  // 한 데이터셋이 실패해도 다른 데이터셋은 계속 보관한다. 실패한 데이터셋은 그 날부터 멈추고, 마지막에 실패로 끝낸다.
+  // (이미 쓴 파일은 행 수 확인을 통과한 완전한 파일이라 커밋해도 된다 — backup.yml 의 비공개 커밋은 실패해도 돈다)
+  const failures: string[] = [];
   for (const plan of plans) {
     const spec = SPECS[plan.dataset];
+    try {
     for (const day of plan.todo) {
       const range = dayRange(day);
       const rows = await fetchPrivateDay(cfg, spec, range);
@@ -55,10 +64,10 @@ async function main(): Promise<void> {
         [spec.timeColumn, `gte.${range.start}`],
         [spec.timeColumn, `lt.${range.end}`],
       ]);
-      if (rows.length !== count) fail(`${plan.dataset} ${day}: 읽은 행 ${rows.length} ≠ DB 행 수 ${count} (쓰지 않음)`);
+      if (rows.length !== count) throw new Error(`${plan.dataset} ${day}: 읽은 행 ${rows.length} ≠ DB 행 수 ${count} (쓰지 않음)`);
       if (plan.dataset === 'tool_defs') {
         const bad = integrityFailures(rows);
-        if (bad.length > 0) fail(`tool_defs ${day}: 무결성 불일치 ${bad.length}행 (쓰지 않음), 예: ${bad.slice(0, 3).join(', ')}`);
+        if (bad.length > 0) throw new Error(`tool_defs ${day}: 무결성 불일치 ${bad.length}행 (쓰지 않음), 예: ${bad.slice(0, 3).join(', ')}`);
       }
       const gz = gzipFile(toJsonl(spec.columns, rows));
       console.log(`${plan.dataset} ${day}: ${rows.length} rows, ${gz.bytes} B, sha256 ${gz.sha256.slice(0, 16)}`);
@@ -73,10 +82,15 @@ async function main(): Promise<void> {
       }
       written++;
     }
+    } catch (e: unknown) {
+      // 오류 문구에는 응답 본문이 들어가지 않는다(fetchPrivateDay·countRows 가 상태 코드만 쓴다)
+      failures.push(e instanceof Error ? e.message : `${plan.dataset}: failed`);
+    }
   }
   console.log(`private archive done: ${written} file(s)${dryRun ? ' (dry-run, not written)' : ''}`);
   const out = process.env.GITHUB_OUTPUT;
   if (out) appendFileSync(out, `written=${written}\n`);
+  if (failures.length > 0) fail(`비공개 보관 실패 ${failures.length}건 (나머지는 보관함):\n${failures.join('\n')}`);
 }
 
 main().catch((e: unknown) => fail(e instanceof Error ? e.message : 'private archive failed'));

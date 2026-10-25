@@ -89,7 +89,7 @@ jobs:
           LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
 
       - name: Commit and push (private)
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !cancelled() && !inputs.dry_run }}
         working-directory: private-repo
         run: |
           git config user.name "lowdown-bot"

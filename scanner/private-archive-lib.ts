@@ -1,5 +1,7 @@
 // 원문 비공개 보관 — 비공개 레포(lowdown-private)에 닫힌 날(UTC)마다 JSONL.gz 1개 + MANIFEST.csv
 //   대상: scanner_tool_defs(원문) / scanner_tool_set_versions / scanner_tool_flags. 모두 추가만 되고 고치지 않는 테이블.
+//   2026-10-26 추가: DB 가 유일한 사본이던 기록 — reputation_lookups(조회 기록, User-Agent 포함) / interactions / reviews / sandbox_runs.
+//     이 넷은 열 목록을 고정하지 않고 모든 열(select=*)을 키 이름순으로 쓴다 → 나중에 열이 늘어도 빠지지 않는다.
 //   규칙(공개 보관 archive 와 같음): 한 번 쓴 파일은 다시 쓰지 않는다. DB 행 수와 다르면 쓰지 않는다.
 //   추가: 정의는 쓰기 전에 행마다 sha256(body) = def_hash 를 다시 확인한다.
 //   주의: lowdown-proxy 는 공개 레포라 Actions 로그도 공개된다. 로그·오류 문구에는 개수·해시만, 원문은 절대 넣지 않는다.
@@ -7,9 +9,10 @@
 import { createHash } from 'node:crypto';
 import { supabaseHeaders, type SupabaseConfig } from './lib.ts';
 
-export type PrivateDataset = 'tool_defs' | 'tool_set_versions' | 'tool_flags';
-export const PRIVATE_DATASETS: readonly PrivateDataset[] = ['tool_defs', 'tool_set_versions', 'tool_flags'];
-export const PRIVATE_FROM = '2026-10-21'; // 0.5.0 첫 저장일
+export type PrivateDataset = 'tool_defs' | 'tool_set_versions' | 'tool_flags' | 'lookups' | 'interactions' | 'reviews' | 'sandbox_runs';
+export const PRIVATE_DATASETS: readonly PrivateDataset[] = ['tool_defs', 'tool_set_versions', 'tool_flags', 'lookups', 'interactions', 'reviews', 'sandbox_runs'];
+export const PRIVATE_FROM = '2026-10-21'; // 0.5.0 첫 저장일 (도구 정의 3종)
+const PROJECT_FROM = '2026-09-26'; // 0.1.0 — 조회·상호작용 기록 시작
 
 export interface DatasetSpec {
   table: string;
@@ -17,9 +20,13 @@ export interface DatasetSpec {
   timeColumn: string;
   /** keyset 정렬 키(유일) */
   key: string;
-  /** 파일에 쓰는 열 — 순서 고정 */
-  columns: readonly string[];
+  /** 파일에 쓰는 열 — 순서 고정. null 이면 모든 열(select=*)을 키 이름순으로 */
+  columns: readonly string[] | null;
   pageSize: number;
+  /** 보관을 시작하는 날(UTC) */
+  from: string;
+  /** 닫힌 날 중 최근 며칠은 건너뛴다 — 실행이 UTC 자정을 넘겨 늦게 기록되는 행을 기다리기 위해 */
+  settleDays?: number;
 }
 
 export const SPECS: Record<PrivateDataset, DatasetSpec> = {
@@ -29,6 +36,7 @@ export const SPECS: Record<PrivateDataset, DatasetSpec> = {
     key: 'def_hash',
     columns: ['def_hash', 'tool_name', 'body', 'tool_schema_hash', 'tool_desc_hash', 'byte_size', 'first_seen_at', 'first_scan_run_id'],
     pageSize: 500,
+    from: PRIVATE_FROM,
   },
   tool_set_versions: {
     table: 'scanner_tool_set_versions',
@@ -36,6 +44,7 @@ export const SPECS: Record<PrivateDataset, DatasetSpec> = {
     key: 'tool_set_hash',
     columns: ['tool_set_hash', 'def_hashes', 'tool_count', 'first_seen_at', 'first_scan_run_id'],
     pageSize: 1000,
+    from: PRIVATE_FROM,
   },
   tool_flags: {
     table: 'scanner_tool_flags',
@@ -43,6 +52,41 @@ export const SPECS: Record<PrivateDataset, DatasetSpec> = {
     key: 'id',
     columns: ['id', 'def_hash', 'rule_id', 'rule_version', 'evidence', 'scan_run_id', 'created_at'],
     pageSize: 1000,
+    from: PRIVATE_FROM,
+  },
+  lookups: {
+    table: 'reputation_lookups',
+    timeColumn: 'created_at',
+    key: 'id',
+    columns: null,
+    pageSize: 1000,
+    from: PROJECT_FROM,
+  },
+  interactions: {
+    table: 'interactions',
+    timeColumn: 'created_at',
+    key: 'id',
+    columns: null,
+    pageSize: 1000,
+    from: PROJECT_FROM,
+  },
+  reviews: {
+    table: 'reviews',
+    timeColumn: 'created_at',
+    key: 'id',
+    columns: null,
+    pageSize: 1000,
+    from: PROJECT_FROM,
+  },
+  sandbox_runs: {
+    table: 'sandbox_runs',
+    timeColumn: 'observed_at',
+    key: 'id',
+    columns: null,
+    pageSize: 500,
+    from: '2026-10-21',
+    // 샌드박스 실행은 06:47 KST(21:47 UTC)에 시작해 최대 4시간 — UTC 자정을 넘긴다
+    settleDays: 1,
   },
 };
 
@@ -51,9 +95,16 @@ export function privatePathFor(dataset: PrivateDataset, day: string): string {
   return `${dataset}/daily/${y}/${m}/${day}.jsonl.gz`;
 }
 
-/** 열 순서를 고정한 JSONL. 같은 행이면 같은 바이트. */
-export function toJsonl(columns: readonly string[], rows: ReadonlyArray<Record<string, unknown>>): string {
-  return rows.map((r) => JSON.stringify(Object.fromEntries(columns.map((c) => [c, r[c] ?? null])))).join('\n') + (rows.length ? '\n' : '');
+/** 열 순서를 고정한 JSONL. 같은 행이면 같은 바이트. columns 가 null 이면 행의 모든 키를 이름순으로. */
+export function toJsonl(columns: readonly string[] | null, rows: ReadonlyArray<Record<string, unknown>>): string {
+  return (
+    rows
+      .map((r) => {
+        const cols = columns ?? Object.keys(r).sort();
+        return JSON.stringify(Object.fromEntries(cols.map((c) => [c, r[c] ?? null])));
+      })
+      .join('\n') + (rows.length ? '\n' : '')
+  );
 }
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -128,7 +179,7 @@ export async function fetchPrivateDay(cfg: SupabaseConfig, spec: DatasetSpec, ra
   const out: Array<Record<string, unknown>> = [];
   let last: string | number | null = null;
   for (;;) {
-    const qs = new URLSearchParams({ select: spec.columns.join(','), order: `${spec.key}.asc`, limit: String(spec.pageSize) });
+    const qs = new URLSearchParams({ select: spec.columns ? spec.columns.join(',') : '*', order: `${spec.key}.asc`, limit: String(spec.pageSize) });
     qs.append(spec.timeColumn, `gte.${range.start}`);
     qs.append(spec.timeColumn, `lt.${range.end}`);
     if (last !== null) qs.append(spec.key, `gt.${last}`);

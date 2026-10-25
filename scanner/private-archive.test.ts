@@ -31,7 +31,7 @@ describe('원문 비공개 보관', () => {
     const back = JSON.parse(gunzipSync(a.data).toString('utf8').trim()) as { body: string; def_hash: string };
     assert.equal(back.body, d.body);
     assert.equal(sha(back.body), back.def_hash);
-    assert.deepEqual(Object.keys(back), [...SPECS.tool_defs.columns]);
+    assert.deepEqual(Object.keys(back), [...(SPECS.tool_defs.columns ?? [])]);
     assert.equal(toJsonl(SPECS.tool_defs.columns, []), '');
   });
 
@@ -71,5 +71,31 @@ describe('원문 비공개 보관', () => {
     assert.equal(u.searchParams.get('order'), 'def_hash.asc');
     const bad = (async () => new Response('{"body":"secret description"}', { status: 500 })) as typeof fetch;
     await assert.rejects(fetchPrivateDay({ url: 'https://db', key: 'k' }, SPECS.tool_defs, { start: 'a', end: 'b' }, bad), (e: Error) => !e.message.includes('secret'));
+  });
+
+  test('DB 가 유일한 사본이던 기록: 모든 열(select=*), 키 이름순, 같은 행은 같은 바이트', async () => {
+    for (const d of ['lookups', 'interactions', 'reviews', 'sandbox_runs'] as const) {
+      assert.equal(SPECS[d].columns, null);
+      assert.match(SPECS[d].from, /^\d{4}-\d{2}-\d{2}$/);
+    }
+    assert.equal(SPECS.lookups.table, 'reputation_lookups');
+    assert.equal(SPECS.sandbox_runs.timeColumn, 'observed_at');
+    assert.equal(SPECS.sandbox_runs.settleDays, 1);
+    const a = toJsonl(null, [{ target: 't', id: 'x', user_agent: null, bot_kind: 'crawler' }]);
+    const b = toJsonl(null, [{ bot_kind: 'crawler', user_agent: null, id: 'x', target: 't' }]);
+    assert.equal(a, b);
+    assert.deepEqual(Object.keys(JSON.parse(a)), ['bot_kind', 'id', 'target', 'user_agent']);
+    const urls: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request) => {
+      urls.push(String(input));
+      return new Response('[]', { status: 200 });
+    }) as typeof fetch;
+    await fetchPrivateDay({ url: 'https://db', key: 'k' }, SPECS.lookups, { start: 's', end: 'e' }, fetchImpl);
+    const u = new URL(urls[0]!);
+    assert.equal(u.searchParams.get('select'), '*');
+    assert.deepEqual(u.searchParams.getAll('created_at'), ['gte.s', 'lt.e']);
+    assert.equal(u.searchParams.get('order'), 'id.asc');
+    const e = { dataset: 'lookups' as const, day: '2026-09-26', path: privatePathFor('lookups', '2026-09-26'), rows: 0, bytes: 20, sha256: 'ab', written_at: 't' };
+    assert.deepEqual(parsePrivateManifest(serializePrivateManifest([e])), [e]);
   });
 });
