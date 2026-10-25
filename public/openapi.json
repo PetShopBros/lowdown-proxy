@@ -923,6 +923,16 @@
                           "type": "string",
                           "format": "uri"
                         },
+                        "record_page": {
+                          "type": "string",
+                          "format": "uri",
+                          "description": "Lowdown's record page for this Registry entry, when one exists (entries whose declared npm or PyPI package is deprecated, yanked, inactive or answers 404). Link this page when citing the facts."
+                        },
+                        "record_json": {
+                          "type": "string",
+                          "format": "uri",
+                          "description": "The same record as JSON (lowdown-server-page/1)."
+                        },
                         "dataset": {
                           "type": "string",
                           "format": "uri"

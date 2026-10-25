@@ -129,6 +129,7 @@ const TOOL_SET_ROWS: Row[] = [{ target_id: 'mcp:io.github.acme/solo', names_hash
 let server: Server;
 let failTables = new Set<string>();
 let baseUrl = '';
+let pageIndexStatus = 200;
 let lookupsInserted: Row[] = [];
 let requests: string[] = [];
 let scannerStatus = 200;
@@ -183,6 +184,20 @@ function query(rows: Row[], params: URLSearchParams): Row[] {
 before(async () => {
   server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '', 'http://x');
+    if (url.pathname === '/pages/servers.json') {
+      // lowdown-pages 의 서버 목록(servers.json) 흉내
+      const b = `${baseUrl}/pages/`;
+      res.writeHead(pageIndexStatus, { 'content-type': 'application/json' }).end(
+        JSON.stringify({
+          schema: 'lowdown-server-index/1',
+          servers: [
+            { name: 'io.github.acme/solo', page: `${b}servers/io.github.acme/solo.html`, json: `${b}servers/io.github.acme/solo.json`, facts: ['declared_package_deprecated'] },
+            { name: 'io.github.acme/evil', page: 'https://evil.example/x.html', json: 'https://evil.example/x.json', facts: [] },
+          ],
+        }),
+      );
+      return;
+    }
     requests.push(`${req.method} ${url.pathname}${url.search}`);
     const table = url.pathname.replace('/rest/v1/', '');
     let body = '';
@@ -237,6 +252,7 @@ before(async () => {
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   process.env.LOWDOWN_SUPABASE_URL = baseUrl;
   process.env.LOWDOWN_SUPABASE_KEY = 'test-key';
+  process.env.LOWDOWN_PAGES_INDEX_URL = `${baseUrl}/pages/servers.json`;
 });
 after(() => {
   server.closeAllConnections();
@@ -409,6 +425,33 @@ describe('조회 로깅 / ref', () => {
     assert.ok(!JSON.stringify(b.body.source).includes('Ignore'));
     const c = await call('mcp:modelcontextprotocol/brave-search', {}, { 'x-lowdown-node-id': 'n1' });
     assert.ok(c.body.source && c.body.task_breakdown);
+  });
+
+  test('서버 기록 페이지: 목록에 있는 Registry 이름만 source.record_page, 목록 실패는 응답에 영향 없음', async () => {
+    const mod = (await import('../api/reputation/[target].ts' as string)) as { resetPageIndexCache: () => void; pageIndexFrom: (b: unknown, base: string) => Map<string, unknown> };
+    mod.resetPageIndexCache();
+    const a = await call('mcp:io.github.acme/solo');
+    assert.equal(a.body.source.record_page, `${baseUrl}/pages/servers/io.github.acme/solo.html`);
+    assert.equal(a.body.source.record_json, `${baseUrl}/pages/servers/io.github.acme/solo.json`);
+    const keys = Object.keys(a.body);
+    assert.equal(keys[keys.length - 1], 'source');
+    // 목록에 없는 이름 → 없음
+    const b = await call('mcp:io.github.acme/weather');
+    assert.equal(b.body.source.record_page, undefined);
+    // 다른 곳을 가리키는 주소는 받지 않는다
+    assert.equal(mod.pageIndexFrom({ servers: [{ name: 'a/b', page: 'https://evil.example/x.html', json: 'https://evil.example/x.json' }] }, 'https://petshopbros.github.io/lowdown-pages/').size, 0);
+    // 목록 읽기 실패 → 페이지 없이 정상 응답
+    mod.resetPageIndexCache();
+    pageIndexStatus = 500;
+    try {
+      const c = await call('mcp:io.github.acme/solo');
+      assert.equal(c.status, 200);
+      assert.equal(c.body.source.record_page, undefined);
+      assert.ok(c.body.registry);
+    } finally {
+      pageIndexStatus = 200;
+      mod.resetPageIndexCache();
+    }
   });
 
   test('result_kind 열이 없는 DB 에서도 조회 기록은 빠지지 않는다', async () => {

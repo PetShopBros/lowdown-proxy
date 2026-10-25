@@ -231,6 +231,7 @@ export function lookupSource(ev: Evidence | null, now: number): Record<string, u
   return {
     name: "Lowdown",
     ...(ev?.name && SAFE_NAME.test(ev.name) ? { lookup: `https://lowdown-proxy.vercel.app/api/reputation/mcp:${ev.name}` } : {}),
+    ...(ev?.name && ev.recordPage ? { record_page: ev.recordPage.page, record_json: ev.recordPage.json } : {}),
     dataset: "https://github.com/PetShopBros/lowdown-data",
     license: "CC BY 4.0",
     license_url: "https://creativecommons.org/licenses/by/4.0/",
@@ -414,6 +415,57 @@ interface Evidence {
   packageFacts?: string[];
   /** npm:/pypi: 입력인데 그 패키지를 선언한 Registry 항목이 없음(형식 검사 통과한 이름) */
   undeclared?: { type: PackageInputType; ident: string };
+  /** 이 Registry 항목의 Lowdown 서버 기록 페이지(lowdown-pages 에 있을 때만) */
+  recordPage?: RecordPage;
+}
+
+// ── 서버 기록 페이지 (lowdown-pages, scanner/pages.ts 가 매일 만든다) ─────────
+// 페이지 목록(servers.json)을 읽어 둔다. 실패하면 페이지 주소 없이 답한다(응답은 막지 않음).
+export interface RecordPage {
+  page: string;
+  json: string;
+}
+const PAGE_INDEX_URL = () => process.env.LOWDOWN_PAGES_INDEX_URL?.trim() || "https://petshopbros.github.io/lowdown-pages/servers.json";
+const PAGE_INDEX_TTL_MS = 6 * 3_600_000;
+const PAGE_INDEX_FAIL_TTL_MS = 10 * 60_000;
+const PAGE_INDEX_TIMEOUT_MS = 1_500;
+let pageIndexCache: { at: number; ttl: number; map: Map<string, RecordPage> } | null = null;
+
+/** servers.json → 이름별 페이지. 목록과 같은 곳(base)의 .html / .json 주소만 받는다. */
+export function pageIndexFrom(body: unknown, base: string): Map<string, RecordPage> {
+  const map = new Map<string, RecordPage>();
+  const servers = (body as { servers?: unknown })?.servers;
+  if (!Array.isArray(servers)) return map;
+  for (const s of servers.slice(0, 100_000)) {
+    const name = (s as any)?.name;
+    const page = (s as any)?.page;
+    const json = (s as any)?.json;
+    if (typeof name !== "string" || !SAFE_NAME.test(name)) continue;
+    if (typeof page !== "string" || !page.startsWith(base) || !page.endsWith(".html") || page.length > 500) continue;
+    if (typeof json !== "string" || !json.startsWith(base) || !json.endsWith(".json") || json.length > 500) continue;
+    map.set(name, { page, json });
+  }
+  return map;
+}
+
+export function resetPageIndexCache(): void {
+  pageIndexCache = null;
+}
+
+async function recordPageFor(name: string, now: number): Promise<RecordPage | null> {
+  if (!pageIndexCache || now - pageIndexCache.at > pageIndexCache.ttl) {
+    const url = PAGE_INDEX_URL();
+    const base = url.replace(/servers\.json$/, "");
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(PAGE_INDEX_TIMEOUT_MS) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      pageIndexCache = { at: now, ttl: PAGE_INDEX_TTL_MS, map: pageIndexFrom(await res.json(), base) };
+    } catch {
+      // 지난 목록이 있으면 그대로 쓰고, 없으면 빈 목록. 잠시 뒤 다시 시도한다.
+      pageIndexCache = { at: now, ttl: PAGE_INDEX_FAIL_TTL_MS, map: pageIndexCache?.map ?? new Map() };
+    }
+  }
+  return pageIndexCache.map.get(name) ?? null;
 }
 
 const safeVersion = (v: unknown) => (typeof v === "string" && SAFE_VERSION.test(v) ? v : null);
@@ -759,7 +811,11 @@ async function buildEvidence(supabase: any, target: string, lookup: ScannerLooku
         .limit(20);
       ev.registry = shapeRegistry(r.row, ch.error ? [] : (ch.data ?? []));
       const declared = declaredPackages(r.row.packages_key);
-      if (declared.length > 0) await attachPackages(supabase, ev, declared, now, false);
+      const [, page] = await Promise.all([
+        declared.length > 0 ? attachPackages(supabase, ev, declared, now, false) : Promise.resolve(),
+        typeof r.name === "string" ? recordPageFor(r.name, now) : Promise.resolve(null),
+      ]);
+      if (page) ev.recordPage = page;
     } else if (r.candidates.length > 1) {
       ev.registryCandidates = r.candidates;
     } else if (r.name === null && !(target.includes(":") && !target.startsWith("mcp:"))) {
