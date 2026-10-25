@@ -27,6 +27,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // 조회 유입 측정용 태그 (예: ?ref=report). 안전한 문자만 허용.
   const refRaw = req.query.ref;
   const ref = typeof refRaw === "string" && /^[A-Za-z0-9._:-]{1,64}$/.test(refRaw) ? refRaw : null;
+  // 부분 일치 패턴: 3자 이상만, LIKE 특수문자(\ % _)는 글자 그대로 찾게 이스케이프
+  const fuzzyPattern = typeof target === "string" && target.length >= 3 ? `%${target.replace(/[\\%_]/g, "\\$&")}%` : null;
 
 
   try {
@@ -37,18 +39,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let error: any = null;
 
     if (taskType) {
-      const { data: rows } = await supabase
+      const { data: rows, error: rowsError } = await supabase
         .from("interactions")
         .select(TASK_COLUMNS)
         .eq("target", target)
         .eq("task_type", taskType);
 
-      if (!rows || rows.length === 0) {
-        // 퍼지 매칭
+      // 퍼지 매칭: 정확 조회가 오류 없이 비었을 때만, 3자 이상만 (DB 가 느릴 때 부하를 더하지 않게)
+      if (!rowsError && (!rows || rows.length === 0) && fuzzyPattern) {
         const { data: fuzzyTargets } = await supabase
           .from("reputation_summary")
           .select("target")
-          .ilike("target", `%${target}%`)
+          .ilike("target", fuzzyPattern)
           .limit(1)
           .maybeSingle();
 
@@ -76,11 +78,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       data = result.data;
       error = result.error;
 
-      if (error || !data) {
+      // 퍼지 매칭: 정확 조회가 오류 없이 비었을 때만, 3자 이상만 (DB 가 느릴 때 부하를 더하지 않게)
+      if (!error && !data && fuzzyPattern) {
         const { data: fuzzy } = await supabase
           .from("reputation_summary")
           .select("*")
-          .ilike("target", `%${target}%`)
+          .ilike("target", fuzzyPattern)
           .order("interactions", { ascending: false })
           .limit(1)
           .maybeSingle();

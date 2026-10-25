@@ -55,8 +55,11 @@ alter table scanner_cohort enable row level security;
 -- - server_version 은 안전한 문자만 허용 (원격 서버가 보낸 문자열이 에이전트에 그대로 전달되지 않도록)
 -- - 원격이 여러 개인 서버는 하나로 합산된다 (latest = 가장 최근에 관찰된 행)
 -- view 는 소유자 권한으로 실행되어 원본 테이블의 RLS 를 거치지 않는다.
+-- 2026-10-26: 계산용 뷰는 scanner_summary_live (비공개). 공개 이름 scanner_summary 는
+--   이 뷰를 매시 미리 계산한 materialized view 다 → 2026-10-26_summary_precompute.sql
+--   (조회 1건마다 30일치 전체를 집계해 DB 가 포화된 2026-10-25 사고 때문)
 -- ─────────────────────────────────────────────
-create or replace view scanner_summary as
+create or replace view scanner_summary_live as
 with recent as (
   select *
   from scanner_observations
@@ -109,7 +112,8 @@ from latest l
 join agg  a using (target_id)
 join dist d using (target_id);
 
-grant select on scanner_summary to anon, authenticated;
+-- 공개하지 않는다: 공개 조회는 materialized view scanner_summary 로 (2026-10-26_summary_precompute.sql)
+revoke all on scanner_summary_live from anon, authenticated;
 
 -- ─────────────────────────────────────────────
 -- 조회 유입 측정: GET /api/reputation/:target?ref=report
