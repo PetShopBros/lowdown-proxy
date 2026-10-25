@@ -1,6 +1,6 @@
 # Lowdown stdio sandbox
 
-Lowdown Scanner probes remote (`streamable-http`) servers. The sandbox covers the other half of the official MCP Registry: servers declared as **npm packages with `stdio` transport**. It installs each package in an isolated container, starts it, and sends `initialize` and `tools/list` only. It never calls a tool.
+Lowdown Scanner probes remote (`streamable-http`) servers. The sandbox covers the other half of the official MCP Registry: servers declared as **npm or PyPI packages with `stdio` transport**. It installs each package in an isolated container, starts it, and sends `initialize` and `tools/list` only. It never calls a tool.
 
 It runs on a separate, disposable server. It does not run on GitHub Actions.
 
@@ -76,7 +76,7 @@ sudo bash /opt/lowdown/lowdown-proxy/sandbox/setup.sh
 
 `setup.sh` prints the remaining steps: key, SQL (`supabase/sandbox.sql`), `--self-test`, `--plan`, a first run of 10, then the daily timer (06:47 KST).
 
-Defaults: 2 targets at a time, up to 400 per day, 4 h budget. npm requests go through a shared cache with `--prefer-offline`. When an install answers ETARGET/ENOVERSIONS, the cached package information may predate the version, so the install is tried once more with `--prefer-online` and `metadata.install_retry` is `prefer_online`. Runs before runner 0.2.2 did not do this.
+Defaults: 2 targets at a time, 4 h budget, up to 1,500 targets per day (the budget is the real limit: targets not reached roll over to the next day, newest first). Check that `/etc/lowdown/sandbox.env` does not still set `SANDBOX_MAX_TARGETS=400`. npm requests go through a shared cache with `--prefer-offline`. When an install answers ETARGET/ENOVERSIONS, the cached package information may predate the version, so the install is tried once more with `--prefer-online` and `metadata.install_retry` is `prefer_online`. Runs before runner 0.2.2 did not do this.
 
 ## Monitoring
 
@@ -103,6 +103,33 @@ GitHub's scheduled runs (`schedule`) can start hours late or be dropped under lo
 
 Install on an existing server: `sudo bash sandbox/dispatch-setup.sh` and follow its steps.
 
+## PyPI (runner 0.3.0)
+
+Same rules, different install step:
+
+- install container: `pip install --target /work/site --only-binary=:all: <package>==<version>`. **Wheels only**: a source distribution would run the package's build code during install, so none is accepted, for the package or its dependencies. Wheel installation unpacks files; no package code runs. The image has no compiler.
+- which versions: the declared version when it is exact (PEP 440 release, optional `aN`/`bN`/`rcN`/`.postN`/`.devN`), and PyPI's current latest (`pypi_latest`) unless that release is yanked or the project is quarantined. Names are matched after PEP 503 normalization.
+- which executable: the package's **own** `[console_scripts]` (from its `dist-info/entry_points.txt`), not scripts installed by its dependencies. One script: that one. Several: the one named like the package. Otherwise `bin_ambiguous`; none: `no_bin`.
+- run container: same as npm (gVisor, no network, read-only `/work`, 64 MB `/tmp`), plus `PYTHONPATH=/work/site`, `PYTHONDONTWRITEBYTECODE=1`, `PYTHONUNBUFFERED=1`.
+- `install_no_matching_dist` (PyPI only): no wheel for this environment (Linux, Python 3.12) or no such version. With wheels only, pip cannot tell those apart.
+- Packages that only work with another Python version, or only ship source, are recorded as such; that is a fact about this environment, not about the package.
+
+If the Python image is not built on a server, PyPI targets are skipped (`note: pypi skipped: image ... not found`) and npm runs as before. `SANDBOX_PYPI=0` turns PyPI off.
+
 ## Publication
 
-Private for a 4-week pilot. Publication rules (API block, daily page section, radar rules) are decided after the pilot.
+Built, switched off. Nothing from the sandbox is public until both of these are done (`supabase/2026-10-26_sandbox_summary.sql`):
+
+1. `grant select on sandbox_summary to anon, authenticated;` (the summary is one row per package version: outcome, reached level, tool count, whether install scripts are declared; no tool names, hashes, arguments or logs)
+2. Vercel environment variable `SANDBOX_PUBLIC=1`
+
+Then `GET /api/reputation/{target}` carries a `sandbox` block for the declared npm packages (declared version and npm latest, at most 2 rows per package) and a `sandbox_note` saying what one start without network or credentials does and does not show. PyPI rows are not published until the pilot data has been looked at.
+
+Switch on only when all of these hold (pilot review, not before):
+
+- at least 4 weeks of runs, and the share of targets covered is stated next to the numbers wherever they are shown (covered / declared stdio packages), so a result is never read as the whole Registry
+- `runner_error` is under 2% of runs in the last 2 weeks, and the same version run twice gives the same outcome in a spot check of 30 targets
+- the wording of every outcome has been read once as "fact under these conditions" (a server that needs a key reports `exited` or `init_error`; that is not a verdict)
+- the daily archive of `sandbox_runs` in `lowdown-private` exists for every closed day since the start
+
+Switch off: `revoke select on sandbox_summary from anon, authenticated;` and remove `SANDBOX_PUBLIC`. Nothing is deleted.

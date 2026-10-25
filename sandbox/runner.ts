@@ -6,25 +6,33 @@
 //   --limit=N                            이번 실행의 대상 수 상한
 // 환경변수(/etc/lowdown/sandbox.env, systemd 가 읽는다):
 //   필수 LOWDOWN_SUPABASE_URL, LOWDOWN_SANDBOX_KEY (없으면 LOWDOWN_SCANNER_KEY)
-//   선택 SANDBOX_IMAGE(lowdown-sandbox-node:1) SANDBOX_RUNTIME(runsc) SANDBOX_ROOT(/var/lib/lowdown)
-//        SANDBOX_CONCURRENCY(2) SANDBOX_MAX_TARGETS(400) SANDBOX_TIME_BUDGET_MIN(240)
+//   선택 SANDBOX_IMAGE(lowdown-sandbox-node:1) SANDBOX_IMAGE_PY(lowdown-sandbox-python:1) SANDBOX_PYPI(0 이면 PyPI 제외)
+//        SANDBOX_RUNTIME(runsc) SANDBOX_ROOT(/var/lib/lowdown)
+//        SANDBOX_CONCURRENCY(2) SANDBOX_MAX_TARGETS(1500 — 실제 상한은 시간 예산) SANDBOX_TIME_BUDGET_MIN(240)
 //        SANDBOX_MIN_FREE_GB(5) SANDBOX_CACHE_MAX_GB(20)
 // 키는 이 프로세스만 쓴다. 컨테이너에는 어떤 환경변수도 넘기지 않는다(HOME=/tmp 만).
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statfsSync, statSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statfsSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { SupabaseConfig } from '../scanner/lib.ts';
+import { normalizePypiName } from '../scanner/pypi-lib.ts';
 import { insertToolDefs, insertToolSetVersions, ToolDefCollector, toolDefRows, toolSetVersionRows } from '../scanner/tool-defs.ts';
 import {
   chooseBin,
+  choosePyScript,
   classifyInstallFailure,
+  classifyPipFailure,
+  findDistInfo,
   hasInstallScripts,
   installArgs,
   nextState,
+  parseConsoleScripts,
   pickLaunch,
+  pipInstallArgs,
   planTargets,
+  PYTHON_RUN,
   runArgs,
   SANDBOX_RUN_MAJOR,
   SANDBOX_RUNNER_VERSION,
@@ -37,6 +45,7 @@ import {
 import {
   fetchLaunchSpecs,
   fetchNpmLite,
+  fetchPypiLite,
   fetchRegistryLite,
   fetchSandboxState,
   insertSandboxRuns,
@@ -65,6 +74,7 @@ const FLUSH_EVERY = 20;
 
 interface Env {
   image: string;
+  imagePy: string;
   runtime: string;
   root: string;
   uid: number;
@@ -79,11 +89,13 @@ function readEnv(): Env {
   const uid = typeof process.getuid === 'function' ? process.getuid() : 10001;
   return {
     image: process.env.SANDBOX_IMAGE?.trim() || 'lowdown-sandbox-node:1',
+    imagePy: process.env.SANDBOX_IMAGE_PY?.trim() || 'lowdown-sandbox-python:1',
     runtime: process.env.SANDBOX_RUNTIME?.trim() || 'runsc',
     root: process.env.SANDBOX_ROOT?.trim() || '/var/lib/lowdown',
     uid,
     concurrency: Math.min(4, intEnv('SANDBOX_CONCURRENCY', 2)),
-    maxTargets: intEnv('SANDBOX_MAX_TARGETS', 400),
+    // 상한은 사실상 시간 예산(4시간)이다 — 못 한 대상은 다음 날로 넘어간다(최근 것부터 정렬)
+    maxTargets: intEnv('SANDBOX_MAX_TARGETS', 1500),
     budgetMs: intEnv('SANDBOX_TIME_BUDGET_MIN', 240) * 60_000,
     minFreeGb: intEnv('SANDBOX_MIN_FREE_GB', 5),
     cacheMaxGb: intEnv('SANDBOX_CACHE_MAX_GB', 20),
@@ -117,15 +129,18 @@ async function preflight(env: Env): Promise<string> {
   const imageId = img.stdout.trim();
   if (img.code !== 0 || !imageId) fail(`이미지 ${env.image} 가 없습니다. setup.sh 로 빌드하세요.`);
   mkdirSync(join(env.root, 'npm-cache'), { recursive: true, mode: 0o700 });
+  mkdirSync(join(env.root, 'pip-cache'), { recursive: true, mode: 0o700 });
   const free = freeGb(env.root);
   if (free < env.minFreeGb) fail(`디스크 여유 ${free.toFixed(1)}GB < ${env.minFreeGb}GB`);
   // npm 캐시가 커지면 비운다(무결성은 npm 이 검사하므로 캐시는 속도·요청 수 절약용일 뿐)
-  const du = await runCmd('du', ['-sb', join(env.root, 'npm-cache')], { timeoutMs: 120_000 });
-  const bytes = Number(du.stdout.split('\t')[0]);
-  if (Number.isFinite(bytes) && bytes > env.cacheMaxGb * 1024 ** 3) {
-    console.log(`npm cache ${(bytes / 1024 ** 3).toFixed(1)}GB > ${env.cacheMaxGb}GB, clearing`);
-    rmSync(join(env.root, 'npm-cache'), { recursive: true, force: true });
-    mkdirSync(join(env.root, 'npm-cache'), { recursive: true, mode: 0o700 });
+  for (const dir of ['npm-cache', 'pip-cache']) {
+    const du = await runCmd('du', ['-sb', join(env.root, dir)], { timeoutMs: 120_000 });
+    const bytes = Number(du.stdout.split('\t')[0]);
+    if (Number.isFinite(bytes) && bytes > env.cacheMaxGb * 1024 ** 3) {
+      console.log(`${dir} ${(bytes / 1024 ** 3).toFixed(1)}GB > ${env.cacheMaxGb}GB, clearing`);
+      rmSync(join(env.root, dir), { recursive: true, force: true });
+      mkdirSync(join(env.root, dir), { recursive: true, mode: 0o700 });
+    }
   }
   return imageId;
 }
@@ -151,7 +166,62 @@ function readPackageJson(work: string, ident: string): unknown {
   }
 }
 
+/** 일반 파일만 읽는다(심볼릭 링크는 따라가지 않는다 — 설치된 패키지가 호스트 파일을 가리키게 둘 수 없다). */
+function readSmallFile(path: string, maxBytes: number): string | null {
+  try {
+    const st = lstatSync(path);
+    if (!st.isFile() || st.size > maxBytes) return null;
+    return readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/** PyPI: wheel 만 설치(패키지 코드 실행 없음) → 자기 console_scripts 로 실행 파일 결정 → 같은 방식으로 initialize + tools/list */
+async function runPypiTarget(env: Env, t: Target, launch: LaunchSpec | null): Promise<TargetResult> {
+  const work = mkdtempSync(join(env.root, 'work', 'p-'));
+  chmodSync(work, 0o700);
+  const name = `lds-${randomUUID().slice(0, 12)}`;
+  const ctx: DockerCtx = { image: env.imagePy, runtime: env.runtime, uid: env.uid, name, workHost: work };
+  try {
+    const inst = await docker(pipInstallArgs({ ...ctx, cacheHost: join(env.root, 'pip-cache') }, t.ident, t.version), INSTALL_TIMEOUT_MS);
+    await docker(['rm', '-f', name]);
+    if (inst.code !== 0) {
+      if (inst.code === 125 && !inst.timedOut) return { install_ms: inst.ms, install_error_code: null, bin_count: null, probe: null, outcome: 'runner_error' };
+      const c = classifyPipFailure(inst.stderr, inst.timedOut);
+      return { install_ms: inst.ms, install_error_code: c.code, bin_count: null, probe: null, outcome: c.outcome };
+    }
+    const site = join(work, 'site');
+    let scripts: string[] = [];
+    try {
+      const dist = findDistInfo(readdirSync(site), t.ident);
+      const text = dist ? readSmallFile(join(site, dist, 'entry_points.txt'), 1 << 20) : null;
+      if (text) scripts = parseConsoleScripts(text);
+    } catch {
+      // 설치 폴더를 읽지 못함 → 실행 파일 없음으로 기록
+    }
+    const pick = choosePyScript(scripts, t.ident);
+    const binPath = pick.bin ? join(site, 'bin', pick.bin) : null;
+    let isFile = false;
+    try {
+      isFile = binPath !== null && lstatSync(binPath).isFile();
+    } catch {
+      isFile = false;
+    }
+    if (pick.outcome !== 'ok' || !pick.bin || !isFile) {
+      return { install_ms: inst.ms, install_error_code: null, bin_count: pick.count, probe: null, outcome: pick.outcome === 'bin_ambiguous' ? 'bin_ambiguous' : 'no_bin' };
+    }
+    const hardLimit = Math.ceil((DEFAULT_PROBE_OPTS.initTimeoutMs + DEFAULT_PROBE_OPTS.listTimeoutMs) / 1000) + 15;
+    const probe = await probeStdio(['docker', ...runArgs({ ...ctx, name: `${name}-r` }, pick.bin, hardLimit, launch?.args ?? [], PYTHON_RUN)]);
+    await docker(['rm', '-f', `${name}-r`]);
+    return { install_ms: inst.ms, install_error_code: null, bin_count: pick.count, probe, outcome: probe.outcome };
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
+
 async function runTarget(env: Env, t: Target, launch: LaunchSpec | null): Promise<TargetResult> {
+  if (t.registry_type === 'pypi') return runPypiTarget(env, t, launch);
   const work = mkdtempSync(join(env.root, 'work', 't-'));
   chmodSync(work, 0o700);
   const name = `lds-${randomUUID().slice(0, 12)}`;
@@ -236,6 +306,17 @@ async function selfTest(env: Env): Promise<void> {
   const egOk = egress.registry === true && egress.metadata === false && egress.host_ssh === false;
   if (!egOk) bad++;
   console.log(`${egOk ? 'PASS' : 'FAIL'} install egress: ${eg.stdout.trim() || eg.stderr.trim().slice(0, 200)} (want registry=true, metadata=false, host_ssh=false)`);
+  // PyPI 이미지: 같은 격리 조건(gVisor, 네트워크 없음, 읽기 전용)에서 파이썬이 돌고 바깥으로 나가지 못해야 한다
+  const pyImg = await docker(['image', 'inspect', '-f', '{{.Id}}', env.imagePy]);
+  if (pyImg.code !== 0) {
+    console.log(`SKIP python image ${env.imagePy} not found (PyPI 대상은 건너뛴다)`);
+  } else {
+    const pyJs = "import socket,json\ntry:\n    s=socket.create_connection(('1.1.1.1',443),timeout=3); s.close(); net=True\nexcept Exception:\n    net=False\nprint(json.dumps({'network':net}))";
+    const py = await docker(['run', '--rm', '--label', 'lowdown.sandbox=1', '--runtime', env.runtime, '--network', 'none', '--user', `${env.uid}:${env.uid}`, '--cap-drop', 'ALL', '--read-only', env.imagePy, 'python', '-c', pyJs], 60_000);
+    const pyOk = py.code === 0 && py.stdout.trim() === '{"network": false}';
+    if (!pyOk) bad++;
+    console.log(`${pyOk ? 'PASS' : 'FAIL'} python image (no network): ${py.stdout.trim() || py.stderr.trim().slice(0, 200)}`);
+  }
   if (bad > 0) fail(`self-test 실패 ${bad}건 — 격리 조건을 확인하기 전에는 실행하지 마세요.`);
   console.log('self-test OK');
 }
@@ -255,13 +336,31 @@ async function main(): Promise<void> {
 
   const started = Date.now();
   const runId = randomUUID();
-  const [registry, npm, state, launches] = await Promise.all([fetchRegistryLite(cfg), fetchNpmLite(cfg), fetchSandboxState(cfg), fetchLaunchSpecs()]);
-  const { targets, stats } = planTargets(registry, npm, state, { limit });
+  // PyPI 이미지가 아직 없는 서버(코드만 먼저 받은 경우)에서는 npm 만 돈다 — 매일 도는 npm 실행이 멈추지 않게
+  let pyImageId: string | null = null;
+  let pyNote: string | null = null;
+  if (process.env.SANDBOX_PYPI?.trim() === '0') pyNote = 'pypi off (SANDBOX_PYPI=0)';
+  else if (!planOnly) {
+    const img = await docker(['image', 'inspect', '-f', '{{.Id}}', env.imagePy]);
+    pyImageId = img.code === 0 ? img.stdout.trim() || null : null;
+    if (!pyImageId) pyNote = `pypi skipped: image ${env.imagePy} not found`;
+  }
+  const pyEnabled = pyNote === null;
+  if (pyNote) console.log(pyNote);
+  const [registry, npm, state, launches, pypiState] = await Promise.all([
+    fetchRegistryLite(cfg),
+    fetchNpmLite(cfg),
+    fetchSandboxState(cfg),
+    fetchLaunchSpecs(),
+    pyEnabled ? fetchPypiLite(cfg) : Promise.resolve(undefined),
+  ]);
+  const { targets, stats } = planTargets(registry, npm, state, { limit, ...(pypiState ? { pypiState } : {}) });
   console.log(`plan: ${JSON.stringify(stats)}`);
-  console.log(`registry launch specs: ${launches.specs.size} npm stdio packages (${launches.entries} entries, ${launches.pages} pages)`);
+  console.log(`registry launch specs: ${launches.specs.size} npm + ${launches.pypiSpecs.size} pypi stdio packages (${launches.entries} entries, ${launches.pages} pages)`);
+  const launchOf = (t: Target) => pickLaunch(t.registry_type === 'pypi' ? launches.pypiSpecs.get(normalizePypiName(t.ident)) : launches.specs.get(t.ident), t.version);
   if (planOnly) {
     for (const t of targets.slice(0, 20)) {
-      const l = pickLaunch(launches.specs.get(t.ident), t.version);
+      const l = launchOf(t);
       console.log(`  ${t.key} [${t.sources.join(',')}] args=${JSON.stringify(l?.args ?? null)} env_required=${l?.env_required ?? '-'}`);
     }
     return;
@@ -324,7 +423,7 @@ async function main(): Promise<void> {
         stopping = true;
         return;
       }
-      const launch = pickLaunch(launches.specs.get(t.ident), t.version);
+      const launch = launchOf(t);
       let res: TargetResult;
       try {
         res = await runTarget(env, t, launch);
@@ -336,13 +435,13 @@ async function main(): Promise<void> {
       runs.push({
         run_id: runId,
         observed_at: now,
-        registry_type: 'npm',
+        registry_type: t.registry_type,
         ident: t.ident,
         version: t.version,
         sources: t.sources,
         runner_version: SANDBOX_RUNNER_VERSION,
         run_major: SANDBOX_RUN_MAJOR,
-        image_id: imageId,
+        image_id: t.registry_type === 'pypi' ? (pyImageId ?? imageId) : imageId,
         runtime: env.runtime,
         install_ms: res.install_ms,
         install_error_code: res.install_error_code,
@@ -375,6 +474,7 @@ async function main(): Promise<void> {
 
   if (!batch.note && Date.now() > deadline && batch.attempted < targets.length) batch.note = 'stopped: time budget';
   if (!batch.note && stopping) batch.note = 'stopped: signal';
+  if (pyNote) batch.note = batch.note ? `${batch.note}; ${pyNote}` : pyNote;
   batch.finished_at = new Date().toISOString();
   await upsertSandboxBatch(cfg, batch);
   console.log(`done: attempted ${batch.attempted}/${targets.length}, outcomes ${JSON.stringify(batch.outcomes)}, sec ${Math.round((Date.now() - started) / 1000)}${batch.note ? `, ${batch.note}` : ''}`);

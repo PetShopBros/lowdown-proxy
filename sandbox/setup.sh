@@ -11,6 +11,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SANDBOX_UID=10001
 SANDBOX_ROOT=/var/lib/lowdown
 IMAGE=lowdown-sandbox-node:1
+IMAGE_PY=lowdown-sandbox-python:1
 
 log() { printf '\n== %s\n' "$*"; }
 [ "$(id -u)" -eq 0 ] || { echo "root 로 실행하세요: sudo bash $0"; exit 1; }
@@ -67,7 +68,7 @@ if ! id lowdown >/dev/null 2>&1; then
   useradd --system --uid "$SANDBOX_UID" --home-dir "$SANDBOX_ROOT" --shell /usr/sbin/nologin lowdown
 fi
 usermod -aG docker lowdown
-install -d -o lowdown -g lowdown -m 700 "$SANDBOX_ROOT" "$SANDBOX_ROOT/work" "$SANDBOX_ROOT/npm-cache"
+install -d -o lowdown -g lowdown -m 700 "$SANDBOX_ROOT" "$SANDBOX_ROOT/work" "$SANDBOX_ROOT/npm-cache" "$SANDBOX_ROOT/pip-cache"
 install -d -o root -g root -m 755 /etc/lowdown
 if [ ! -f /etc/lowdown/sandbox.env ]; then
   install -o root -g root -m 600 "$REPO_DIR/sandbox/sandbox.env.example" /etc/lowdown/sandbox.env
@@ -81,6 +82,9 @@ install -o root -g root -m 755 "$REPO_DIR/sandbox/egress.sh" /usr/local/sbin/low
 log "7/9 build image $IMAGE"
 docker build -q -t "$IMAGE" "$REPO_DIR/sandbox"
 docker run --rm --runtime=runsc --network none --user "$SANDBOX_UID:$SANDBOX_UID" "$IMAGE" node -e 'console.log("runsc ok", process.version)'
+# PyPI 이미지 (소스 배포 빌드를 하지 않으므로 컴파일러 없음)
+docker build -q -t "$IMAGE_PY" -f "$REPO_DIR/sandbox/Dockerfile.python" "$REPO_DIR/sandbox"
+docker run --rm --runtime=runsc --network none --user "$SANDBOX_UID:$SANDBOX_UID" "$IMAGE_PY" python -c 'import sys; print("runsc ok", sys.version.split()[0])'
 
 log "8/9 systemd units"
 sed "s#@REPO_DIR@#$REPO_DIR#g" "$REPO_DIR/sandbox/systemd/lowdown-sandbox.service" > /etc/systemd/system/lowdown-sandbox.service

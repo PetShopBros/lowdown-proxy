@@ -4,7 +4,14 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   chooseBin,
+  choosePyScript,
   classifyInstallFailure,
+  classifyPipFailure,
+  findDistInfo,
+  parseConsoleScripts,
+  pipInstallArgs,
+  PYTHON_RUN,
+  PYPI_EXACT_VERSION,
   hasInstallScripts,
   installArgs,
   launchArgsOf,
@@ -257,5 +264,119 @@ describe('설치 스크립트 선언', () => {
     assert.equal(hasInstallScripts({ scripts: { build: 'tsc', prepare: 'x' } }), false);
     assert.equal(hasInstallScripts({ scripts: { postinstall: '  ' } }), false);
     assert.equal(hasInstallScripts(null), false);
+  });
+});
+
+describe('PyPI 대상 계획', () => {
+  const registry = [
+    { name: 'io.github.a/py', packages_key: 'pypi My_Server 1.0.0 stdio', updated_at: '2026-10-20T00:00:00Z' },
+    { name: 'io.github.b/range', packages_key: 'pypi ranged >=1.0 stdio', updated_at: '2026-10-21T00:00:00Z' },
+    { name: 'io.github.c/gone', packages_key: 'pypi gone 1.0.0 stdio', updated_at: '2026-10-21T00:00:00Z' },
+    { name: 'io.github.d/http', packages_key: 'pypi remote 1.0.0 streamable-http', updated_at: '2026-10-21T00:00:00Z' },
+    { name: 'io.github.e/quar', packages_key: 'pypi quar 1.0.0 stdio', updated_at: '2026-10-21T00:00:00Z' },
+    { name: 'io.github.f/bad', packages_key: 'pypi -bad 1.0.0 stdio', updated_at: '2026-10-21T00:00:00Z' },
+    { name: 'io.github.g/npm', packages_key: 'npm two 2.0.0 stdio', updated_at: '2026-10-22T00:00:00Z' },
+  ];
+  const pypi = [
+    { ident: 'my-server', status: 'found', latest: '1.2.0', latest_yanked: false, uploaded: '2026-10-24T00:00:00Z', project_status: 'active' },
+    { ident: 'ranged', status: 'found', latest: '3.1.0rc1', latest_yanked: false, uploaded: '2026-10-23T00:00:00Z', project_status: 'active' },
+    { ident: 'gone', status: 'not_found', latest: null, latest_yanked: null, uploaded: null, project_status: null },
+    { ident: 'quar', status: 'found', latest: '1.1.0', latest_yanked: false, uploaded: '2026-10-22T00:00:00Z', project_status: 'quarantined' },
+  ];
+
+  test('pypiState 를 넘기지 않으면 npm 만 (이전 동작 그대로)', () => {
+    const { targets } = planTargets(registry, [{ ident: 'two', status: 'found', latest: '2.0.0', modified: null }], [], { limit: 100 });
+    assert.deepEqual(targets.map((t) => t.key), ['npm:two@2.0.0']);
+  });
+
+  test('선언 버전 + PyPI 최신(이름은 PEP 503 정규화로 맞춘다), 범위·not_found·quarantined 최신·형식 오류는 제외', () => {
+    const { targets, stats } = planTargets(registry, [], [], { limit: 100, pypiState: pypi });
+    assert.deepEqual(
+      targets.filter((t) => t.registry_type === 'pypi').map((t) => [t.key, t.registry_type, t.sources.join(',')]),
+      [
+        ['pypi:My_Server@1.2.0', 'pypi', 'pypi_latest'],
+        ['pypi:ranged@3.1.0rc1', 'pypi', 'pypi_latest'],
+        ['pypi:quar@1.0.0', 'pypi', 'declared'],
+        ['pypi:My_Server@1.0.0', 'pypi', 'declared'],
+      ],
+    );
+    assert.equal(stats.pypi_not_found, 1);
+    assert.equal(stats.inexact_version, 1);
+    assert.equal(stats.invalid, 1);
+    assert.equal(stats.pypi_candidates, 4);
+  });
+
+  test('yank 된 최신은 대상이 아니다', () => {
+    const { targets } = planTargets(registry, [], [], { limit: 100, pypiState: [{ ...pypi[0]!, latest_yanked: true }] });
+    assert.ok(!targets.some((t) => t.sources.includes('pypi_latest') && t.ident === 'My_Server'));
+  });
+
+  test('정확한 PyPI 버전 형식', () => {
+    for (const v of ['1', '1.0', '1.2.3', '1.2.3rc1', '1.0.post2', '2.0.0a1', '1.0.dev3']) assert.ok(PYPI_EXACT_VERSION.test(v), v);
+    for (const v of ['>=1.0', '1.*', '1!2.0', '1.0+local', '', 'latest', '1.0 ']) assert.equal(PYPI_EXACT_VERSION.test(v), false, v);
+  });
+
+  test('끝난 PyPI 대상은 빼고 npm 대상과 키가 겹치지 않는다', () => {
+    const done = [{ target_key: 'pypi:My_Server@1.2.0', done: true, attempts: 1, run_major: 2, last_outcome: 'ok' }];
+    const { targets } = planTargets(registry, [], done, { limit: 100, pypiState: pypi });
+    assert.ok(!targets.some((t) => t.key === 'pypi:My_Server@1.2.0'));
+    assert.equal(targetKey('x', '1.0.0'), 'npm:x@1.0.0');
+    assert.equal(targetKey('x', '1.0.0', 'pypi'), 'pypi:x@1.0.0');
+  });
+});
+
+describe('pip 설치 실패 분류', () => {
+  test('코드별', () => {
+    assert.deepEqual(classifyPipFailure('ERROR: No matching distribution found for foo==1.0', false), { outcome: 'install_no_matching_dist', code: 'no_matching_distribution' });
+    assert.deepEqual(classifyPipFailure('ERROR: Could not find a version that satisfies the requirement foo==9 (from versions: none)', false).outcome, 'install_no_matching_dist');
+    assert.equal(classifyPipFailure('WARNING: Retrying ... Max retries exceeded with url', false).outcome, 'install_network');
+    assert.equal(classifyPipFailure('ERROR: ResolutionImpossible', false).code, 'resolution_impossible');
+    assert.equal(classifyPipFailure('ERROR: Package requires a different Python: 3.12 not in >=3.13', false).code, 'requires_python');
+    assert.deepEqual(classifyPipFailure('something odd', false), { outcome: 'install_failed', code: null });
+    assert.equal(classifyPipFailure('', true).outcome, 'install_timeout');
+  });
+});
+
+describe('PyPI 실행 파일 결정', () => {
+  test('entry_points.txt 의 console_scripts 만, gui_scripts·다른 섹션·이상한 이름 제외', () => {
+    const txt = '[console_scripts]\nmy-server = my_server:main\nhelper=my_server.cli:run\n../evil = x:y\n# c\n\n[gui_scripts]\nwin = x:y\n[mcp.servers]\nfoo = bar:baz\n';
+    assert.deepEqual(parseConsoleScripts(txt), ['my-server', 'helper']);
+    assert.deepEqual(parseConsoleScripts(''), []);
+  });
+
+  test('dist-info 이름은 PEP 503 정규화로 비교', () => {
+    const dirs = ['click-8.1.0.dist-info', 'My_Server-1.2.0.dist-info', 'my_server', 'bin'];
+    assert.equal(findDistInfo(dirs, 'my-server'), 'My_Server-1.2.0.dist-info');
+    assert.equal(findDistInfo(dirs, 'My.Server'), 'My_Server-1.2.0.dist-info');
+    assert.equal(findDistInfo(dirs, 'other'), null);
+  });
+
+  test('하나면 그것, 여럿이면 패키지 이름과 같은 것, 모호·없음', () => {
+    assert.deepEqual(choosePyScript(['anything'], 'pkg'), { bin: 'anything', outcome: 'ok', count: 1 });
+    assert.equal(choosePyScript(['a', 'my-server'], 'My_Server').bin, 'my-server');
+    assert.equal(choosePyScript(['a', 'b'], 'pkg').outcome, 'bin_ambiguous');
+    assert.equal(choosePyScript([], 'pkg').outcome, 'no_bin');
+  });
+});
+
+describe('PyPI docker 인자', () => {
+  const ctx = { image: 'py', runtime: 'runsc', uid: 10001, name: 'n', workHost: '/w', cacheHost: '/c' };
+  test('설치: wheel 만, 소스 배포 거부, 네트워크 bridge, 권한 없음, 패키지는 ==버전 하나의 인자', () => {
+    const a = pipInstallArgs(ctx, 'my-server', '1.2.0');
+    assert.ok(a.includes('--only-binary=:all:'));
+    assert.ok(a.includes('--cap-drop') && a.includes('ALL'));
+    assert.equal(a[a.indexOf('--network') + 1], 'bridge');
+    assert.equal(a[a.indexOf('--runtime') + 1], 'runsc');
+    assert.equal(a.at(-1), 'my-server==1.2.0');
+    assert.ok(!a.includes('--no-binary'));
+  });
+  test('실행: 네트워크 없음, 작업 폴더 읽기 전용, 환경변수는 HOME 과 파이썬 경로뿐', () => {
+    const a = runArgs(ctx, 'my-server', 60, ['--stdio'], PYTHON_RUN);
+    assert.equal(a[a.indexOf('--network') + 1], 'none');
+    assert.ok(a.includes('/w:/work:ro'));
+    const envs = a.flatMap((x, i) => (a[i - 1] === '-e' ? [x] : []));
+    assert.deepEqual(envs, ['HOME=/tmp', 'PYTHONPATH=/work/site', 'PYTHONDONTWRITEBYTECODE=1', 'PYTHONUNBUFFERED=1']);
+    assert.equal(a.at(-2), '/work/site/bin/my-server');
+    assert.equal(a.at(-1), '--stdio');
   });
 });

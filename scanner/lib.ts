@@ -909,7 +909,8 @@ export interface ObservationRow extends ProbeResult {
   target_id: string;
   target_type: 'mcp_server';
   observed_at: string;
-  source: 'scanner';
+  /** 'scanner' = 고정 코호트, 'scanner_requested' = 조회된 대상(고정 코호트와 섞지 않는다) */
+  source: 'scanner' | 'scanner_requested';
 }
 
 /** 새 형식(sb_...) 키는 apikey 헤더만, 레거시 JWT(service_role)는 apikey + Authorization. */
@@ -1452,6 +1453,7 @@ export async function fetchFallbackJobs(
       new URLSearchParams({
         select: 'id,target_id,transport,observed_at,metadata',
         scan_run_id: `eq.${runId}`,
+        source: 'eq.scanner', // 조회된 대상(scanner_requested)은 대체 목록에 넣지 않는다
         id: `gt.${lastId}`,
         order: 'id.asc',
         limit: String(pageSize),

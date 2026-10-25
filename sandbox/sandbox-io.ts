@@ -7,12 +7,13 @@ import { spawn } from 'node:child_process';
 import { DEFAULT_REGISTRY_URL, supabaseHeaders, USER_AGENT, type SupabaseConfig } from '../scanner/lib.ts';
 import { getKeyset } from '../scanner/npm-lib.ts';
 import { postBatches, type DiffIoDeps } from '../scanner/registry-diff.ts';
-import { launchArgsOf, type LaunchSpec, type NpmStateLite, type RegistryRowLite, type SandboxStateRow } from './sandbox-lib.ts';
+import { normalizePypiName } from '../scanner/pypi-lib.ts';
+import { launchArgsOf, type LaunchSpec, type NpmStateLite, type PypiStateLite, type RegistryRowLite, type RegistryType, type SandboxStateRow } from './sandbox-lib.ts';
 
 export interface SandboxRunRow {
   run_id: string;
   observed_at: string;
-  registry_type: 'npm';
+  registry_type: RegistryType;
   ident: string;
   version: string;
   sources: string[];
@@ -62,6 +63,10 @@ export async function fetchRegistryLite(cfg: SupabaseConfig, deps: DiffIoDeps = 
 
 export function fetchNpmLite(cfg: SupabaseConfig, deps: DiffIoDeps = {}): Promise<NpmStateLite[]> {
   return getKeyset<NpmStateLite & Record<string, unknown>>(cfg, 'npm_package_state', 'ident,status,latest,modified', 'ident', [], deps);
+}
+
+export function fetchPypiLite(cfg: SupabaseConfig, deps: DiffIoDeps = {}): Promise<PypiStateLite[]> {
+  return getKeyset<PypiStateLite & Record<string, unknown>>(cfg, 'pypi_package_state', 'ident,status,latest,latest_yanked,uploaded,project_status', 'ident', [], deps);
 }
 
 const STATE_COLUMNS = 'target_key,registry_type,ident,version,attempts,done,last_outcome,first_run_at,last_run_at,run_major';
@@ -142,12 +147,13 @@ export function runCmd(file: string, args: readonly string[], opts: { timeoutMs:
 
 export async function fetchLaunchSpecs(
   deps: { baseUrl?: string; fetchImpl?: typeof fetch; sleep?: (ms: number) => Promise<void>; maxPages?: number } = {},
-): Promise<{ specs: Map<string, LaunchSpec[]>; pages: number; entries: number }> {
+): Promise<{ specs: Map<string, LaunchSpec[]>; pypiSpecs: Map<string, LaunchSpec[]>; pages: number; entries: number }> {
   const base = (deps.baseUrl ?? DEFAULT_REGISTRY_URL).replace(/\/+$/, '');
   const f = deps.fetchImpl ?? fetch;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const maxPages = deps.maxPages ?? 2000;
   const specs = new Map<string, LaunchSpec[]>();
+  const pypiSpecs = new Map<string, LaunchSpec[]>(); // 키: PEP 503 정규화 이름
   let cursor: string | undefined;
   let pages = 0;
   let entries = 0;
@@ -182,15 +188,17 @@ export async function fetchLaunchSpecs(
         if (!raw || typeof raw !== 'object') continue;
         const p = raw as Record<string, unknown>;
         const t = p.transport as { type?: unknown } | undefined;
-        if (p.registryType !== 'npm' || t?.type !== 'stdio' || typeof p.identifier !== 'string') continue;
-        const list = specs.get(p.identifier) ?? [];
+        if ((p.registryType !== 'npm' && p.registryType !== 'pypi') || t?.type !== 'stdio' || typeof p.identifier !== 'string') continue;
+        const target = p.registryType === 'npm' ? specs : pypiSpecs;
+        const key = p.registryType === 'npm' ? p.identifier : normalizePypiName(p.identifier);
+        const list = target.get(key) ?? [];
         list.push({ registry_name: s.name, declared_version: typeof p.version === 'string' ? p.version : '', ...launchArgsOf(p) });
-        specs.set(p.identifier, list);
+        target.set(key, list);
       }
     }
     const next = page.metadata?.nextCursor;
     if (typeof next !== 'string' || next.length === 0 || next === cursor) break;
     cursor = next;
   }
-  return { specs, pages, entries };
+  return { specs, pypiSpecs, pages, entries };
 }

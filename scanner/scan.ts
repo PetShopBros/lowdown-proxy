@@ -17,6 +17,8 @@
 //       SKIP_IF_DONE=1 — 예비 실행용. 오늘(UTC) 관찰이 코호트 절반 이상 있으면 아무것도 하지 않고 끝낸다
 //       REGISTRY_BUDGET_SEC(기본 480) — Registry 목록 받기 시간 상한. 넘기거나 실패하면 직전 관찰 실행의 원격 주소로 같은 코호트를 관찰
 //         (행에 metadata.registry_fallback=true, registry_snapshot_run, registry_snapshot_at 기록)
+//       REQUESTED_DAILY_CAP(기본 1000) / REQUESTED_TOTAL_CAP(기본 3000) — 조회된 대상 관찰. 누군가 조회했지만 관찰된 적 없는 Registry 서버를 매일 함께 관찰한다.
+//         고정 코호트와 섞지 않는다(목록 scanner_requested, 행 source='scanner_requested'). 0 이면 끈다. limit·fallback 날은 건너뜀
 //       RETRY_FAILED=0 — 직후 재시도 끄기(기본 켜짐). RETRY_DELAY_SEC(기본 60), RETRY_BUDGET_SEC(기본 720)
 // 직후 재시도: 메인 probe 후 일시적일 수 있는 실패(timeout/연결 실패/408/429/5xx)만 호스트당 1건씩 다시 시도해
 //         같은 행의 metadata.retry 에 덧붙인다. 첫 시도 값은 바꾸지 않는다. 시간 예산을 넘긴 행은 retry 없이 남긴다.
@@ -55,6 +57,7 @@ import {
   selectCohort,
   utcDayStart,
 } from './lib.ts';
+import { DEFAULT_REQUESTED_DAILY_CAP, DEFAULT_REQUESTED_TOTAL_CAP, fetchRecentLookups, fetchRequestedIds, LOOKUP_WINDOW_DAYS, pickRequested, REQUESTED_SOURCE, REQUESTED_VERSION, saveRequested } from './requested-lib.ts';
 import { diffRegistry, fetchRegistryState, insertRegistryChanges, upsertRegistryState } from './registry-diff.ts';
 import { aggregateObserved, computeFirstSeen, fetchFirstSeen, insertToolSets, isPublishable, toolSetRows, upsertFirstSeen } from './first-seen.ts';
 import { insertToolDefs, insertToolFlags, insertToolSetVersions, oversizeFlags, ToolDefCollector, toolDefRows, toolSetVersionRows } from './tool-defs.ts';
@@ -306,6 +309,39 @@ async function main(): Promise<void> {
   }
 
   if (limit) jobs = jobs.slice(0, limit);
+
+  // 조회된 대상(requested): 고정 코호트 뒤에 붙인다. 실패해도 고정 코호트 관찰에는 영향 없음.
+  const requestedNames = new Set<string>();
+  let requestedStats: Record<string, string | number> = {};
+  {
+    const dailyCap = envSeconds('REQUESTED_DAILY_CAP', DEFAULT_REQUESTED_DAILY_CAP);
+    const totalCap = envSeconds('REQUESTED_TOTAL_CAP', DEFAULT_REQUESTED_TOTAL_CAP);
+    if (dailyCap === 0 || totalCap === 0) requestedStats = { requested: 'off' };
+    else if (limit) requestedStats = { requested: 'skipped (limit)' };
+    else if (!registry) requestedStats = { requested: 'skipped (registry fallback)' };
+    else if (!cohortReadCfg) requestedStats = { requested: 'skipped (no db config)' };
+    else {
+      try {
+        const existing = await fetchRequestedIds(cohortReadCfg);
+        const fixed = new Set(cohortIds);
+        const probeable = new Set(registry.targets.map((t) => t.name));
+        const since = new Date(Date.now() - LOOKUP_WINDOW_DAYS * 86_400_000).toISOString();
+        const lookups = await fetchRecentLookups(cohortReadCfg, since);
+        const pick = pickRequested(lookups, { probeable, exclude: new Set([...fixed, ...existing]), dailyCap, remaining: Math.max(0, totalCap - existing.length) });
+        let saved = 'dry-run (not written)';
+        if (supabase) saved = `sent ${await saveRequested(supabase, pick.picks)}`;
+        const ids = [...new Set([...existing, ...pick.picks.map((p) => p.target_id)])].filter((id) => !fixed.has(id)).slice(0, totalCap);
+        const reqJobs = planCohortJobs(registry.targets, ids, registry.registryInfo).jobs;
+        for (const j of reqJobs) requestedNames.add(j.name);
+        jobs = [...jobs, ...reqJobs];
+        requestedStats = { requested_existing: existing.length, requested_lookups: lookups.length, requested_eligible: pick.eligible, requested_new: pick.picks.length, requested_deferred: pick.deferred, requested_jobs: reqJobs.length, requested_saved: saved };
+      } catch (e) {
+        console.error(`requested 실패(고정 코호트 관찰은 계속): ${e instanceof Error ? e.message : 'unknown'}`);
+        requestedStats = { requested: 'error' };
+      }
+    }
+    console.log('requested', JSON.stringify(requestedStats));
+  }
   const hostTop = topHosts(jobs.map((j) => j.remote.url));
   console.log(`probing ${jobs.length} remotes (concurrency=${concurrency}) top_hosts=${JSON.stringify(hostTop)}`);
   // base 멤버는 [base, version], 추가분은 [version]. 행의 cohort_version 은 이번 실행의 코호트(version)
@@ -315,7 +351,8 @@ async function main(): Promise<void> {
   // 3) 호스트당 동시 1건, 호스트 간 최대 concurrency 건(호스트를 번갈아 선택) → 80행마다 즉시 저장 (중간 실패해도 앞선 데이터 보존)
   //    한 호스트에 대상이 몰려도 그 호스트로는 한 번에 1건만 보낸다. 상대 서버 부하·속도 제한 때문에 결과가 흔들리는 것을 줄인다.
   const CHUNK = 80;
-  const all: ObservationRow[] = [];
+  const all: ObservationRow[] = []; // 고정 코호트 행만 — 요약·first-seen 은 이것만 본다
+  const requestedRows: ObservationRow[] = []; // 조회된 대상 행 (source='scanner_requested')
   let pending: ObservationRow[] = [];
   let inserted = 0;
   // 저장 실패 한 번이 스캔 전체를 버리지 않게: 실패한 배치는 보관 → 막힌 동안 60초에 한 번만 시도 → 스캔 뒤 길게 대기하며 재시도
@@ -335,8 +372,10 @@ async function main(): Promise<void> {
   const toolNamesByRow = new WeakMap<ObservationRow, string[]>();
   // (0.5.0) 도구 정의 원문도 관찰 행에 넣지 않는다. 정의·집합 단위로 중복 없이 메모리에 모았다가 비공개 테이블로 저장
   const toolDefs = new ToolDefCollector();
+  const reqMeta = { cohort_version: REQUESTED_VERSION, cohort_versions: [REQUESTED_VERSION], observation_basis: 'requested' };
   const probeOne = async (job: CohortJob): Promise<ObservationRow> => {
     const observedAt = new Date().toISOString();
+    const isReq = requestedNames.has(job.name);
     try {
       const { tool_names: toolNames, tool_defs: defs, ...p } = await probeRemote(job.remote, { registryVersion: job.version, index: job.index });
       const row: ObservationRow = {
@@ -345,9 +384,9 @@ async function main(): Promise<void> {
         target_id: `mcp:${job.name}`,
         target_type: 'mcp_server',
         observed_at: observedAt,
-        source: 'scanner',
+        source: isReq ? REQUESTED_SOURCE : 'scanner',
         ...p,
-        metadata: { ...p.metadata, ...runMeta, ...(cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {}) },
+        metadata: { ...p.metadata, ...runMeta, ...(isReq ? reqMeta : cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {}) },
       };
       if (toolNames) toolNamesByRow.set(row, toolNames);
       toolDefs.add(p.metadata.tool_set_hash, defs);
@@ -360,13 +399,13 @@ async function main(): Promise<void> {
         target_id: `mcp:${job.name}`,
         target_type: 'mcp_server',
         observed_at: observedAt,
-        source: 'scanner',
+        source: isReq ? REQUESTED_SOURCE : 'scanner',
         transport: job.remote.type,
         http_status: null,
         reached_level: 0,
         latency_ms: null,
         error_type: 'network_error',
-        metadata: { remote_url: job.remote.url, remote_index: job.index, registry_version: job.version, scanner_version: SCANNER_VERSION, internal_error: true, ...runMeta, ...(cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {}) },
+        metadata: { remote_url: job.remote.url, remote_index: job.index, registry_version: job.version, scanner_version: SCANNER_VERSION, internal_error: true, ...runMeta, ...(isReq ? reqMeta : cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {}) },
       };
     }
   };
@@ -383,7 +422,7 @@ async function main(): Promise<void> {
     },
     {
       onResult: async (_job, row) => {
-        all.push(row);
+        (row.source === REQUESTED_SOURCE ? requestedRows : all).push(row);
         pending.push(row);
         if (pending.length >= CHUNK) await flush();
       },
@@ -411,7 +450,7 @@ async function main(): Promise<void> {
   const tRetry = Date.now();
   let retryStats: Record<string, number | string> = {};
   try {
-    retryStats = await retryFailed(all, { supabase, concurrency });
+    retryStats = await retryFailed([...all, ...requestedRows], { supabase, concurrency });
   } catch (e) {
     console.error(`retry 단계 실패(관찰 데이터는 저장 완료): ${e instanceof Error ? e.message : 'unknown'}`);
     retryStats = { retry: 'error' };
@@ -546,6 +585,8 @@ async function main(): Promise<void> {
     ...diffStats,
     ...firstSeenStats,
     ...toolDefStats,
+    ...requestedStats,
+    requested_rows: requestedRows.length,
   });
   console.log(summary);
   if (dryRun) {

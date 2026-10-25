@@ -316,7 +316,7 @@ interface ScannerLookup {
 
 const SCANNER_UNOBSERVED = {
   observed: false,
-   note: "No Lowdown Scanner observation exists for this target. The Scanner observes a fixed sample of MCP Registry entries daily (5,000 from 2026-10-19, 2,000 before); absence of data says nothing about the target's status.",
+   note: "No Lowdown Scanner observation exists for this target. The Scanner observes a fixed sample of MCP Registry entries daily (5,000 from 2026-10-19, 2,000 before), and since 2026-10-27 also begins observing entries that someone looked up here, from the next daily run (separate from the fixed sample). Absence of data says nothing about the target's status.",
 };
 
 function scannerFields(lookup: ScannerLookup | null): Record<string, unknown> {
@@ -403,7 +403,7 @@ const REGISTRY_RECORDS_SINCE = "2026-10-19";
 const METHOD = {
   requests: "POST initialize, then tools/list. No tool calls and no authentication.",
   vantage: "One network location (GitHub Actions). A timeout or refusal means not reachable from there, not necessarily from everywhere.",
-  frequency: "Once per day, for a fixed sample of MCP Registry entries with a streamable-http remote.",
+  frequency: "Once per day, for a fixed sample of MCP Registry entries with a streamable-http remote, plus entries looked up through this API (observation_basis: on_request, observed from the day after the lookup).",
   limits: "Each row is a single probe at one moment. It is not a measure of availability or uptime, and not a score.",
   dataset: "https://github.com/PetShopBros/lowdown-data",
 };
@@ -416,6 +416,8 @@ interface Evidence {
   scannerSince?: string | null;
   packages?: Array<Record<string, unknown>>;
   packageFacts?: string[];
+  /** stdio 샌드박스 결과 (SANDBOX_PUBLIC=1 일 때만) */
+  sandbox?: Array<Record<string, unknown>>;
   /** npm:/pypi: 입력인데 그 패키지를 선언한 Registry 항목이 없음(형식 검사 통과한 이름) */
   undeclared?: { type: PackageInputType; ident: string };
   /** 이 Registry 항목의 Lowdown 서버 기록 페이지(lowdown-pages 에 있을 때만) */
@@ -758,6 +760,8 @@ async function scannerHistory(supabase: any, targetId: string, registryRow: any 
     since: firstObservedAt,
     extra: {
       in_sample: cohorts === null ? null : cohorts.length > 0,
+      // 고정 코호트(fixed_cohort)는 매일 같은 대상을 본 표본. on_request 는 누군가 조회한 뒤부터 관찰하기 시작한 대상이라 표본이 아니다 — 추세를 표본 통계와 합쳐 읽지 말 것
+      observation_basis: cohorts === null ? null : cohorts.length > 0 ? "fixed_cohort" : rows.length > 0 ? "on_request" : null,
       ...(cohorts ? { cohorts } : {}),
       first_observed_at: firstObservedAt,
       definition_changes: definitionChanges(rows),
@@ -814,8 +818,9 @@ async function buildEvidence(supabase: any, target: string, lookup: ScannerLooku
         .limit(20);
       ev.registry = shapeRegistry(r.row, ch.error ? [] : (ch.data ?? []));
       const declared = declaredPackages(r.row.packages_key);
-      const [, page] = await Promise.all([
+      const [, , page] = await Promise.all([
         declared.length > 0 ? attachPackages(supabase, ev, declared, now, false) : Promise.resolve(),
+        declared.length > 0 ? attachSandbox(supabase, ev, declared) : Promise.resolve(),
         typeof r.name === "string" ? recordPageFor(r.name, now) : Promise.resolve(null),
       ]);
       if (page) ev.recordPage = page;
@@ -850,6 +855,10 @@ function evidenceFields(ev: Evidence | null, lookup: ScannerLookup | null): Reco
   if (ev?.packages && ev.packages.length > 0) {
     out.packages = ev.packages;
     out.packages_note = packagesNote(ev.packages);
+  }
+  if (ev?.sandbox && ev.sandbox.length > 0) {
+    out.sandbox = ev.sandbox;
+    out.sandbox_note = SANDBOX_NOTE;
   }
   const scanner = scannerFields(lookup);
   if (scanner.scanner && ev?.scannerExtra && lookup?.summary) {
@@ -1195,6 +1204,61 @@ async function attachPackages(supabase: any, ev: Evidence, declared: DeclaredPac
   } catch {
     // npm 상태 조회 실패 → 선언 목록만(상태 없이)
     ev.packages = declared.map((d) => ({ registry: d.type, name: d.identifier, ...(fromNpmInput ? {} : { declared_version: d.version }) }));
+  }
+}
+
+// ── stdio 샌드박스 (runner: sandbox/, 요약: sandbox_summary) ─────────────────
+// 기본 꺼짐: SANDBOX_PUBLIC=1 이고 DB 에서 sandbox_summary 읽기가 열려 있을 때만 응답에 붙는다(supabase/2026-10-26_sandbox_summary.sql).
+// 값은 허용 목록으로 걸러 낸다. 도구 이름·정의·표준오류·인자는 요약에 없다.
+export const SANDBOX_OUTCOMES = new Set([
+  "ok", "install_not_found", "install_version_not_found", "install_failed", "install_timeout", "install_network",
+  "no_bin", "bin_ambiguous", "exited", "init_timeout", "init_error", "init_invalid",
+  "list_timeout", "list_error", "list_invalid", "exited_after_init", "output_limit", "runner_error",
+]);
+const SANDBOX_NOTE =
+  "One start of the declared stdio package in an isolated container with no network, no credentials and no environment variables; only initialize and tools/list were sent, no tool was called. `outcome` and `reached_level` (0 = no initialize answer, 1 = initialize, 2 = tools/list) say how far it answered under those conditions. A server that needs configuration or network at startup records that, so this is not a judgment of the package. `install_scripts` true means the package declares install scripts, which were not run.";
+
+/** 선언 패키지 × sandbox_summary 행 → 응답 블록. 선언 버전과 같거나 npm 최신으로 돌린 행만, 패키지당 최근 2개. */
+export function shapeSandbox(declared: DeclaredPackage[], rows: ReadonlyArray<Record<string, any>>): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  const byIdent = new Map<string, DeclaredPackage[]>();
+  for (const d of declared) if (d.type === "npm" && d.identifier) byIdent.set(d.identifier, [...(byIdent.get(d.identifier) ?? []), d]);
+  for (const [ident, decls] of byIdent) {
+    const mine = rows
+      .filter((r) => r.ident === ident && typeof r.version === "string" && SAFE_VERSION_OUT.test(r.version) && SANDBOX_OUTCOMES.has(r.outcome) && [0, 1, 2].includes(r.reached_level))
+      .filter((r) => decls.some((d) => d.version === r.version) || (Array.isArray(r.sources) && r.sources.includes("npm_latest")))
+      .sort((a, b) => (String(a.observed_at) < String(b.observed_at) ? 1 : -1))
+      .slice(0, 2);
+    for (const r of mine) {
+      out.push({
+        registry: "npm",
+        name: ident,
+        version: r.version,
+        tested_as: (Array.isArray(r.sources) ? r.sources : []).filter((x: unknown) => x === "declared" || x === "npm_latest"),
+        outcome: r.outcome,
+        reached_level: r.reached_level,
+        tool_count: Number.isInteger(r.tool_count) ? r.tool_count : null,
+        install_scripts: r.install_scripts === true,
+        observed_at: r.observed_at,
+        runner_version: typeof r.runner_version === "string" && SAFE_VERSION_OUT.test(r.runner_version) ? r.runner_version : null,
+      });
+    }
+  }
+  return out;
+}
+const SAFE_VERSION_OUT = /^[0-9A-Za-z.+-]{1,80}$/;
+
+async function attachSandbox(supabase: any, ev: Evidence, declared: DeclaredPackage[]): Promise<void> {
+  if (process.env.SANDBOX_PUBLIC !== "1") return;
+  const idents = [...new Set(declared.filter((d) => d.type === "npm" && d.identifier).map((d) => d.identifier as string))];
+  if (idents.length === 0) return;
+  try {
+    const r = await supabase.from("sandbox_summary").select("ident,version,sources,outcome,reached_level,tool_count,install_scripts,runner_version,observed_at").eq("registry_type", "npm").in("ident", idents).order("observed_at", { ascending: false }).limit(60);
+    if (r.error) return;
+    const shaped = shapeSandbox(declared, r.data ?? []);
+    if (shaped.length > 0) ev.sandbox = shaped;
+  } catch {
+    // 샌드박스 요약 조회 실패 → 블록 없이 계속
   }
 }
 

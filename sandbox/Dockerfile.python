@@ -1,0 +1,11 @@
+# Lowdown stdio 샌드박스 실행 이미지 (PyPI) — 설치(pip install --only-binary=:all:)와 실행에 같이 쓴다.
+# 비밀값·키는 넣지 않는다. 사용자는 docker run --user 로 정한다(root 로 돌리지 않는다).
+# 소스 배포(sdist)는 받지 않는다: 빌드 단계에서 패키지 코드가 돌 수 있기 때문이다. 그래서 컴파일러·빌드 도구도 넣지 않는다.
+FROM python:3.12-slim-bookworm
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+LABEL org.opencontainers.image.source="https://github.com/PetShopBros/lowdown-proxy" \
+      org.opencontainers.image.description="Lowdown stdio sandbox (PyPI): pip install --only-binary, then initialize + tools/list only"

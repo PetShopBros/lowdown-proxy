@@ -41,6 +41,7 @@ export async function fetchReportRows(cfg: SupabaseConfig, sinceIso: string, dep
     const qs = new URLSearchParams();
     qs.set('select', REPORT_COLUMNS);
     qs.set('observed_at', `gte.${sinceIso}`);
+    qs.set('source', 'eq.scanner'); // 고정 코호트만. 조회된 대상(scanner_requested)은 섞지 않는다
     qs.set('id', `gt.${lastId}`);
     qs.set('order', 'id.asc');
     qs.set('limit', String(pageSize));
@@ -64,7 +65,7 @@ export async function fetchReportRows(cfg: SupabaseConfig, sinceIso: string, dep
 export async function fetchFirstObservedAt(cfg: SupabaseConfig, deps: ReportFetchDeps = {}): Promise<string | null> {
   const f = deps.fetchImpl ?? fetch;
   const base = cfg.url.replace(/\/+$/, '');
-  const qs = new URLSearchParams({ select: 'observed_at', order: 'observed_at.asc', limit: '1' });
+  const qs = new URLSearchParams({ select: 'observed_at', source: 'eq.scanner', order: 'observed_at.asc', limit: '1' });
   const res = await f(`${base}/rest/v1/scanner_observations?${qs.toString()}`, {
     headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }),
     signal: AbortSignal.timeout(30_000),

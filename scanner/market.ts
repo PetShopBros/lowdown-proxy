@@ -160,7 +160,7 @@ async function main(): Promise<void> {
 
   // 2) 사실 종류별 입력
   // 그날 Registry 목록을 받지 못했으면(fallback) 비교를 건너뛴 날이다 — 0 을 "변경 없음"으로 싣지 않는다
-  const fbQs = new URLSearchParams({ select: 'registry_fallback:metadata->>registry_fallback', scan_run_id: `eq.${latest.id}`, limit: '1' });
+  const fbQs = new URLSearchParams({ select: 'registry_fallback:metadata->>registry_fallback', scan_run_id: `eq.${latest.id}`, source: 'eq.scanner', limit: '1' });
   const fbRes = await fetch(`${cfg.url.replace(/\/+$/, '')}/rest/v1/scanner_observations?${fbQs.toString()}`, {
     headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }),
     signal: AbortSignal.timeout(30_000),
@@ -173,8 +173,8 @@ async function main(): Promise<void> {
   let toolDefinitions = null;
   if (previous) {
     const sel = 'id,target_id,reached_level,remote_url:metadata->>remote_url,desc_hash:metadata->>desc_hash,schema_hash:metadata->>schema_hash';
-    const cur = await getAll<DefRowInput>(cfg, 'scanner_observations', { select: sel, scan_run_id: `eq.${latest.id}` }, true);
-    const prev = await getAll<DefRowInput>(cfg, 'scanner_observations', { select: sel, scan_run_id: `eq.${previous.run.id}` }, true);
+    const cur = await getAll<DefRowInput>(cfg, 'scanner_observations', { select: sel, scan_run_id: `eq.${latest.id}`, source: 'eq.scanner' }, true);
+    const prev = await getAll<DefRowInput>(cfg, 'scanner_observations', { select: sel, scan_run_id: `eq.${previous.run.id}`, source: 'eq.scanner' }, true);
     toolDefinitions = toolDefinitionSection(cur, prev, previous.run.end);
   }
 

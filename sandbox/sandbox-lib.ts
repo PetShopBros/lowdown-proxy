@@ -4,23 +4,31 @@
 //       점수·판정 없음. 패키지가 보낸 문자열은 신뢰하지 않는다(이름·버전은 형식 검사 통과분만, 원문은 비공개 테이블만).
 
 import { isNpmName } from '../scanner/npm-lib.ts';
+import { isPypiName, normalizePypiName } from '../scanner/pypi-lib.ts';
 
 // 기록의 의미가 바뀌는 수정(판정·저장 필드·실행 조건)마다 올린다. 주 버전이 바뀌면 끝난 대상도 다시 돈다.
 //   0.1.0 — 2026-10-24 최초(인자 없이 실행) / 0.2.0 — Registry 선언 실행 인자(packageArguments)를 붙여 실행
 //   0.2.1 — metadata.install_scripts 기록(실행 조건은 같음 → 주 버전 그대로)
 //   0.2.2 — 설치가 ETARGET/ENOVERSIONS 이면 --prefer-online 으로 한 번 더 시도(캐시의 오래된 패키지 정보로 생긴 오판 방지)
-export const SANDBOX_RUNNER_VERSION = '0.2.2';
+//   0.3.0 — PyPI 패키지 추가(wheel 만 설치: 설치 중 패키지 코드 실행 없음). npm 대상의 실행 조건은 그대로라 run_major 는 유지
+export const SANDBOX_RUNNER_VERSION = '0.3.0';
 export const SANDBOX_RUN_MAJOR = 2;
 
 /** 정확한 버전 문자열만(범위·태그 제외). npm 이 받는 semver 형식의 부분집합. */
 export const EXACT_VERSION = /^\d{1,9}\.\d{1,9}\.\d{1,9}(?:-[0-9A-Za-z.-]{1,64})?(?:\+[0-9A-Za-z.-]{1,64})?$/;
 
-export type TargetSource = 'declared' | 'npm_latest';
+export type RegistryType = 'npm' | 'pypi';
+
+/** 'npm_latest' 는 이름 그대로 두고(이미 기록된 행과 같은 값), PyPI 의 최신은 'pypi_latest' */
+export type TargetSource = 'declared' | 'npm_latest' | 'pypi_latest';
+
+/** PEP 440 의 부분집합: 릴리스 번호 + 선택적 a/b/rc, post, dev. epoch·local 버전·범위는 정확한 버전이 아니다. */
+export const PYPI_EXACT_VERSION = /^\d{1,9}(?:\.\d{1,9}){0,4}(?:(?:a|b|rc)\d{1,9})?(?:\.post\d{1,9})?(?:\.dev\d{1,9})?$/;
 
 export interface Target {
   /** "npm:<ident>@<version>" — 상태 테이블 기본 키 */
   key: string;
-  registry_type: 'npm';
+  registry_type: RegistryType;
   ident: string;
   version: string;
   sources: TargetSource[];
@@ -34,6 +42,15 @@ export interface RegistryRowLite {
   updated_at: string | null;
 }
 
+export interface PypiStateLite {
+  ident: string;
+  status: string;
+  latest: string | null;
+  latest_yanked: boolean | null;
+  uploaded: string | null;
+  project_status: string | null;
+}
+
 export interface NpmStateLite {
   ident: string;
   status: string;
@@ -43,7 +60,7 @@ export interface NpmStateLite {
 
 export interface SandboxStateRow {
   target_key: string;
-  registry_type: 'npm';
+  registry_type: RegistryType;
   ident: string;
   version: string;
   attempts: number;
@@ -54,7 +71,7 @@ export interface SandboxStateRow {
   run_major: number;
 }
 
-export const targetKey = (ident: string, version: string) => `npm:${ident}@${version}`;
+export const targetKey = (ident: string, version: string, type: RegistryType = 'npm') => `${type}:${ident}@${version}`;
 
 export interface PlanStats {
   declared_lines: number;
@@ -62,6 +79,8 @@ export interface PlanStats {
   invalid: number;
   inexact_version: number;
   npm_not_found: number;
+  pypi_not_found: number;
+  pypi_candidates: number;
   candidates: number;
   already_done: number;
   gave_up: number;
@@ -69,26 +88,29 @@ export interface PlanStats {
 }
 
 /**
- * 대상 = Registry 가 stdio 로 선언한 npm 패키지의
+ * 대상 = Registry 가 stdio 로 선언한 패키지(npm, 그리고 opts.pypiState 가 주어지면 PyPI)의
  *   (1) 선언 버전(정확한 버전일 때) — Registry 가 주장하는 것
- *   (2) npm 최신 버전 — 버전 없이 `npx -y <pkg>` 로 띄우면 받게 되는 것
+ *   (2) 레지스트리의 최신 버전 — 버전 없이 `npx -y <pkg>` / `uvx <pkg>` 로 띄우면 받게 되는 것
  * 같으면 하나로 합친다. 끝난 대상(done, 같은 run_major)은 뺀다. 최근에 바뀐 것부터.
+ * PyPI 는 pypiState 를 넘길 때만 계획에 넣는다(넘기지 않으면 npm 만 — 이전 동작 그대로).
  */
 export function planTargets(
   registry: readonly RegistryRowLite[],
   npmState: readonly NpmStateLite[],
   state: readonly Pick<SandboxStateRow, 'target_key' | 'done' | 'attempts' | 'run_major' | 'last_outcome'>[],
-  opts: { limit: number; runMajor?: number },
+  opts: { limit: number; runMajor?: number; pypiState?: readonly PypiStateLite[] },
 ): { targets: Target[]; stats: PlanStats } {
   const runMajor = opts.runMajor ?? SANDBOX_RUN_MAJOR;
-  const stats: PlanStats = { declared_lines: 0, non_stdio: 0, invalid: 0, inexact_version: 0, npm_not_found: 0, candidates: 0, already_done: 0, gave_up: 0, planned: 0 };
+  const includePypi = opts.pypiState !== undefined;
+  const stats: PlanStats = { declared_lines: 0, non_stdio: 0, invalid: 0, inexact_version: 0, npm_not_found: 0, pypi_not_found: 0, pypi_candidates: 0, candidates: 0, already_done: 0, gave_up: 0, planned: 0 };
   const npm = new Map(npmState.map((r) => [r.ident, r]));
+  const pypi = new Map((opts.pypiState ?? []).map((r) => [normalizePypiName(r.ident), r]));
   const byKey = new Map<string, Target>();
-  const add = (ident: string, version: string, source: TargetSource, at: string) => {
-    const key = targetKey(ident, version);
+  const add = (type: RegistryType, ident: string, version: string, source: TargetSource, at: string) => {
+    const key = targetKey(ident, version, type);
     const t = byKey.get(key);
     if (!t) {
-      byKey.set(key, { key, registry_type: 'npm', ident, version, sources: [source], fresh_at: at });
+      byKey.set(key, { key, registry_type: type, ident, version, sources: [source], fresh_at: at });
       return;
     }
     if (!t.sources.includes(source)) t.sources.push(source);
@@ -96,35 +118,57 @@ export function planTargets(
     if (at > t.fresh_at) t.fresh_at = at;
   };
 
-  const seenIdents = new Set<string>();
+  const seenNpm = new Set<string>();
+  const seenPypi = new Set<string>();
   for (const row of registry) {
     for (const line of (row.packages_key ?? '').split('\n')) {
       const [type, ident, version, transport] = line.trim().split(' ');
-      if (type !== 'npm') continue;
+      if (type !== 'npm' && !(type === 'pypi' && includePypi)) continue;
       stats.declared_lines++;
       if (transport !== 'stdio') {
         stats.non_stdio++;
         continue;
       }
-      if (!ident || !isNpmName(ident)) {
-        stats.invalid++;
-        continue;
-      }
-      const n = npm.get(ident);
-      if (n && n.status === 'not_found') {
-        stats.npm_not_found++;
-        continue;
-      }
       const at = row.updated_at ?? '';
-      if (version && EXACT_VERSION.test(version)) add(ident, version, 'declared', at);
-      else stats.inexact_version++;
-      if (!seenIdents.has(ident) && n && n.status === 'found' && n.latest && EXACT_VERSION.test(n.latest)) {
-        add(ident, n.latest, 'npm_latest', n.modified ?? at);
+      if (type === 'npm') {
+        if (!ident || !isNpmName(ident)) {
+          stats.invalid++;
+          continue;
+        }
+        const n = npm.get(ident);
+        if (n && n.status === 'not_found') {
+          stats.npm_not_found++;
+          continue;
+        }
+        if (version && EXACT_VERSION.test(version)) add('npm', ident, version, 'declared', at);
+        else stats.inexact_version++;
+        if (!seenNpm.has(ident) && n && n.status === 'found' && n.latest && EXACT_VERSION.test(n.latest)) {
+          add('npm', ident, n.latest, 'npm_latest', n.modified ?? at);
+        }
+        seenNpm.add(ident);
+      } else {
+        if (!ident || !isPypiName(ident)) {
+          stats.invalid++;
+          continue;
+        }
+        const norm = normalizePypiName(ident);
+        const p = pypi.get(norm);
+        if (p && p.status === 'not_found') {
+          stats.pypi_not_found++;
+          continue;
+        }
+        if (version && PYPI_EXACT_VERSION.test(version)) add('pypi', ident, version, 'declared', at);
+        else stats.inexact_version++;
+        // 최신: 찾았고, 그 버전이 yank 되지 않았고, 프로젝트가 quarantined 가 아닐 때(quarantined 는 설치가 막힌다)
+        if (!seenPypi.has(norm) && p && p.status === 'found' && p.latest && PYPI_EXACT_VERSION.test(p.latest) && p.latest_yanked !== true && p.project_status !== 'quarantined') {
+          add('pypi', ident, p.latest, 'pypi_latest', p.uploaded ?? at);
+        }
+        seenPypi.add(norm);
       }
-      seenIdents.add(ident);
     }
   }
   stats.candidates = byKey.size;
+  stats.pypi_candidates = [...byKey.values()].filter((t) => t.registry_type === 'pypi').length;
 
   const st = new Map(state.map((s) => [s.target_key, s]));
   const todo: Target[] = [];
@@ -154,6 +198,7 @@ export const OUTCOMES = [
   'install_failed', // 그 밖의 npm 설치 실패(오류 코드는 install_error_code)
   'install_timeout',
   'install_network', // 네트워크·레지스트리 일시 오류 → 다시 시도
+  'install_no_matching_dist', // (PyPI) wheel 만 설치하는데 이 버전·이 환경에 맞는 wheel 이 없음(또는 그 버전이 없음)
   'no_bin', // 패키지에 실행 파일(bin) 선언이 없음
   'bin_ambiguous', // bin 이 여러 개이고 패키지 이름과 같은 것이 없음(npx 도 고르지 못함)
   'exited', // initialize 응답 전에 프로세스가 끝남
@@ -181,7 +226,7 @@ export function nextState(prev: SandboxStateRow | undefined, t: Target, outcome:
   const attempts = (sameMajor ? prev.attempts : 0) + 1;
   return {
     target_key: t.key,
-    registry_type: 'npm',
+    registry_type: t.registry_type,
     ident: t.ident,
     version: t.version,
     attempts,
@@ -204,6 +249,65 @@ export function classifyInstallFailure(stderr: string, timedOut: boolean): { out
   if (code && network.has(code)) return { outcome: 'install_network', code };
   if (!code && /(ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up)/.test(stderr)) return { outcome: 'install_network', code: null };
   return { outcome: 'install_failed', code };
+}
+
+/**
+ * pip 설치 실패 → 결과 분류 + 고정 키워드 코드. stderr 원문은 저장하지 않는다.
+ * --only-binary=:all: 로 설치하므로 "No matching distribution" 은 (a) 이 환경에 맞는 wheel 이 없음 (b) 그 버전이 없음 을 구분하지 못한다 → 한 분류.
+ */
+export function classifyPipFailure(stderr: string, timedOut: boolean): { outcome: Outcome; code: string | null } {
+  if (timedOut) return { outcome: 'install_timeout', code: null };
+  if (/No matching distribution found|Could not find a version that satisfies the requirement/i.test(stderr)) return { outcome: 'install_no_matching_dist', code: 'no_matching_distribution' };
+  if (/ConnectionError|Connection (?:reset|aborted|refused)|Temporary failure in name resolution|Name or service not known|ReadTimeoutError|Max retries exceeded|SSLError|HTTP error 5\d\d|HTTP error 429/i.test(stderr)) return { outcome: 'install_network', code: 'network' };
+  if (/ResolutionImpossible|conflicting dependencies/i.test(stderr)) return { outcome: 'install_failed', code: 'resolution_impossible' };
+  if (/requires a different Python|Requires-Python/i.test(stderr)) return { outcome: 'install_failed', code: 'requires_python' };
+  return { outcome: 'install_failed', code: null };
+}
+
+// ─────────────────────────────────────────────
+// PyPI: 설치된 패키지의 실행 파일 결정 (uvx 와 같은 규칙: 패키지 이름과 같은 이름의 실행 파일)
+//   패키지 자신의 dist-info/entry_points.txt 의 [console_scripts] 만 본다 — 의존성이 설치한 실행 파일(uvicorn 등)은 대상이 아니다.
+// ─────────────────────────────────────────────
+
+/** entry_points.txt 의 [console_scripts] 이름들. 형식이 아닌 이름은 버린다. */
+export function parseConsoleScripts(text: string): string[] {
+  const names: string[] = [];
+  let inSection = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.startsWith('[')) {
+      inSection = line === '[console_scripts]';
+      continue;
+    }
+    if (!inSection || line === '' || line.startsWith('#') || line.startsWith(';')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const name = line.slice(0, eq).trim();
+    if (BIN_NAME.test(name) && !name.includes('/') && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
+/** site-packages 의 디렉터리 이름들 → 이 패키지의 dist-info 이름(PEP 503 정규화로 비교). 없으면 null. */
+export function findDistInfo(dirNames: readonly string[], ident: string): string | null {
+  const want = normalizePypiName(ident);
+  for (const d of dirNames) {
+    if (!d.endsWith('.dist-info')) continue;
+    const stem = d.slice(0, -'.dist-info'.length);
+    const i = stem.lastIndexOf('-');
+    if (i <= 0) continue;
+    if (normalizePypiName(stem.slice(0, i)) === want) return d;
+  }
+  return null;
+}
+
+/** console_scripts → 실행할 이름. 하나면 그것, 여럿이면 패키지 이름과 같은 것(정규화 비교), 없으면 모호. */
+export function choosePyScript(scripts: readonly string[], ident: string): { bin: string | null; outcome: 'ok' | 'no_bin' | 'bin_ambiguous'; count: number } {
+  if (scripts.length === 0) return { bin: null, outcome: 'no_bin', count: 0 };
+  if (scripts.length === 1) return { bin: scripts[0]!, outcome: 'ok', count: 1 };
+  const want = normalizePypiName(ident);
+  const exact = scripts.find((n) => n === ident) ?? scripts.find((n) => normalizePypiName(n) === want);
+  return exact ? { bin: exact, outcome: 'ok', count: scripts.length } : { bin: null, outcome: 'bin_ambiguous', count: scripts.length };
 }
 
 // ─────────────────────────────────────────────
@@ -294,7 +398,7 @@ export function installArgs(c: DockerCtx & { cacheHost: string }, ident: string,
 }
 
 /** 실행: 네트워크 없음, 작업 폴더 읽기 전용, 환경변수·인자 없음. 컨테이너 안에서도 timeout 으로 스스로 끝난다. */
-export function runArgs(c: DockerCtx, bin: string, hardLimitSec: number, pkgArgs: readonly string[] = []): string[] {
+export function runArgs(c: DockerCtx, bin: string, hardLimitSec: number, pkgArgs: readonly string[] = [], lang: RunLang = NODE_RUN): string[] {
   return [
     'run', '-i',
     ...COMMON_ISOLATION(c),
@@ -305,10 +409,46 @@ export function runArgs(c: DockerCtx, bin: string, hardLimitSec: number, pkgArgs
     '--tmpfs', '/tmp:rw,size=64m',
     '-v', `${c.workHost}:/work:ro`,
     '-w', '/tmp',
+    ...lang.env.flatMap((e) => ['-e', e]),
     c.image,
     'timeout', '-s', 'KILL', String(hardLimitSec),
-    `/work/node_modules/.bin/${bin}`,
+    `${lang.binDir}/${bin}`,
     ...pkgArgs,
+  ];
+}
+
+/** 언어별 실행 조건: 실행 파일 위치와 환경변수(경로 설정뿐, 키·토큰·사용자 값은 없다) */
+export interface RunLang {
+  binDir: string;
+  env: readonly string[];
+}
+export const NODE_RUN: RunLang = { binDir: '/work/node_modules/.bin', env: [] };
+/** PyPI: pip --target /work/site 로 설치한 곳을 PYTHONPATH 로 건다. 파일시스템이 읽기 전용이라 .pyc 를 쓰지 않는다. */
+export const PYTHON_RUN: RunLang = { binDir: '/work/site/bin', env: ['PYTHONPATH=/work/site', 'PYTHONDONTWRITEBYTECODE=1', 'PYTHONUNBUFFERED=1'] };
+
+/**
+ * PyPI 설치: 네트워크 있음(PyPI), wheel 만(--only-binary=:all: — 소스 배포를 받으면 빌드 단계에서 패키지 코드가 돌 수 있어 받지 않는다).
+ * wheel 설치는 파일을 푸는 일뿐이라 패키지 코드가 실행되지 않는다. 의존성도 같은 규칙이다.
+ */
+export function pipInstallArgs(c: DockerCtx & { cacheHost: string }, ident: string, version: string): string[] {
+  return [
+    'run',
+    ...COMMON_ISOLATION(c),
+    '--network', 'bridge',
+    '--pids-limit', '256',
+    '--memory', '1g', '--memory-swap', '1g',
+    '--cpus', '1',
+    '--tmpfs', '/tmp:rw,size=256m',
+    '-v', `${c.workHost}:/work`,
+    '-v', `${c.cacheHost}:/cache`,
+    '-e', 'PIP_CACHE_DIR=/cache',
+    '-e', 'PIP_DISABLE_PIP_VERSION_CHECK=1',
+    '-e', 'PIP_NO_INPUT=1',
+    '-e', 'PIP_ROOT_USER_ACTION=ignore',
+    '-e', 'PYTHONDONTWRITEBYTECODE=1',
+    c.image,
+    'python', '-m', 'pip', 'install', '--target', '/work/site', '--only-binary=:all:', '--no-compile', '--progress-bar', 'off', '--quiet', '--no-warn-script-location',
+    `${ident}==${version}`,
   ];
 }
 
