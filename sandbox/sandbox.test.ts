@@ -330,6 +330,7 @@ describe('pip 설치 실패 분류', () => {
     assert.deepEqual(classifyPipFailure('ERROR: No matching distribution found for foo==1.0', false), { outcome: 'install_no_matching_dist', code: 'no_matching_distribution' });
     assert.deepEqual(classifyPipFailure('ERROR: Could not find a version that satisfies the requirement foo==9 (from versions: none)', false).outcome, 'install_no_matching_dist');
     assert.equal(classifyPipFailure('WARNING: Retrying ... Max retries exceeded with url', false).outcome, 'install_network');
+    assert.deepEqual(classifyPipFailure('ERROR: Could not install packages due to an OSError: [Errno 28] No space left on device', false), { outcome: 'install_failed', code: 'no_space' });
     assert.equal(classifyPipFailure('ERROR: ResolutionImpossible', false).code, 'resolution_impossible');
     assert.equal(classifyPipFailure('ERROR: Package requires a different Python: 3.12 not in >=3.13', false).code, 'requires_python');
     assert.deepEqual(classifyPipFailure('something odd', false), { outcome: 'install_failed', code: null });

@@ -259,6 +259,8 @@ export function classifyPipFailure(stderr: string, timedOut: boolean): { outcome
   if (timedOut) return { outcome: 'install_timeout', code: null };
   if (/No matching distribution found|Could not find a version that satisfies the requirement/i.test(stderr)) return { outcome: 'install_no_matching_dist', code: 'no_matching_distribution' };
   if (/ConnectionError|Connection (?:reset|aborted|refused)|Temporary failure in name resolution|Name or service not known|ReadTimeoutError|Max retries exceeded|SSLError|HTTP error 5\d\d|HTTP error 429/i.test(stderr)) return { outcome: 'install_network', code: 'network' };
+  // 설치 중 임시 공간(256 MB)이나 작업 공간이 모자람: 의존성이 큰 패키지. 패키지의 결함이 아니라 이 샌드박스의 자원 한도라는 사실만 남긴다.
+  if (/No space left on device|Errno 28/i.test(stderr)) return { outcome: 'install_failed', code: 'no_space' };
   if (/ResolutionImpossible|conflicting dependencies/i.test(stderr)) return { outcome: 'install_failed', code: 'resolution_impossible' };
   if (/requires a different Python|Requires-Python/i.test(stderr)) return { outcome: 'install_failed', code: 'requires_python' };
   return { outcome: 'install_failed', code: null };
