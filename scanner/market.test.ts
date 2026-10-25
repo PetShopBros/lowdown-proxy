@@ -9,13 +9,16 @@ import {
   daySummaryText,
   FEED_DAYS,
   firstObservedSection,
+  declaredKey,
+  packageSide,
+  PACKAGE_HTML_MAX_LINES,
   parseDay,
   registrySection,
   renderSite,
   serializeDay,
   toolDefinitionSection,
 } from './market-lib.ts';
-import type { MarketDay, ObservationSummary } from './market-lib.ts';
+import type { MarketDay, ObservationSummary, PackagesSection } from './market-lib.ts';
 
 const SITE = { baseUrl: 'https://example.github.io/lowdown-data/', apiBase: 'https://api.example' };
 const OBS: ObservationSummary = { cohort_version: 'v2', cohort_size: 5000, targets_observed: 4977, probe_attempts: 5010, reached_level: { '0': 1900, '1': 20, '2': 3090 } };
@@ -258,5 +261,82 @@ describe('시장판 — Registry 를 비교하지 못한 날', () => {
     assert.equal(applyCorrection(day('2026-10-22')).corrections, undefined);
     const html = renderSite([fixed], SITE).get(`days/${c.day}.html`)!;
     assert.match(html, /Correction \(2026-10-24\):/);
+  });
+});
+
+describe('시장판 — 선언 패키지 섹션', () => {
+  const declaredBy = new Map<string, string[]>([
+    [declaredKey('npm', 'old-pkg'), ['io.github.a/one']],
+    [declaredKey('npm', 'gone-pkg'), ['io.github.b/two', 'io.github.c/three']],
+    [declaredKey('npm', 'busy-pkg'), ['io.github.d/four']],
+    [declaredKey('pypi', 'My_Pkg'), ['io.github.e/five']],
+    [declaredKey('npm', 'weird'), ['<script>']],
+  ]);
+  test('선언된 패키지만, 드문 사실은 이름까지, 새 버전은 개수만, 값은 허용 형식만', () => {
+    const npm = packageSide(
+      'npm',
+      [
+        { ident: 'old-pkg', kind: 'deprecated', old_value: '2.0.0', new_value: null },
+        { ident: 'gone-pkg', kind: 'not_found', old_value: '1.0.0', new_value: null },
+        { ident: 'busy-pkg', kind: 'latest_changed', old_value: '1.0.0', new_value: '1.0.1' },
+        { ident: 'undeclared', kind: 'deprecated', old_value: '1.0.0', new_value: null },
+        { ident: 'undeclared', kind: 'latest_changed', old_value: '1', new_value: '2' },
+        { ident: 'old-pkg', kind: 'deprecated', old_value: '2.0.0', new_value: null },
+        { ident: 'weird', kind: 'deprecated', old_value: '1', new_value: null },
+        { ident: 'old-pkg', kind: 'bogus', old_value: null, new_value: null },
+      ],
+      declaredBy,
+      true,
+    );
+    assert.equal(npm.latest_changed, 1);
+    assert.deepEqual(
+      npm.events.map((e) => [e.kind, e.package, e.old, e.declared_by]),
+      [
+        ['deprecated', 'old-pkg', '2.0.0', ['io.github.a/one']],
+        ['not_found', 'gone-pkg', '1.0.0', ['io.github.b/two', 'io.github.c/three']],
+      ],
+    );
+    const pypi = packageSide('pypi', [{ ident: 'my-pkg', kind: 'status_changed', old_value: 'active', new_value: 'archived' }], declaredBy, true);
+    assert.deepEqual([pypi.events[0]!.old, pypi.events[0]!.new, pypi.events[0]!.declared_by], ['active', 'archived', ['io.github.e/five']]);
+  });
+  test('스냅샷이 안 돈 날: compared=false, 0 을 변화 없음으로 쓰지 않는다', () => {
+    const s = packageSide('npm', [], declaredBy, false);
+    assert.deepEqual(s, { compared: false, latest_changed: 0, events: [] });
+    const p: PackagesSection = { snapshot_day: '2026-10-24', npm: s, pypi: packageSide('pypi', [], declaredBy, true) };
+    const d = day('2026-10-25', { packages: p });
+    const html = renderSite([d], SITE).get('days/2026-10-25.html')!;
+    assert.match(html, /5\. Declared packages/);
+    assert.match(html, /The npm snapshot did not run on 2026-10-24/);
+    assert.match(daySummaryText(d), /Declared packages \(snapshot 2026-10-24\): npm not compared; PyPI 0 status facts, 0 new latest versions\./);
+  });
+  test('HTML: 같은 scope 10개 이상은 한 줄, 최대 줄 수 넘으면 JSON 안내, 판정 단어 없음', () => {
+    const many = new Map<string, string[]>();
+    const rows = [];
+    for (let i = 0; i < 12; i++) {
+      many.set(declaredKey('npm', `@acme/p${i}`), ['io.github.acme/x']);
+      rows.push({ ident: `@acme/p${i}`, kind: 'deprecated', old_value: '1.0.0', new_value: null });
+    }
+    for (let i = 0; i < PACKAGE_HTML_MAX_LINES + 5; i++) {
+      many.set(declaredKey('npm', `solo${i}`), ['io.github.s/y']);
+      rows.push({ ident: `solo${i}`, kind: 'not_found', old_value: '1.0.0', new_value: null });
+    }
+    const npm = packageSide('npm', rows, many, true);
+    assert.equal(npm.events.length, 12 + PACKAGE_HTML_MAX_LINES + 5);
+    const d = day('2026-10-25', { packages: { snapshot_day: '2026-10-24', npm, pypi: packageSide('pypi', [], many, true) } });
+    const html = renderSite([d], SITE).get('days/2026-10-25.html')!;
+    assert.match(html, /12 packages in <code>@acme<\/code>/);
+    assert.ok(!html.includes('@acme/p3'));
+    assert.match(html, /6 more status facts are in/);
+    assert.match(html, /<code>404<\/code> <code>solo0<\/code> — npm answered HTTP 404 \(last seen 1\.0\.0\)/);
+    assert.ok(!/\b(risk|risky|unsafe|dangerous|abandoned)\b/i.test(html.split('5. Declared packages')[1]!));
+    // JSON 에는 전부
+    assert.equal(parseDay(serializeDay(d)).packages!.npm.events.length, npm.events.length);
+  });
+  test('스키마: 새 파일은 /2, /1 파일도 읽는다, packages 없는 날은 섹션 없음', () => {
+    const d = day('2026-10-25');
+    assert.equal(d.schema, 'lowdown-market-day/2');
+    const old = serializeDay({ ...day('2026-10-21'), schema: 'lowdown-market-day/1' });
+    assert.equal(parseDay(old).schema, 'lowdown-market-day/1');
+    assert.ok(!renderSite([d], SITE).get('days/2026-10-25.html')!.includes('Declared packages'));
   });
 });

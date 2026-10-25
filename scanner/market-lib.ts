@@ -1,12 +1,15 @@
 // Lowdown 시장판 3단계 — 일일 기록 페이지·피드 (의존성 0)
 // 원칙
 //   - 사실 종류를 섞지 않는다: Registry 선언 변화 / Scanner 관찰(숫자만) / First observed by Lowdown / 도구 정의 변화(숫자만)
+//     / 선언 패키지(npm·PyPI 원본이 밝힌 상태 변화: 드문 사실은 이름까지, 새 버전은 개수만)
 //   - 항목별 해석 문장·점수·순위 없음. 정렬은 이름순. 해석은 about 페이지에 한 번만.
 //   - 외부에서 온 문자열은 허용 형식만 통과(나머지는 개수로만). 설명문·원격 URL·원문은 싣지 않는다.
 //   - 하루 JSON 이 유일한 원본: HTML·RSS·JSON Feed 는 디스크의 하루 JSON 들에서만 만든다(서로 다른 사실이 나가지 않게).
 //   - 하루 JSON 에는 생성 시각을 넣지 않는다(같은 데이터로 다시 돌리면 같은 바이트 → 커밋 없음).
 
-export const DAY_SCHEMA = 'lowdown-market-day/1';
+/** /2 (2026-10-25~): packages 블록 추가. /1 파일은 그대로 두고 계속 읽는다(과거 기록은 고치지 않음). */
+export const DAY_SCHEMA = 'lowdown-market-day/2';
+const DAY_SCHEMAS: readonly string[] = ['lowdown-market-day/1', DAY_SCHEMA];
 export const FEED_DAYS = 30;
 
 // ─────────────────────────────────────────────
@@ -97,8 +100,90 @@ export function daySource(day: string, dataAsOf: string, siteBaseUrl: string): D
   };
 }
 
+// ─────────────────────────────────────────────
+// 선언 패키지 (npm·PyPI 일별 스냅샷의 변화 중, 지금 Registry 항목이 선언한 패키지만)
+// ─────────────────────────────────────────────
+
+export const NPM_RARE_KINDS = ['deprecated', 'undeprecated', 'not_found', 'restored'] as const;
+export const PYPI_RARE_KINDS = ['yanked', 'unyanked', 'status_changed', 'not_found', 'restored'] as const;
+const NPM_NAME = /^(?:@[a-z0-9~-][a-z0-9._~-]*\/)?[a-z0-9~-][a-z0-9._~-]*$/i;
+const PYPI_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,198}[A-Za-z0-9])?$/;
+export const MAX_DECLARED_BY = 5;
+
+export interface PackageChangeInput {
+  ident: unknown;
+  kind: unknown;
+  old_value: unknown;
+  new_value: unknown;
+}
+
+export interface PackageEventItem {
+  package: string;
+  kind: string;
+  old?: string | null;
+  new?: string | null;
+  /** 이 패키지를 선언한 Registry 항목(이름순, 최대 5) */
+  declared_by: string[];
+  declared_by_more?: number;
+}
+
+export interface PackageSide {
+  /** false = 그날 스냅샷이 돌지 않아 비교하지 않았다(0 은 "변화 없음"이 아니다) */
+  compared: boolean;
+  /** 새 최신 버전 수(개수만) */
+  latest_changed: number;
+  /** 드문 사실: npm deprecated·undeprecated·HTTP 404·복구 / PyPI yanked·unyanked·project status·HTTP 404·복구 */
+  events: PackageEventItem[];
+}
+
+export interface PackagesSection {
+  /** 이 날 기록에 실은 npm·PyPI 스냅샷의 날짜(UTC). 시장판은 그 다음 날 아침 Scanner 실행 뒤에 만든다. */
+  snapshot_day: string;
+  npm: PackageSide;
+  pypi: PackageSide;
+}
+
+export const normalizePypi = (s: string) => s.replace(/[-_.]+/g, '-').toLowerCase();
+/** declaredBy 의 키: "npm <ident>" / "pypi <정규화 이름>" */
+export const declaredKey = (type: 'npm' | 'pypi', ident: string) => `${type} ${type === 'pypi' ? normalizePypi(ident) : ident}`;
+
+export function packageSide(type: 'npm' | 'pypi', rows: readonly PackageChangeInput[], declaredBy: ReadonlyMap<string, readonly string[]>, compared: boolean): PackageSide {
+  const rare: readonly string[] = type === 'npm' ? NPM_RARE_KINDS : PYPI_RARE_KINDS;
+  const nameOk = type === 'npm' ? NPM_NAME : PYPI_NAME;
+  let latestChanged = 0;
+  const events: PackageEventItem[] = [];
+  const seen = new Set<string>();
+  for (const r of rows) {
+    if (typeof r.ident !== 'string' || typeof r.kind !== 'string' || r.ident.length > 214 || !nameOk.test(r.ident)) continue;
+    const names = declaredBy.get(declaredKey(type, r.ident));
+    if (!names || names.length === 0) continue; // 지금 선언한 항목이 없는 패키지는 싣지 않는다
+    if (r.kind === 'latest_changed') {
+      latestChanged++;
+      continue;
+    }
+    if (!rare.includes(r.kind)) continue;
+    const k = `${r.kind}\u0000${r.ident}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const safe = r.kind === 'status_changed' ? safeStatus : safeVersion;
+    const sorted = [...new Set(names.map(safeName).filter((x): x is string => x !== null))].sort();
+    if (sorted.length === 0) continue;
+    const item: PackageEventItem = { package: r.ident, kind: r.kind, declared_by: [] };
+    if (r.kind === 'status_changed') {
+      item.old = safe(r.old_value);
+      item.new = safe(r.new_value);
+    } else if (r.kind === 'restored') item.new = safeVersion(r.new_value);
+    else item.old = safeVersion(r.old_value); // deprecated·yanked 등: 그 버전 / not_found: 직전 최신 버전
+    item.declared_by = sorted.slice(0, MAX_DECLARED_BY);
+    if (sorted.length > MAX_DECLARED_BY) item.declared_by_more = sorted.length - MAX_DECLARED_BY;
+    events.push(item);
+  }
+  events.sort((a, b) => (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : a.package < b.package ? -1 : a.package > b.package ? 1 : 0));
+  return compared ? { compared: true, latest_changed: latestChanged, events } : { compared: false, latest_changed: 0, events: [] };
+}
+
 export interface MarketDay {
-  schema: typeof DAY_SCHEMA;
+  schema: typeof DAY_SCHEMA | 'lowdown-market-day/1';
   day: string;
   data_as_of: string;
   scan_run_id: string;
@@ -120,6 +205,8 @@ export interface MarketDay {
   observations: { current: ObservationSummary; previous: ObservationSummary | null };
   tool_definitions: ToolDefinitionSummary | null;
   first_observed: Array<{ kind: string; value: string }>;
+  /** /2 부터. 선언 패키지 상태 변화 */
+  packages?: PackagesSection;
 }
 
 const byName = (a: { name: string }, b: { name: string }) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
@@ -231,6 +318,8 @@ export function buildDay(input: {
   registryCompared?: boolean;
   /** 직전 날(들)이 비교되지 않았으면 그 첫 날짜 */
   registryCoversSince?: string | null;
+  /** 선언 패키지 섹션(주면 싣는다) */
+  packages?: PackagesSection;
 }): MarketDay {
   if (!DAY.test(input.day)) throw new Error(`invalid day ${input.day}`);
   return {
@@ -247,6 +336,7 @@ export function buildDay(input: {
     observations: input.observations,
     tool_definitions: input.toolDefinitions,
     first_observed: firstObservedSection(input.firstSeenRows),
+    ...(input.packages ? { packages: input.packages } : {}),
   };
 }
 
@@ -295,7 +385,7 @@ export function serializeDay(d: MarketDay): string {
 
 export function parseDay(text: string): MarketDay {
   const d = JSON.parse(text) as MarketDay;
-  if (d?.schema !== DAY_SCHEMA || typeof d.day !== 'string' || !DAY.test(d.day)) throw new Error('not a market day file');
+  if (!DAY_SCHEMAS.includes(d?.schema) || typeof d.day !== 'string' || !DAY.test(d.day)) throw new Error('not a market day file');
   return d;
 }
 
@@ -352,6 +442,11 @@ export function daySummaryText(d: MarketDay): string {
     parts.push(`Tool definitions vs previous run: ${pl(t.description_changed, 'description change', 'description changes')} and ${pl(t.schema_changed, 'schema change', 'schema changes')} among ${pl(t.compared, 'compared server', 'compared servers')}.`);
   }
   if (d.first_observed.length > 0) parts.push(`First observed by Lowdown: ${pl(d.first_observed.length, 'value', 'values')}.`);
+  if (d.packages) {
+    const side = (label: string, s: PackageSide) =>
+      s.compared ? `${label} ${pl(s.events.length, 'status fact', 'status facts')}, ${pl(s.latest_changed, 'new latest version', 'new latest versions')}` : `${label} not compared`;
+    parts.push(`Declared packages (snapshot ${d.packages.snapshot_day}): ${side('npm', d.packages.npm)}; ${side('PyPI', d.packages.pypi)}.`);
+  }
   return parts.join(' ');
 }
 
@@ -490,9 +585,104 @@ export function renderDayHtml(d: MarketDay, cfg: SiteConfig, opts: { canonical: 
   else {
     parts.push(`<table><thead><tr><th>Kind</th><th>Value</th></tr></thead><tbody>${d.first_observed.map((f) => `<tr><td>${esc(f.kind)}</td><td><code>${esc(f.value)}</code></td></tr>`).join('')}</tbody></table>`);
   }
+  if (d.packages) parts.push(packagesHtml(d.packages, cfg, `${cfg.baseUrl}days/${d.day}.json`));
   // 대량으로 가져가는 쪽이 API 링크를 하나씩 따라가지 않고 하루 JSON 을 고르도록 기계용 대체 경로를 head 에 둔다.
   const jsonHead = `\n<link rel="alternate" type="application/json" title="Lowdown daily record ${esc(d.day)} (JSON, CC BY 4.0)" href="${esc(cfg.baseUrl)}days/${esc(d.day)}.json">`;
   return page(`MCP daily record ${d.day} — Lowdown`, parts.join('\n'), cfg, opts.canonical, daySummaryText(d), jsonHead);
+}
+
+export const PACKAGE_HTML_MAX_LINES = 50;
+export const PACKAGE_GROUP_MIN = 10;
+
+const PACKAGE_KIND_TEXT: Record<string, string> = {
+  'npm deprecated': 'latest version marked deprecated',
+  'npm undeprecated': 'latest version no longer marked deprecated',
+  'npm not_found': 'npm answered HTTP 404',
+  'npm restored': 'available again after HTTP 404',
+  'pypi yanked': 'latest release yanked',
+  'pypi unyanked': 'latest release no longer yanked',
+  'pypi status_changed': 'project status changed',
+  'pypi not_found': 'PyPI answered HTTP 404',
+  'pypi restored': 'available again after HTTP 404',
+};
+
+const scopeOf = (pkg: string) => (pkg.startsWith('@') && pkg.includes('/') ? pkg.slice(0, pkg.indexOf('/')) : null);
+
+function packageEventLine(type: 'npm' | 'pypi', e: PackageEventItem, cfg: SiteConfig): string {
+  const label = `<code>${esc(e.kind === 'not_found' ? '404' : e.kind)}</code>`;
+  const text = PACKAGE_KIND_TEXT[`${type} ${e.kind}`] ?? e.kind;
+  const val =
+    e.kind === 'status_changed'
+      ? ` (${esc(e.old ?? '(other)')} → ${esc(e.new ?? '(other)')})`
+      : e.kind === 'restored'
+        ? e.new
+          ? ` (${esc(e.new)})`
+          : ''
+        : e.old
+          ? ` (${e.kind === 'not_found' ? 'last seen ' : ''}${esc(e.old)})`
+          : '';
+  const by = e.declared_by.map((nm) => `<a href="${esc(lookupLink(nm, cfg))}" rel="nofollow"><code>${esc(nm)}</code></a>`).join(', ');
+  const more = e.declared_by_more ? ` and ${n(e.declared_by_more)} more` : '';
+  return `<li>${label} <code>${esc(e.package)}</code> — ${esc(text)}${val}. <span class="muted">Declared by ${by}${more}.</span></li>`;
+}
+
+/** 드문 사실 목록(같은 종류·같은 npm scope 가 10개 이상이면 한 줄) — 최대 50줄, 나머지는 JSON */
+function packageEventsHtml(type: 'npm' | 'pypi', events: readonly PackageEventItem[], cfg: SiteConfig, budget: { left: number; hidden: number }): string {
+  const groups = new Map<string, PackageEventItem[]>();
+  for (const e of events) {
+    const sc = scopeOf(e.package);
+    if (!sc) continue;
+    const k = `${e.kind}\u0000${sc}`;
+    (groups.get(k) ?? groups.set(k, []).get(k)!).push(e);
+  }
+  const grouped = new Set([...groups.entries()].filter(([, g]) => g.length >= PACKAGE_GROUP_MIN).map(([k]) => k));
+  const lines: string[] = [];
+  const done = new Set<string>();
+  for (const e of events) {
+    const sc = scopeOf(e.package);
+    const gk = sc ? `${e.kind}\u0000${sc}` : null;
+    if (gk && grouped.has(gk)) {
+      if (done.has(gk)) continue;
+      done.add(gk);
+      const g = groups.get(gk)!;
+      if (budget.left <= 0) {
+        budget.hidden += g.length;
+        continue;
+      }
+      budget.left--;
+      const text = PACKAGE_KIND_TEXT[`${type} ${e.kind}`] ?? e.kind;
+      lines.push(`<li><code>${esc(e.kind === 'not_found' ? '404' : e.kind)}</code> ${n(g.length)} packages in <code>${esc(sc!)}</code> — ${esc(text)}. <span class="muted">Names in the JSON file.</span></li>`);
+      continue;
+    }
+    if (budget.left <= 0) {
+      budget.hidden++;
+      continue;
+    }
+    budget.left--;
+    lines.push(packageEventLine(type, e, cfg));
+  }
+  return lines.length > 0 ? `<ul>${lines.join('')}</ul>` : '';
+}
+
+function packagesHtml(p: PackagesSection, cfg: SiteConfig, jsonUrl: string): string {
+  const parts: string[] = [];
+  parts.push(`<h2>5. Declared packages (npm, PyPI)</h2>`);
+  parts.push(
+    `<p class="muted">Changes in the daily npm and PyPI snapshot of ${esc(p.snapshot_day)} (UTC), for packages that current MCP Registry entries declare. Status facts are listed by name, using the registries' own terms; new latest versions are counted only. A package's state at Lowdown's first check is not counted as a change.</p>`,
+  );
+  const budget = { left: PACKAGE_HTML_MAX_LINES, hidden: 0 };
+  for (const [type, label, side] of [['npm', 'npm', p.npm], ['pypi', 'PyPI', p.pypi]] as const) {
+    parts.push(`<h3>${label}</h3>`);
+    if (!side.compared) {
+      parts.push(`<p><strong>Not compared.</strong> The ${label} snapshot did not run on ${esc(p.snapshot_day)}; zero does not mean no change.</p>`);
+      continue;
+    }
+    parts.push(`<div class="nums">${numBox('Status facts', n(side.events.length))}${numBox('New latest versions', n(side.latest_changed))}</div>`);
+    if (side.events.length === 0) parts.push(`<p class="muted">No status facts.</p>`);
+    else parts.push(packageEventsHtml(type, side.events, cfg, budget));
+  }
+  if (budget.hidden > 0) parts.push(`<p class="muted">${n(budget.hidden)} more status facts are in <a href="${esc(jsonUrl)}">the JSON file</a> (<code>packages</code>).</p>`);
+  return parts.join('\n');
 }
 
 export function renderArchiveHtml(days: readonly MarketDay[], cfg: SiteConfig): string {
@@ -546,6 +736,8 @@ export function renderAboutHtml(cfg: SiteConfig): string {
 <p>For servers reached on two consecutive runs, Lowdown compares hashes of the tool definitions (names, descriptions, schemas). A change means the definition differs from the previous run. It is not evidence of malicious intent, and an unchanged definition is not evidence of safety. Descriptions are not published.</p>
 <h2>4. First observed by Lowdown</h2>
 <p>A value (capability key, protocol version, or tool name) that Lowdown had not seen before within its own sample. It does not mean the value is new to the market. Tool names are listed only when seen on at least two hosts and two Registry namespaces.</p>
+<h2>5. Declared packages</h2>
+<p>Lowdown checks the npm and PyPI packages that MCP Registry entries declare once a day. Each daily record lists, for packages that current Registry entries declare, the changes found in the previous day's snapshot: a latest version marked deprecated or no longer deprecated (npm), a latest release yanked or no longer yanked, a change of project status such as archived (PyPI), an HTTP 404, or a package available again. These are the registries' own statements, recorded as found. A deprecated or missing package is not evidence that a server is unsafe, and an unchanged package is not evidence that it is safe. New latest versions are counted only, since the registries publish them. A package's state at Lowdown's first check is not counted as a change. When a snapshot did not run, the section says so instead of showing zero.</p>
 <h2>Data and feeds</h2>
 <ul>
 <li>Daily JSON for each record: <code>days/YYYY-MM-DD.json</code> (the HTML pages and feeds are generated from these files).</li>

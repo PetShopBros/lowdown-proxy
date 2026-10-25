@@ -12,8 +12,10 @@ import { dirname, join } from 'node:path';
 import { fetchRegistryChangesDay } from './archive-lib.ts';
 import { fetchCohort, supabaseHeaders } from './lib.ts';
 import type { SupabaseConfig } from './lib.ts';
-import { applyCorrection, buildDay, dayWriteDecision, parseDay, registryCoversSince, renderSite, serializeDay, toolDefinitionSection } from './market-lib.ts';
-import type { DefRowInput, FirstSeenInput, MarketDay, ObservationSummary, RegistryChangeInput } from './market-lib.ts';
+import { applyCorrection, buildDay, declaredKey, dayWriteDecision, packageSide, parseDay, registryCoversSince, renderSite, serializeDay, toolDefinitionSection } from './market-lib.ts';
+import type { DefRowInput, FirstSeenInput, MarketDay, ObservationSummary, PackageChangeInput, PackagesSection, RegistryChangeInput } from './market-lib.ts';
+import { getKeyset } from './npm-lib.ts';
+import { parseDeclared } from './pages-lib.ts';
 import { buildReport, fetchReportRows, MIN_RUN_COVERAGE, WINDOW_DAYS } from './report-lib.ts';
 import type { ReportRow } from './report-lib.ts';
 
@@ -60,6 +62,52 @@ function writeIfChanged(path: string, text: string): boolean {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, text);
   return true;
+}
+
+const MIN_REGISTRY_ACTIVE = 1000;
+
+/** 그날(UTC) 스냅샷이 돌았는가: 그날 확인한 상태 행이 하나라도 있으면 돈 것으로 본다 */
+async function snapshotRan(cfg: SupabaseConfig, table: string, day: string, next: string): Promise<boolean> {
+  const qs = new URLSearchParams({ select: 'ident', and: `(checked_at.gte.${day}T00:00:00Z,checked_at.lt.${next}T00:00:00Z)`, limit: '1' });
+  const res = await fetch(`${cfg.url.replace(/\/+$/, '')}/rest/v1/${table}?${qs.toString()}`, { headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }), signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) throw new Error(`${table} read failed: HTTP ${res.status}`);
+  const rows = (await res.json()) as unknown[];
+  return Array.isArray(rows) && rows.length > 0;
+}
+
+/**
+ * 선언 패키지 섹션: 시장판 날짜(day)의 전날(UTC) npm·PyPI 스냅샷 변화 중 지금 Registry 항목이 선언한 패키지만.
+ * 읽기 실패면 섹션을 싣지 않는다(다른 섹션은 그대로). 0 을 "변화 없음"으로 싣지 않기 위해서다.
+ */
+async function packagesSection(cfg: SupabaseConfig, day: string): Promise<PackagesSection | null> {
+  const snap = new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+  try {
+    const entries = await getKeyset<{ name: string; packages_key: string | null; removed_at: string | null } & Record<string, unknown>>(cfg, 'registry_state', 'name,packages_key,removed_at', 'name', [], {});
+    const active = entries.filter((e) => e.removed_at === null);
+    if (active.length < MIN_REGISTRY_ACTIVE) throw new Error(`active Registry entries ${active.length} < ${MIN_REGISTRY_ACTIVE}`);
+    const declaredBy = new Map<string, string[]>();
+    for (const e of active) {
+      for (const p of parseDeclared(e.packages_key)) {
+        const k = declaredKey(p.registry_type, p.identifier);
+        (declaredBy.get(k) ?? declaredBy.set(k, []).get(k)!).push(e.name);
+      }
+    }
+    const sel = 'id,ident,kind,old_value,new_value';
+    const npmRows = await getAll<PackageChangeInput>(cfg, 'npm_package_changes', { select: sel, detected_on: `eq.${snap}` }, true);
+    const pypiRows = await getAll<PackageChangeInput>(cfg, 'pypi_package_changes', { select: sel, detected_on: `eq.${snap}` }, true);
+    const npmRan = await snapshotRan(cfg, 'npm_package_state', snap, day);
+    const pypiRan = await snapshotRan(cfg, 'pypi_package_state', snap, day);
+    const out: PackagesSection = {
+      snapshot_day: snap,
+      npm: packageSide('npm', npmRows, declaredBy, npmRan || npmRows.length > 0),
+      pypi: packageSide('pypi', pypiRows, declaredBy, pypiRan || pypiRows.length > 0),
+    };
+    console.log(`packages ${snap}: npm ${out.npm.compared ? `${out.npm.events.length} facts, ${out.npm.latest_changed} new versions` : 'not compared'}; pypi ${out.pypi.compared ? `${out.pypi.events.length} facts, ${out.pypi.latest_changed} new versions` : 'not compared'}`);
+    return out;
+  } catch (e) {
+    console.log(`::warning::packages section skipped: ${e instanceof Error ? e.message : 'read failed'}`);
+    return null;
+  }
 }
 
 async function main(): Promise<void> {
@@ -130,6 +178,8 @@ async function main(): Promise<void> {
     toolDefinitions = toolDefinitionSection(cur, prev, previous.run.end);
   }
 
+  const packages = await packagesSection(cfg, day);
+
   const daysDirEarly = join(docs, 'days');
   const priorDays: MarketDay[] = existsSync(daysDirEarly)
     ? readdirSync(daysDirEarly)
@@ -147,6 +197,7 @@ async function main(): Promise<void> {
     siteBaseUrl: site.baseUrl,
     registryCompared,
     registryCoversSince: registryCoversSince(priorDays, day),
+    ...(packages ? { packages } : {}),
   });
   if (!registryCompared) console.log(`::warning::market day ${day}: Registry not compared (registry fallback)`);
 
