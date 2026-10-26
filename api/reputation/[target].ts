@@ -124,6 +124,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       summaryError: Boolean(error),
       scannerFailed: scannerQueried && scannerLookup === null,
       registryFailed: evidence?.registryFailed === true,
+      statusFailed: evidence?.statusFailed === true,
     });
 
     const logged = await supabase.from("reputation_lookups").insert({ ...lookupRow, result_kind: unavailable ? "unavailable" : resultKind(taskType, scannerLookup, evidence, data) } as never);
@@ -323,8 +324,8 @@ export const UNAVAILABLE_BODY = {
  * 핵심 조회가 오류로 실패했으면 true. 이때는 200 으로 답하지 않는다(빈 답이 사실로 저장되지 않게).
  * 보조 조회(npm/PyPI 상태, 샌드박스, 날짜별 이력, 기록 페이지) 실패는 여기에 넣지 않는다.
  */
-export function coreUnavailable(f: { summaryError: boolean; scannerFailed: boolean; registryFailed: boolean }): boolean {
-  return f.summaryError || f.scannerFailed || f.registryFailed;
+export function coreUnavailable(f: { summaryError: boolean; scannerFailed: boolean; registryFailed: boolean; statusFailed?: boolean }): boolean {
+  return f.summaryError || f.scannerFailed || f.registryFailed || f.statusFailed === true;
 }
 
 /** 조회 기록용 응답 종류. 판정이 아니라 "무엇으로 답했나"만. */
@@ -457,6 +458,11 @@ interface Evidence {
   recordPage?: RecordPage;
   /** Registry 기록 조회가 DB 오류로 실패함(없음과 구분) → 503 */
   registryFailed?: boolean;
+  /** 연결 상태 요약(target_status_summary) — 응답의 status 블록과 첫 문장 */
+  status?: Record<string, unknown>;
+  statusLead?: string;
+  /** 연결 상태 요약 조회가 DB 오류로 실패함 → 503 */
+  statusFailed?: boolean;
 }
 
 // ── 서버 기록 페이지 (lowdown-pages, scanner/pages.ts 가 매일 만든다) ─────────
@@ -859,6 +865,7 @@ async function buildEvidence(supabase: any, target: string, lookup: ScannerLooku
         declared.length > 0 ? attachPackages(supabase, ev, declared, now, false) : Promise.resolve(),
         declared.length > 0 ? attachSandbox(supabase, ev, declared) : Promise.resolve(),
         typeof r.name === "string" ? recordPageFor(r.name, now) : Promise.resolve(null),
+        typeof r.name === "string" ? attachStatus(supabase, ev, `mcp:${r.name}`, now) : Promise.resolve(),
       ]);
       if (page) ev.recordPage = page;
     } else if (r.candidates.length > 1) {
@@ -886,8 +893,133 @@ async function buildEvidence(supabase: any, target: string, lookup: ScannerLooku
   return ev;
 }
 
+// ── 연결 상태 요약 (target_status_summary, supabase/2026-10-27_target_status_summary.sql) ─────
+// 미리 계산된 1행만 읽는다. 행이 없으면 아무 말도 하지 않는다(관찰 없음은 상태가 아니다). 읽기 오류면 503.
+const STATUS_COLUMNS =
+  "target_id,latest_day,latest_state,latest_remote_states,latest_remotes,latest_tool_count,latest_observation_basis," +
+  "streak_days,streak_start_day,streak_break,observed_days_30d,answered_days_30d,auth_required_days_30d," +
+  "no_response_days_30d,mixed_days_30d,definition_id,definition_version,computed_at";
+const REMOTE_STATES = ["answered", "auth_required", "list_failed", "no_response", "invalid_response"] as const;
+const STATUS_STATES = new Set<string>([...REMOTE_STATES, "mixed"]);
+const STATUS_BREAKS = new Set(["state_change", "not_observed", "no_earlier_observation", "window_start"]);
+/** 마지막 점검이 이보다 오래되면 현재 상태를 말하지 않는다 */
+export const STATUS_STALE_DAYS = 2;
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+const STATUS_BASIS =
+  "One check per day from one network location: POST initialize, then tools/list; no tool calls and no credentials. " +
+  "A day without a check is not counted as a failure and ends a consecutive run. When remotes differ on a day, the day is mixed. " +
+  "Recorded facts, not a score or an availability measure.";
+const REMOTE_PHRASE: Record<string, string> = {
+  answered: "answered tools/list",
+  auth_required: "required authentication",
+  list_failed: "answered initialize but not tools/list",
+  no_response: "did not respond",
+  invalid_response: "did not answer as an MCP server",
+};
+
+const statusCount = (v: unknown): number | null => (Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 100_000 ? (v as number) : null);
+const isoDay = (v: unknown): string | null => (typeof v === "string" && ISO_DAY.test(v.slice(0, 10)) ? v.slice(0, 10) : null);
+
+async function attachStatus(supabase: any, ev: Evidence, targetId: string, now: number): Promise<void> {
+  try {
+    const r = await supabase.from("target_status_summary").select(STATUS_COLUMNS).eq("target_id", targetId).limit(1);
+    if (r.error) {
+      ev.statusFailed = true;
+      return;
+    }
+    const row = (r.data ?? [])[0];
+    if (!row) return;
+    const shaped = shapeStatus(row, now);
+    if (!shaped) return;
+    ev.status = shaped.block;
+    ev.statusLead = shaped.lead;
+  } catch {
+    ev.statusFailed = true;
+  }
+}
+
+/** 요약 행 → status 블록과 첫 문장. 값이 하나라도 형식에 맞지 않으면 null (말하지 않는다). */
+export function shapeStatus(row: Record<string, unknown>, now: number): { block: Record<string, unknown>; lead: string } | null {
+  const state = typeof row.latest_state === "string" && STATUS_STATES.has(row.latest_state) ? row.latest_state : null;
+  const latest = isoDay(row.latest_day);
+  const since = isoDay(row.streak_start_day);
+  const n = statusCount(row.streak_days);
+  const observed = statusCount(row.observed_days_30d);
+  if (!state || !latest || !since || !n || !observed || n > observed) return null;
+  const brk = typeof row.streak_break === "string" && STATUS_BREAKS.has(row.streak_break) ? row.streak_break : null;
+  const days = {
+    observed,
+    answered: statusCount(row.answered_days_30d),
+    auth_required: statusCount(row.auth_required_days_30d),
+    no_response: statusCount(row.no_response_days_30d),
+    mixed: statusCount(row.mixed_days_30d),
+  };
+  const remoteStates: Record<string, number> = {};
+  const rs = row.latest_remote_states;
+  if (rs && typeof rs === "object" && !Array.isArray(rs)) {
+    for (const k of REMOTE_STATES) {
+      const v = statusCount((rs as Record<string, unknown>)[k]);
+      if (v) remoteStates[k] = v;
+    }
+  }
+  const tools = statusCount(row.latest_tool_count);
+  const daysSince = Math.round((Date.parse(utcDay(now)) - Date.parse(latest)) / DAY_MS);
+  const stale = daysSince > STATUS_STALE_DAYS;
+  const version = statusCount(row.definition_version);
+  const computedAt = typeof row.computed_at === "string" && !Number.isNaN(Date.parse(row.computed_at)) ? new Date(row.computed_at).toISOString() : null;
+
+  const block: Record<string, unknown> = {
+    state,
+    latest_check: latest,
+    days_since_latest_check: daysSince,
+    stale,
+    consecutive_days: n,
+    consecutive_since: since,
+    consecutive_break: brk,
+    checks_30d: days,
+    remote_states: remoteStates,
+    tool_count: state === "answered" ? tools : null,
+    observation_basis: row.latest_observation_basis === "fixed_cohort" ? "fixed_cohort" : "on_request",
+    definition: { id: "target_status", version },
+    computed_at: computedAt,
+    basis: STATUS_BASIS,
+  };
+
+  let lead: string;
+  if (stale) {
+    lead = `No Lowdown daily check since ${latest} (${daysSince} days ago), so no current connectivity is stated.`;
+  } else if (state === "mixed") {
+    const parts = REMOTE_STATES.filter((k) => remoteStates[k]).map((k) => `${remoteStates[k]} ${REMOTE_PHRASE[k]}`);
+    lead = `On the latest daily check (${latest}) its remotes differed: ${parts.join(", ")}.`;
+  } else {
+    const all = n === observed;
+    const span =
+      n === 1 && observed === 1 ? `on the only daily check recorded in the last 30 days (${latest})`
+      : n === 1 ? `on the latest daily check (${latest})`
+      : all ? `on all ${n} daily checks recorded in the last 30 days (${since} to ${latest})`
+      : `on the last ${n} consecutive daily checks (${since} to ${latest})`;
+    const verb: Record<string, string> = {
+      answered: "Answered initialize and tools/list",
+      auth_required: "Required authentication (HTTP 401/403)",
+      list_failed: "Answered initialize but not tools/list",
+      no_response: "No successful response",
+      invalid_response: "Did not answer as an MCP server",
+    };
+    lead = `${verb[state]} ${span}`;
+    if (state === "answered" && tools !== null) lead += `; ${tools} tool${tools === 1 ? "" : "s"} listed`;
+    lead += ".";
+    if (state === "auth_required") lead += " Lowdown checks without credentials, so no tools were listed.";
+    if (state === "no_response") lead += " Checked from one network location.";
+    const sameDays = state === "answered" ? days.answered : state === "auth_required" ? days.auth_required : state === "no_response" ? days.no_response : null;
+    if (!all && sameDays !== null) lead += ` ${sameDays} of ${observed} observed days in the last 30 had this result.`;
+    if (brk === "not_observed") lead += ` The day before ${since} has no check.`;
+  }
+  return { block, lead };
+}
+
 function evidenceFields(ev: Evidence | null, lookup: ScannerLookup | null): Record<string, unknown> {
   const out: Record<string, unknown> = {};
+  if (ev?.status) out.status = ev.status;
   if (ev?.registry) out.registry = ev.registry;
   if (ev?.registryCandidates) out.registry_candidates = ev.registryCandidates;
   if (ev?.packages && ev.packages.length > 0) {
@@ -931,8 +1063,8 @@ function evidenceHead(ev: Evidence | null, lookup: ScannerLookup | null, interac
   else if (lookup?.unobserved) parts.push("not in the Lowdown Scanner sample");
   parts.push(interactions > 0 ? `${interactions} agent-reported interactions` : "no agent-reported interactions");
   const text = parts.join("; ");
-  // 첫 문장: 설치 판단을 바꿀 수 있는 패키지 사실(deprecated·404)만. 새 버전 발행은 packages 이력에만.
-  const lead = (ev?.packageFacts ?? []).join(" ");
+  // 첫 문장: 연결 상태(최근 일일 점검) → 설치 판단을 바꿀 수 있는 패키지 사실(deprecated·404). 새 버전 발행은 packages 이력에만.
+  const lead = [ev?.statusLead, ...(ev?.packageFacts ?? [])].filter((s): s is string => typeof s === "string" && s.length > 0).join(" ");
   return {
     ...(ev?.name ? { resolved_target: `mcp:${ev.name}` } : {}),
     message: `${lead ? `${lead} ` : ""}${text.charAt(0).toUpperCase()}${text.slice(1)}.${ev?.undeclared ? ` ${scopeNote(ev.undeclared.type)}` : ""}${inputNote ? ` ${inputNote}` : ""}`,

@@ -133,6 +133,7 @@ let pageIndexStatus = 200;
 let lookupsInserted: Row[] = [];
 let requests: string[] = [];
 let scannerStatus = 200;
+let statusRows: Row[] = [];
 let rejectResultKind = false;
 let objectNotFound = 0;
 
@@ -233,6 +234,7 @@ before(async () => {
         npm_package_changes: NPM_CHANGE_ROWS,
         pypi_package_state: PYPI_STATE_ROWS,
         pypi_package_changes: PYPI_CHANGE_ROWS,
+        target_status_summary: statusRows,
       };
       const source = tables[table] ?? [];
       const rows = query(source, url.searchParams);
@@ -262,6 +264,7 @@ beforeEach(() => {
   lookupsInserted = [];
   requests = [];
   scannerStatus = 200;
+  statusRows = [];
   rejectResultKind = false;
   objectNotFound = 0;
   failTables = new Set();
@@ -567,6 +570,38 @@ describe('증거 블록 — Registry 선언 + Scanner 날짜별 기록', () => {
     assert.equal(r.status, 503);
     assert.equal(r.body.registry, undefined);
     assert.equal(lookupsInserted.length, 1);
+    assert.equal(lookupsInserted[0]!.result_kind, 'unavailable');
+  });
+
+  test('연결 상태 요약이 있으면 첫 문장이 그것으로 시작하고 status 블록이 맨 앞', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    statusRows = [{
+      target_id: 'mcp:io.github.acme/solo', latest_day: today, latest_state: 'answered', latest_remote_states: { answered: 1 },
+      latest_remotes: 1, latest_tool_count: 2, latest_observation_basis: 'fixed_cohort', streak_days: 1, streak_start_day: today,
+      streak_break: 'no_earlier_observation', observed_days_30d: 1, answered_days_30d: 1, auth_required_days_30d: 0,
+      no_response_days_30d: 0, mixed_days_30d: 0, definition_id: 'target_status', definition_version: 1, computed_at: `${today}T03:37:00Z`,
+    }];
+    const r = await call('mcp:io.github.acme/solo');
+    assert.equal(r.status, 200);
+    assert.ok(r.body.message.startsWith(`Answered initialize and tools/list on the only daily check recorded in the last 30 days (${today}); 2 tools listed.`), r.body.message);
+    assert.equal(r.body.status.state, 'answered');
+    assert.equal(r.body.status.definition.version, 1);
+    const keys = Object.keys(r.body);
+    assert.ok(keys.indexOf('status') < keys.indexOf('registry'));
+    assert.ok(requests.some((q) => q.includes('target_status_summary') && q.includes('target_id=eq.mcp%3Aio.github.acme%2Fsolo')), requests.join('\n'));
+  });
+
+  test('연결 상태 요약이 없으면 첫 문장은 이전과 같다 (관찰 없음은 상태가 아니다)', async () => {
+    const r = await call('mcp:io.github.acme/solo');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.status, undefined);
+    assert.ok(r.body.message.startsWith('MCP Registry declaration recorded') || !r.body.message.startsWith('Answered'), r.body.message);
+  });
+
+  test('연결 상태 요약 조회가 실패하면 503', async () => {
+    failTables = new Set(['target_status_summary']);
+    const r = await call('mcp:io.github.acme/solo');
+    assert.equal(r.status, 503);
     assert.equal(lookupsInserted[0]!.result_kind, 'unavailable');
   });
 
