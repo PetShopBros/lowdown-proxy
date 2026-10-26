@@ -32,7 +32,8 @@ const rpcRows = [
   { tool_set_hash: SB, rule_id: 'description_url', defs: 1, domains: ['example.com'] },
   { tool_set_hash: SC, rule_id: null, defs: 0, domains: [] },
   { tool_set_hash: SC, rule_id: 'description_url', defs: 1, domains: ['example.com', 'evil.example.org'] },
-  { tool_set_hash: SC, rule_id: 'hidden_characters', defs: 1, domains: [] },
+  { tool_set_hash: SC, rule_id: 'hidden_direction_controls', defs: 1, domains: [] },
+  { tool_set_hash: SC, rule_id: 'hidden_joiners', defs: 2, domains: [] },
 ];
 const fakeDb = (data: unknown, error: unknown = null) => {
   const calls: unknown[] = [];
@@ -49,7 +50,8 @@ describe('변경 내용 표지', () => {
     assert.equal(c26.day, '2026-10-26');
     assert.deepEqual(c26.new_flags, [
       { rule: 'description_url', definitions: { from: 1, to: 1 }, new_domains: ['evil.example.org'] },
-      { rule: 'hidden_characters', definitions: { from: 0, to: 1 } },
+      { rule: 'hidden_direction_controls', definitions: { from: 0, to: 1 } },
+      { rule: 'hidden_joiners', definitions: { from: 0, to: 2 } },
     ]);
     assert.deepEqual(c25.new_flags, [{ rule: 'description_url', definitions: { from: 0, to: 1 }, new_domains: ['example.com'] }]);
     const json = JSON.stringify(dc);
@@ -99,9 +101,29 @@ describe('변경 내용 표지', () => {
     const facts = changeFactsFrom(dc, Date.parse('2026-10-27T05:00:00Z'));
     assert.deepEqual(facts, [
       'On 2026-10-26 a tool description with a URL appeared (new domain: evil.example.org).',
-      'On 2026-10-26 a tool definition with invisible Unicode characters appeared.',
+      'On 2026-10-26 a tool definition with text-direction control characters appeared.',
     ]);
     assert.deepEqual(changeFactsFrom(dc, Date.parse('2026-11-10T05:00:00Z')), []);
+  });
+
+  test('결합 문자·제로폭 공백은 첫 문장에 쓰지 않는다 (페르시아어 등 정상 표기)', async () => {
+    const { changeFactsFrom } = await load();
+    const dc = { events: [{ day: '2026-10-26', kinds: ['description_changed'], new_flags: [
+      { rule: 'hidden_joiners', definitions: { from: 0, to: 3 } },
+      { rule: 'hidden_zero_width', definitions: { from: 0, to: 1 } },
+    ] }] };
+    assert.deepEqual(changeFactsFrom(dc, Date.parse('2026-10-27T05:00:00Z')), []);
+    const tag = { events: [{ day: '2026-10-26', kinds: ['description_changed'], new_flags: [{ rule: 'hidden_tag_characters', definitions: { from: 0, to: 1 } }] }] };
+    assert.deepEqual(changeFactsFrom(tag, Date.parse('2026-10-27T05:00:00Z')), ['On 2026-10-26 a tool definition with invisible Unicode tag characters appeared.']);
+  });
+
+  test('v1 규칙 이름(hidden_characters)은 받지 않는다', async () => {
+    const { flagMapsFromRows } = await load();
+    const m = flagMapsFromRows([
+      { tool_set_hash: SA, rule_id: null, defs: 0, domains: [] },
+      { tool_set_hash: SA, rule_id: 'hidden_characters', defs: 1, domains: [] },
+    ], new Set([SA]));
+    assert.equal(m.get(SA)!.size, 0);
   });
 
   test('표지가 줄어든 변경은 새 표지가 아니다', async () => {

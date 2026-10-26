@@ -726,19 +726,31 @@ export function definitionChanges(rows: ObsRow[]): Record<string, unknown> {
   };
 }
 
-// ── 변경 내용 표지 (supabase/2026-10-27_tool_content_flags.sql) ────────────────
+// ── 변경 내용 표지 (supabase/2026-10-27_tool_content_flags.sql, _v2.sql) ────────────────
 // 변경 이벤트의 앞뒤 도구 집합을 비교해, 새로 나타난 표지만 이벤트에 붙인다(new_flags). 원문·해시는 내보내지 않는다.
 // null = 확인하지 못함(앞뒤 집합 중 하나의 저장된 정의가 없거나 조회 실패). [] = 확인했고 새 표지 없음.
-export const CONTENT_RULES = ["description_url", "hidden_characters"] as const;
+// 보이지 않는 문자는 종류별(hidden_characters v2). 제로폭 공백·결합 문자는 여러 언어의 정상 표기와 이모지에 쓰이므로 첫 문장에 쓰지 않는다.
+export const CONTENT_RULES = [
+  "description_url",
+  "hidden_direction_controls",
+  "hidden_tag_characters",
+  "hidden_zero_width",
+  "hidden_joiners",
+] as const;
 const CONTENT_RULE_SET = new Set<string>(CONTENT_RULES);
+/** 첫 문장에 쓰는 표지 */
+export const LEAD_RULES = new Set<string>(["description_url", "hidden_direction_controls", "hidden_tag_characters"]);
 const DOMAIN_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const MAX_NEW_DOMAINS = 5;
 /** 첫 문장에 쓰는 기간(일). 그보다 오래된 표지는 events 에만 */
 export const CHANGE_FACT_DAYS = 7;
 const CONTENT_FLAGS_BASIS =
   "new_flags lists content markers that appeared with a change, compared with the previous tool set from the same remote: " +
-  "description_url (a tool description contains an http(s) URL; domains that were not in the previous set are listed) and " +
-  "hidden_characters (a tool definition contains invisible Unicode characters: zero-width, text-direction controls or tag characters). " +
+  "description_url (a tool description contains an http(s) URL; domains that were not in the previous set are listed), " +
+  "hidden_direction_controls (text-direction control characters U+200E-200F, U+202A-202E, U+2066-2069), " +
+  "hidden_tag_characters (Unicode tag characters U+E0000-E007F), " +
+  "hidden_zero_width (U+200B, U+2060-2064, U+FEFF) and hidden_joiners (U+200C-200D, used in normal writing of Persian, Arabic and Indic scripts and in emoji). " +
+  "Only the first three are stated in the first sentence. " +
   "Computed from the tool definitions Lowdown stored; the text is not returned. null means not checked. A marker is a recorded fact, not a judgment.";
 
 type FlagMap = Map<string, { defs: number; domains: string[] }>;
@@ -828,11 +840,14 @@ export function changeFactsFrom(dc: unknown, now: number): string[] {
     const day = typeof e.day === "string" && ISO_DAY.test(e.day) ? e.day : null;
     if (!day || day < since || !Array.isArray(e.new_flags)) continue;
     for (const f of e.new_flags as Array<Record<string, unknown>>) {
+      if (typeof f.rule !== "string" || !LEAD_RULES.has(f.rule)) continue;
       if (f.rule === "description_url") {
         const doms = (Array.isArray(f.new_domains) ? f.new_domains : []).filter((d): d is string => typeof d === "string" && DOMAIN_RE.test(d));
         facts.push(`On ${day} a tool description with a URL appeared${doms.length ? ` (new domain${doms.length === 1 ? "" : "s"}: ${doms.join(", ")})` : ""}.`);
-      } else if (f.rule === "hidden_characters") {
-        facts.push(`On ${day} a tool definition with invisible Unicode characters appeared.`);
+      } else if (f.rule === "hidden_direction_controls") {
+        facts.push(`On ${day} a tool definition with text-direction control characters appeared.`);
+      } else if (f.rule === "hidden_tag_characters") {
+        facts.push(`On ${day} a tool definition with invisible Unicode tag characters appeared.`);
       }
       if (facts.length >= 2) return facts;
     }
