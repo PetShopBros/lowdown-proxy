@@ -15,3 +15,6 @@ Allow: /
 User-agent: *
 Allow: /
 Crawl-delay: 2
+
+# Server pages (human-readable, one per observed MCP Registry server): /servers
+Sitemap: https://lowdown-proxy.vercel.app/sitemap.xml

@@ -13,6 +13,18 @@
       "destination": "/api/discovery?file=llms.txt"
     },
     {
+      "source": "/servers",
+      "destination": "/api/page?kind=index"
+    },
+    {
+      "source": "/servers/:ns/:name",
+      "destination": "/api/page?kind=server&ns=:ns&name=:name"
+    },
+    {
+      "source": "/sitemap.xml",
+      "destination": "/api/page?kind=sitemap"
+    },
+    {
       "source": "/api/reputation/:ns/:name",
       "destination": "/api/reputation/_slash?t=:ns/:name"
     }
