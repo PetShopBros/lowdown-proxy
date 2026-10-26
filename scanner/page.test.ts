@@ -80,6 +80,10 @@ describe('서버 기록 페이지', () => {
     assert.match(idx, /href="\/servers\/ai\.trendsmcp\/google-trends"/);
     assert.ok(!idx.includes('bad name'));
     assert.match(idx, /1 MCP Registry servers with a recorded daily check/);
+    const home = renderIndex(rows, { home: true });
+    assert.match(home, /<title>Lowdown: daily evidence about MCP servers<\/title>/);
+    assert.match(home, /<link rel="canonical" href="https:\/\/lowdown-proxy\.vercel\.app\/">/);
+    assert.match(home, /href="\/servers\/ai\.trendsmcp\/google-trends"/);
     const sm = renderSitemap(rows);
     assert.match(sm, /<url><loc>https:\/\/lowdown-proxy\.vercel\.app\/servers\/ai\.trendsmcp\/google-trends<\/loc><lastmod>2026-10-26<\/lastmod><\/url>/);
     assert.equal((sm.match(/<url>/g) ?? []).length, 2); // 목록 페이지 + 1

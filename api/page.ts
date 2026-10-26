@@ -206,18 +206,23 @@ export function nameOf(targetId: unknown): string | null {
   return NAME_RE.test(n) ? n : null;
 }
 
-export function renderIndex(rows: ListRow[]): string {
+export function renderIndex(rows: ListRow[], opts: { home?: boolean } = {}): string {
   const items = rows
     .map((r) => ({ n: nameOf(r.target_id), r }))
     .filter((x): x is { n: string; r: ListRow } => x.n !== null)
     .map(({ n, r }) => `<li><a href="${esc(pagePath(n))}">${esc(n)}</a> <span class="muted">${esc(STATE_TEXT[r.latest_state ?? ""] ?? "")}${day(r.latest_day) ? `, ${esc(day(r.latest_day))}` : ""}</span></li>`);
+  const home = opts.home === true;
   return shell({
-    title: "MCP servers observed by Lowdown: daily status and tool changes",
+    title: home ? "Lowdown: daily evidence about MCP servers" : "MCP servers observed by Lowdown: daily status and tool changes",
     description: `Daily status and tool definition changes for ${items.length} MCP Registry servers observed by Lowdown.`,
-    canonical: `${SITE}/servers`,
+    canonical: home ? `${SITE}/` : `${SITE}/servers`,
     noindex: false,
     body:
-      `<h1>MCP servers observed by Lowdown</h1>` +
+      (home
+        ? `<h1>Lowdown</h1><p class="lead">Lowdown records, once a day, what MCP Registry servers actually do: whether they answer initialize and tools/list, whether they require authentication, and when their tool definitions change. Recorded facts with dates, not scores.</p>` +
+          `<p>Look up one server: <code>GET ${SITE}/api/reputation/mcp:{namespace}/{name}</code> · <a href="${SITE}/llms.txt">llms.txt</a> · <a href="${SITE}/openapi.json">OpenAPI</a> · <a href="https://github.com/PetShopBros/lowdown-data">daily dataset (CC BY 4.0)</a> · <a href="https://github.com/PetShopBros/lowdown-proxy">source</a></p>` +
+          `<h2>Observed servers</h2>`
+        : `<h1>MCP servers observed by Lowdown</h1>`) +
       `<p class="lead">${esc(items.length)} MCP Registry servers with a recorded daily check. Each page states whether the server answered initialize and tools/list, whether it required authentication, and how its tool definitions changed, with dates.</p>` +
       `<p class="muted">Recorded facts from one network location, not scores. <a href="${SITE}/llms.txt">llms.txt</a> · <a href="https://github.com/PetShopBros/lowdown-data">dataset</a></p>` +
       `<ul>${items.join("")}</ul>`,
@@ -285,12 +290,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       body = "Not found";
       type = "text/plain; charset=utf-8";
     } else body = page.html;
-  } else if (kind === "index" || kind === "sitemap") {
+  } else if (kind === "index" || kind === "home" || kind === "sitemap") {
     if (!supabase) return unavailable();
     const rows = await listRows(supabase);
     if (!rows) return unavailable();
-    path = kind === "index" ? "/servers" : "/sitemap.xml";
-    if (kind === "index") body = renderIndex(rows);
+    // 첫 주소로 들어온 방문은 utm_source(예: chatgpt.com)까지 남긴다 — AI 답변에서 클릭해 온 방문을 셀 수 있게
+    const utm = typeof req.query.utm_source === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(req.query.utm_source) ? req.query.utm_source : null;
+    path = kind === "index" ? "/servers" : kind === "home" ? `/${utm ? `?utm_source=${utm}` : ""}` : "/sitemap.xml";
+    if (kind === "index" || kind === "home") body = renderIndex(rows, { home: kind === "home" });
     else {
       body = renderSitemap(rows);
       type = "application/xml; charset=utf-8";

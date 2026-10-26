@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/",
+      "destination": "/api/page?kind=home"
+    },
+    {
       "source": "/openapi.json",
       "destination": "/api/discovery?file=openapi.json"
     },
