@@ -353,16 +353,15 @@ describe('GET /api/reputation/:target — scanner 블록', () => {
     assert.equal(r.body.scanner.latest.server_version, null);
   });
 
-  test('scanner_summary 오류(view 미생성 등)여도 기존 응답은 정상', async () => {
+  // 2026-10-27: 이전에는 200 으로 scanner 블록만 빼고 답했다. 빈 답이 "관찰 없음"으로 저장되는 일을 막으려고 503 으로 바꿨다.
+  test('scanner_summary 오류면 200 대신 503 (Retry-After)', async () => {
     scannerStatus = 404;
     const r = await call('mcp:modelcontextprotocol/brave-search');
-    assert.equal(r.status, 200);
-    assert.equal(r.body.success_rate, 0.733);
-    assert.equal(r.body.scanner, undefined);
+    assert.equal(r.status, 503);
+    assert.equal(r.body.error, 'temporarily_unavailable');
+    assert.equal(r.body.success_rate, undefined);
     const none = await call('mcp:io.github.acme/solo');
-    assert.equal(none.status, 200);
-    assert.equal(none.body.interactions, 0);
-    assert.equal(none.body.scanner, undefined);
+    assert.equal(none.status, 503);
   });
 
   test('3자 미만 입력은 부분 일치를 시도하지 않음', async () => {
@@ -562,11 +561,19 @@ describe('증거 블록 — Registry 선언 + Scanner 날짜별 기록', () => {
     assert.ok(!requests.some((q) => q.includes('registry_state')));
   });
 
-  test('Registry·관찰 이력 조회가 실패해도 나머지 응답은 정상', async () => {
-    failTables = new Set(['registry_state', 'scanner_observations']);
+  test('Registry 조회가 실패하면 503, 조회 기록은 unavailable 로 1건', async () => {
+    failTables = new Set(['registry_state']);
+    const r = await call('mcp:io.github.acme/solo');
+    assert.equal(r.status, 503);
+    assert.equal(r.body.registry, undefined);
+    assert.equal(lookupsInserted.length, 1);
+    assert.equal(lookupsInserted[0]!.result_kind, 'unavailable');
+  });
+
+  test('관찰 이력(보조) 조회만 실패하면 나머지 응답은 정상', async () => {
+    failTables = new Set(['scanner_observations']);
     const r = await call('mcp:io.github.acme/solo');
     assert.equal(r.status, 200);
-    assert.equal(r.body.registry, undefined);
     assert.equal(r.body.scanner.latest.reached_level, 2);
     assert.equal(r.body.scanner.daily_30d, undefined);
     assert.equal(lookupsInserted.length, 1);

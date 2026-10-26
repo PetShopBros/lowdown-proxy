@@ -44,6 +44,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .select(TASK_COLUMNS)
         .eq("target", target)
         .eq("task_type", taskType);
+      error = rowsError ?? null;
 
       // 퍼지 매칭: 정확 조회가 오류 없이 비었을 때만, 3자 이상만 (DB 가 느릴 때 부하를 더하지 않게)
       if (!rowsError && (!rows || rows.length === 0) && fuzzyPattern) {
@@ -117,8 +118,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     };
     // 응답 종류(result_kind)를 함께 남겨 "답이 없어 낭비된 조회" 비율을 잰다.
     // 열이 아직 없는 DB 에서도 조회 기록이 빠지지 않도록, 실패하면 result_kind 없이 한 번 더 쓴다.
-    const logged = await supabase.from("reputation_lookups").insert({ ...lookupRow, result_kind: resultKind(taskType, scannerLookup, evidence, data) } as never);
+    // 핵심 조회(평판 집계·Registry·Scanner)가 DB 오류로 실패했는가. "조회했는데 없음"과 구분한다.
+    const scannerQueried = !taskType && !(npmQuery && npmQuery.names.length !== 1);
+    const unavailable = coreUnavailable({
+      summaryError: Boolean(error),
+      scannerFailed: scannerQueried && scannerLookup === null,
+      registryFailed: evidence?.registryFailed === true,
+    });
+
+    const logged = await supabase.from("reputation_lookups").insert({ ...lookupRow, result_kind: unavailable ? "unavailable" : resultKind(taskType, scannerLookup, evidence, data) } as never);
     if (logged.error) await supabase.from("reputation_lookups").insert(lookupRow as never);
+
+    // 오류를 "데이터 없음"(200)으로 답하면 수집기·에이전트가 틀린 사실로 저장한다(2026-10-25 DB 포화 때 관찰).
+    // 503 + Retry-After 로 답해 나중에 다시 오게 한다.
+    if (unavailable) {
+      res.setHeader("Retry-After", String(RETRY_AFTER_SECONDS));
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(503).json(UNAVAILABLE_BODY);
+    }
 
     if (error || !data) {
       return res.status(200).json({
@@ -294,6 +311,22 @@ function buildFailureBreakdown(rows: any[]): Record<string, number> | null {
   return breakdown;
 }
 
+// ── 일시 장애 응답 ───────────────────────────────────────────────
+export const RETRY_AFTER_SECONDS = 120;
+export const UNAVAILABLE_BODY = {
+  error: "temporarily_unavailable",
+  retry_after_seconds: RETRY_AFTER_SECONDS,
+  note: "Lowdown could not read its records for this request. Nothing is implied about the target. Retry later.",
+};
+
+/**
+ * 핵심 조회가 오류로 실패했으면 true. 이때는 200 으로 답하지 않는다(빈 답이 사실로 저장되지 않게).
+ * 보조 조회(npm/PyPI 상태, 샌드박스, 날짜별 이력, 기록 페이지) 실패는 여기에 넣지 않는다.
+ */
+export function coreUnavailable(f: { summaryError: boolean; scannerFailed: boolean; registryFailed: boolean }): boolean {
+  return f.summaryError || f.scannerFailed || f.registryFailed;
+}
+
 /** 조회 기록용 응답 종류. 판정이 아니라 "무엇으로 답했나"만. */
 export function resultKind(taskType: string | null, lookup: ScannerLookup | null, ev: Evidence | null, data: unknown): string {
   if (taskType) return "task_type";
@@ -422,6 +455,8 @@ interface Evidence {
   undeclared?: { type: PackageInputType; ident: string };
   /** 이 Registry 항목의 Lowdown 서버 기록 페이지(lowdown-pages 에 있을 때만) */
   recordPage?: RecordPage;
+  /** Registry 기록 조회가 DB 오류로 실패함(없음과 구분) → 503 */
+  registryFailed?: boolean;
 }
 
 // ── 서버 기록 페이지 (lowdown-pages, scanner/pages.ts 가 매일 만든다) ─────────
@@ -799,6 +834,8 @@ async function buildEvidence(supabase: any, target: string, lookup: ScannerLooku
           ? `No MCP Registry entry in Lowdown's records (kept since ${REGISTRY_RECORDS_SINCE}) declares this ${label} package.`
           : `Not a valid ${label} package name.`,
       };
+    } else {
+      ev.registryFailed = true;
     }
     if (npmQuery.ident) await attachPackages(supabase, ev, [{ type: npmQuery.type, identifier: npmQuery.ident, version: null }], now, true);
     return ev;
@@ -833,7 +870,8 @@ async function buildEvidence(supabase: any, target: string, lookup: ScannerLooku
       };
     }
   } catch {
-    // Registry 기록 조회 실패 → registry 블록 없이 계속
+    // Registry 기록 조회 실패 → 핸들러가 503 으로 답한다
+    ev.registryFailed = true;
   }
   const targetId = lookup?.summary?.target;
   if (typeof targetId === "string") {
