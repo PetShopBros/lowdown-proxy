@@ -46,6 +46,8 @@ describe('서버 기록 페이지', () => {
     assert.match(p.html, /2026-10-24<\/strong>: input or output schemas changed, tool names changed; tool count 4 → 5; a tool description with a URL appeared \(www\.trendsmcp\.ai\)/);
     assert.match(p.html, /<link rel="canonical" href="https:\/\/lowdown-proxy\.vercel\.app\/servers\/ai\.trendsmcp\/google-trends">/);
     assert.match(p.html, /not the official page of this server/);
+    assert.match(p.html, /<meta property="og:site_name" content="Lowdown">/);
+    assert.match(p.html, /<meta property="og:url" content="https:\/\/lowdown-proxy\.vercel\.app\/servers\/ai\.trendsmcp\/google-trends">/);
     assert.ok(!p.html.includes('noindex'));
   });
 

@@ -70,6 +70,11 @@ function shell(o: { title: string; description: string; canonical: string; noind
 <title>${esc(o.title)}</title>
 <meta name="description" content="${esc(o.description.slice(0, 300))}">
 ${o.noindex ? '<meta name="robots" content="noindex">\n' : ""}<link rel="canonical" href="${esc(o.canonical)}">
+<meta property="og:site_name" content="Lowdown">
+<meta property="og:type" content="website">
+<meta property="og:title" content="${esc(o.title)}">
+<meta property="og:description" content="${esc(o.description.slice(0, 300))}">
+<meta property="og:url" content="${esc(o.canonical)}">
 <style>${STYLE}</style></head>
 <body><main>
 ${o.body}
