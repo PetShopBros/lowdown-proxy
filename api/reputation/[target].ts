@@ -450,6 +450,8 @@ interface Evidence {
   scannerSince?: string | null;
   packages?: Array<Record<string, unknown>>;
   packageFacts?: string[];
+  /** 최근 7일 안에 새 내용 표지가 생긴 변경 (첫 문장용) */
+  changeFacts?: string[];
   /** stdio 샌드박스 결과 (SANDBOX_PUBLIC=1 일 때만) */
   sandbox?: Array<Record<string, unknown>>;
   /** npm:/pypi: 입력인데 그 패키지를 선언한 Registry 항목이 없음(형식 검사 통과한 이름) */
@@ -593,6 +595,7 @@ interface ObsRow {
   retry_level?: unknown;
   desc_hash?: unknown;
   server_version?: unknown;
+  tool_set_hash?: unknown;
 }
 
 // ── 도구 정의 변경 이력 ───────────────────────────────────────────
@@ -611,7 +614,12 @@ interface DefPoint {
   nh: string | null;
   count: number | null;
   version: string | null;
+  set: string | null;
 }
+
+/** 변경 이벤트 → 앞뒤 도구 집합 해시. 응답(JSON)에는 나가지 않는다. 내용 표지 비교(attachNewFlags)에만 쓴다. */
+export const EVENT_SETS = new WeakMap<object, { from: string; to: string }>();
+const SET_HASH_RE = /^[0-9a-f]{64}$/;
 
 const dayDiff = (a: string, b: string) => Math.round((Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / DAY_MS);
 
@@ -632,6 +640,7 @@ export function definitionChanges(rows: ObsRow[]): Record<string, unknown> {
       nh: typeof r.names_hash === "string" && /^[0-9a-f]{64}$/.test(r.names_hash) ? r.names_hash : null,
       count: intOrNull(r.tool_count),
       version: safeVersion(r.server_version),
+      set: typeof r.tool_set_hash === "string" && SET_HASH_RE.test(r.tool_set_hash) ? r.tool_set_hash : null,
     };
     if (!byRemote.has(remote)) byRemote.set(remote, []);
     byRemote.get(remote)!.push(point);
@@ -664,7 +673,7 @@ export function definitionChanges(rows: ObsRow[]): Record<string, unknown> {
         if (cur.version && prev.version && cur.version !== prev.version) kinds.push("server_version_changed");
         if (definitionChanged) changeDays.add(cur.day);
         if (kinds.length > 0) {
-          events.push({
+          const ev: Record<string, unknown> = {
             day: cur.day,
             kinds,
             ...(cur.count !== null && prev.count !== null && cur.count !== prev.count ? { tool_count: { from: prev.count, to: cur.count } } : {}),
@@ -672,7 +681,9 @@ export function definitionChanges(rows: ObsRow[]): Record<string, unknown> {
             returned_to_earlier_definition: definitionChanged && seen.has(key),
             compared_with: prev.day,
             ...(multiRemote ? { remote_host: hostOfUrl(remote) } : {}),
-          });
+          };
+          if (definitionChanged && cur.set && prev.set && cur.set !== prev.set) EVENT_SETS.set(ev, { from: prev.set, to: cur.set });
+          events.push(ev);
         }
       }
       seen.add(key);
@@ -713,6 +724,120 @@ export function definitionChanges(rows: ObsRow[]): Record<string, unknown> {
       "Each daily observation is compared with the previous one from the same remote URL, using hashes of tool schemas, descriptions and names. " +
       "Description text is not returned. A change is a recorded fact, not a judgment about the server.",
   };
+}
+
+// ── 변경 내용 표지 (supabase/2026-10-27_tool_content_flags.sql) ────────────────
+// 변경 이벤트의 앞뒤 도구 집합을 비교해, 새로 나타난 표지만 이벤트에 붙인다(new_flags). 원문·해시는 내보내지 않는다.
+// null = 확인하지 못함(앞뒤 집합 중 하나의 저장된 정의가 없거나 조회 실패). [] = 확인했고 새 표지 없음.
+export const CONTENT_RULES = ["description_url", "hidden_characters"] as const;
+const CONTENT_RULE_SET = new Set<string>(CONTENT_RULES);
+const DOMAIN_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+const MAX_NEW_DOMAINS = 5;
+/** 첫 문장에 쓰는 기간(일). 그보다 오래된 표지는 events 에만 */
+export const CHANGE_FACT_DAYS = 7;
+const CONTENT_FLAGS_BASIS =
+  "new_flags lists content markers that appeared with a change, compared with the previous tool set from the same remote: " +
+  "description_url (a tool description contains an http(s) URL; domains that were not in the previous set are listed) and " +
+  "hidden_characters (a tool definition contains invisible Unicode characters: zero-width, text-direction controls or tag characters). " +
+  "Computed from the tool definitions Lowdown stored; the text is not returned. null means not checked. A marker is a recorded fact, not a judgment.";
+
+type FlagMap = Map<string, { defs: number; domains: string[] }>;
+
+/**
+ * RPC 행 → 집합별 표지. 저장된 집합만 들어간다(rule_id 가 null 인 행 = 그 집합을 확인했다는 표시).
+ * 맵에 없는 집합은 확인하지 못한 것이다. 형식이 맞지 않는 행·값은 버린다.
+ */
+export function flagMapsFromRows(rows: unknown, sets: ReadonlySet<string>): Map<string, FlagMap> {
+  const out = new Map<string, FlagMap>();
+  const list = (Array.isArray(rows) ? rows : []) as Array<Record<string, unknown>>;
+  for (const o of list) {
+    if (o.rule_id === null && typeof o.tool_set_hash === "string" && sets.has(o.tool_set_hash)) out.set(o.tool_set_hash, new Map());
+  }
+  for (const o of list) {
+    const set = typeof o.tool_set_hash === "string" && out.has(o.tool_set_hash) ? o.tool_set_hash : null;
+    const rule = typeof o.rule_id === "string" && CONTENT_RULE_SET.has(o.rule_id) ? o.rule_id : null;
+    const defs = Number.isInteger(o.defs) && (o.defs as number) > 0 && (o.defs as number) < 100_000 ? (o.defs as number) : null;
+    if (!set || !rule || !defs) continue;
+    const domains = (Array.isArray(o.domains) ? o.domains : []).filter((d): d is string => typeof d === "string" && d.length <= 100 && DOMAIN_RE.test(d)).slice(0, 20);
+    out.get(set)!.set(rule, { defs, domains });
+  }
+  return out;
+}
+
+/** 앞 집합에 비해 새로 나타난 표지: 표지가 붙은 정의 수가 늘었거나, 새 도메인이 생겼다. */
+export function newFlagsBetween(from: FlagMap, to: FlagMap): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  for (const rule of CONTENT_RULES) {
+    const a = from.get(rule);
+    const b = to.get(rule);
+    if (!b) continue;
+    const before = a?.defs ?? 0;
+    const newDomains = b.domains.filter((d) => !(a?.domains ?? []).includes(d)).slice(0, MAX_NEW_DOMAINS);
+    if (b.defs > before || newDomains.length > 0) {
+      out.push({ rule, definitions: { from: before, to: b.defs }, ...(rule === "description_url" ? { new_domains: newDomains } : {}) });
+    }
+  }
+  return out;
+}
+
+const isDefinitionChange = (e: Record<string, unknown>) =>
+  Array.isArray(e.kinds) && e.kinds.some((k) => k === "schema_changed" || k === "description_changed" || k === "tool_names_changed");
+
+/** 변경 이벤트마다 new_flags 를 붙인다. 조회 실패는 응답을 막지 않는다(보조 정보) — 그때는 null 과 content_flags_checked: false. */
+export async function attachNewFlags(supabase: any, dc: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const events = (Array.isArray(dc.events) ? dc.events : []) as Array<Record<string, unknown>>;
+  const changeEvents = events.filter(isDefinitionChange);
+  if (changeEvents.length === 0) return dc;
+  for (const e of changeEvents) e.new_flags = null;
+  const sets = new Set<string>();
+  for (const e of changeEvents) {
+    const p = EVENT_SETS.get(e);
+    if (p) {
+      sets.add(p.from);
+      sets.add(p.to);
+    }
+  }
+  let checked = false;
+  if (sets.size > 0) {
+    try {
+      const r = await supabase.rpc("lowdown_tool_set_flags", { p_sets: [...sets].slice(0, 20) });
+      if (!r.error) {
+        const maps = flagMapsFromRows(r.data, sets);
+        for (const e of changeEvents) {
+          const p = EVENT_SETS.get(e);
+          const from = p ? maps.get(p.from) : undefined;
+          const to = p ? maps.get(p.to) : undefined;
+          // 앞뒤 집합이 모두 저장돼 있을 때만 비교한다. 하나라도 없으면 null(확인하지 못함) — "새 표지 없음"으로 말하지 않는다.
+          if (from && to) e.new_flags = newFlagsBetween(from, to);
+        }
+        checked = true;
+      }
+    } catch {
+      // 보조 정보: 실패하면 null 그대로
+    }
+  }
+  return { ...dc, content_flags_checked: checked, content_flags_basis: CONTENT_FLAGS_BASIS };
+}
+
+/** 첫 문장용: 최근 CHANGE_FACT_DAYS 일 안에 새 표지가 생긴 변경. 최신 순, 최대 2문장. */
+export function changeFactsFrom(dc: unknown, now: number): string[] {
+  const events = dc && typeof dc === "object" && Array.isArray((dc as any).events) ? ((dc as any).events as Array<Record<string, unknown>>) : [];
+  const since = utcDay(now - CHANGE_FACT_DAYS * DAY_MS);
+  const facts: string[] = [];
+  for (const e of events) {
+    const day = typeof e.day === "string" && ISO_DAY.test(e.day) ? e.day : null;
+    if (!day || day < since || !Array.isArray(e.new_flags)) continue;
+    for (const f of e.new_flags as Array<Record<string, unknown>>) {
+      if (f.rule === "description_url") {
+        const doms = (Array.isArray(f.new_domains) ? f.new_domains : []).filter((d): d is string => typeof d === "string" && DOMAIN_RE.test(d));
+        facts.push(`On ${day} a tool description with a URL appeared${doms.length ? ` (new domain${doms.length === 1 ? "" : "s"}: ${doms.join(", ")})` : ""}.`);
+      } else if (f.rule === "hidden_characters") {
+        facts.push(`On ${day} a tool definition with invisible Unicode characters appeared.`);
+      }
+      if (facts.length >= 2) return facts;
+    }
+  }
+  return facts;
 }
 
 /** 하루 1행: 원격 주소가 여러 개면 가장 멀리 간 결과와 주소 수. tools_changed 는 직전 관찰일과 schema_hash 비교. */
@@ -761,7 +886,7 @@ async function scannerHistory(supabase: any, targetId: string, registryRow: any 
   const [obs, first, cohort, gaps] = await Promise.all([
     supabase
       .from("scanner_observations")
-      .select("observed_at,reached_level,http_status,error_type,tool_count:metadata->>tool_count,schema_hash:metadata->>schema_hash,desc_hash:metadata->>desc_hash,server_version:metadata->>server_version,names_hash:metadata->>names_hash,remote_url:metadata->>remote_url,retry_level:metadata->retry->>reached_level")
+      .select("observed_at,reached_level,http_status,error_type,tool_count:metadata->>tool_count,schema_hash:metadata->>schema_hash,desc_hash:metadata->>desc_hash,server_version:metadata->>server_version,names_hash:metadata->>names_hash,remote_url:metadata->>remote_url,retry_level:metadata->retry->>reached_level,tool_set_hash:metadata->>tool_set_hash")
       .eq("target_id", targetId)
       .gte("observed_at", sinceIso)
       .order("observed_at", { ascending: true })
@@ -805,7 +930,7 @@ async function scannerHistory(supabase: any, targetId: string, registryRow: any 
       observation_basis: cohorts === null ? null : cohorts.length > 0 ? "fixed_cohort" : rows.length > 0 ? "on_request" : null,
       ...(cohorts ? { cohorts } : {}),
       first_observed_at: firstObservedAt,
-      definition_changes: definitionChanges(rows),
+      definition_changes: await attachNewFlags(supabase, definitionChanges(rows)),
       daily_30d: daily,
       missing_days: missing,
       tools,
@@ -886,6 +1011,7 @@ async function buildEvidence(supabase: any, target: string, lookup: ScannerLooku
       const h = await scannerHistory(supabase, targetId, registryRow, (lookup!.summary!.latest as any)?.server_version, now);
       ev.scannerExtra = h.extra;
       ev.scannerSince = h.since;
+      ev.changeFacts = changeFactsFrom(h.extra.definition_changes, now);
     } catch {
       // 날짜별 기록 실패 → 기존 scanner 요약만
     }
@@ -1064,7 +1190,7 @@ function evidenceHead(ev: Evidence | null, lookup: ScannerLookup | null, interac
   parts.push(interactions > 0 ? `${interactions} agent-reported interactions` : "no agent-reported interactions");
   const text = parts.join("; ");
   // 첫 문장: 연결 상태(최근 일일 점검) → 설치 판단을 바꿀 수 있는 패키지 사실(deprecated·404). 새 버전 발행은 packages 이력에만.
-  const lead = [ev?.statusLead, ...(ev?.packageFacts ?? [])].filter((s): s is string => typeof s === "string" && s.length > 0).join(" ");
+  const lead = [ev?.statusLead, ...(ev?.changeFacts ?? []), ...(ev?.packageFacts ?? [])].filter((s): s is string => typeof s === "string" && s.length > 0).join(" ");
   return {
     ...(ev?.name ? { resolved_target: `mcp:${ev.name}` } : {}),
     message: `${lead ? `${lead} ` : ""}${text.charAt(0).toUpperCase()}${text.slice(1)}.${ev?.undeclared ? ` ${scopeNote(ev.undeclared.type)}` : ""}${inputNote ? ` ${inputNote}` : ""}`,

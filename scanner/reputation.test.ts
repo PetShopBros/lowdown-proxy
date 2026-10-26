@@ -520,8 +520,10 @@ describe('증거 블록 — Registry 선언 + Scanner 날짜별 기록', () => {
     assert.equal(sc.definition_changes.last_change, dayAgo(1));
     assert.equal(sc.definition_changes.stable_days_before_last_change, 3);
     assert.deepEqual(sc.definition_changes.events, [
-      { day: dayAgo(1), kinds: ['schema_changed'], tool_count: { from: 5, to: 6 }, returned_to_earlier_definition: false, compared_with: dayAgo(4) },
+      // new_flags: null — 이 관찰들에는 도구 집합 해시가 없어 내용 표지를 확인하지 못했다
+      { day: dayAgo(1), kinds: ['schema_changed'], tool_count: { from: 5, to: 6 }, returned_to_earlier_definition: false, compared_with: dayAgo(4), new_flags: null },
     ]);
+    assert.equal(sc.definition_changes.content_flags_checked, false);
     assert.match(r.body.message, new RegExp(`tool definitions last changed on ${dayAgo(1)} after 3 days without change`));
     assert.deepEqual(sc.tools.names, ['get_weather', 'list_items']); // 형식에 맞지 않는 이름은 빠짐
     assert.equal(sc.tools.count, 2);
