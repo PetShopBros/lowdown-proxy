@@ -93,6 +93,9 @@ export interface NpmChangeRow {
   old_value: string | null;
   new_value: string | null;
   scan_run_id: string;
+  /** latest_changed 에만: 전날까지 기록된 패키지 문서 수정 시각(직전 발행 시각보다 같거나 늦다). 그 외 이벤트는 null.
+   *  일괄 쓰기(PostgREST)는 모든 행의 키가 같아야 하므로 diffPackage 는 항상 이 키를 넣는다. */
+  prev_modified?: string | null;
 }
 
 export interface NpmRunCtx {
@@ -108,7 +111,7 @@ export interface NpmRunCtx {
  */
 export function diffPackage(prev: NpmStateRow | undefined, obs: NpmObservation, ctx: NpmRunCtx): { row: NpmStateRow | null; events: NpmChangeRow[] } {
   const day = ctx.now.slice(0, 10);
-  const ev = (kind: NpmChangeKind, oldV: string | null, newV: string | null): NpmChangeRow => ({ detected_on: day, ident: obs.ident, kind, old_value: oldV, new_value: newV, scan_run_id: ctx.scanRunId });
+  const ev = (kind: NpmChangeKind, oldV: string | null, newV: string | null, prevModified: string | null = null): NpmChangeRow => ({ detected_on: day, ident: obs.ident, kind, old_value: oldV, new_value: newV, scan_run_id: ctx.scanRunId, prev_modified: prevModified });
 
   if (obs.kind === 'error') {
     if (!prev) return { row: null, events: [] };
@@ -131,7 +134,7 @@ export function diffPackage(prev: NpmStateRow | undefined, obs: NpmObservation, 
   if (prev.status === 'found' && next.status === 'not_found') events.push(ev('not_found', prev.latest, null));
   else if (prev.status === 'not_found' && next.status === 'found') events.push(ev('restored', null, next.latest));
   else if (prev.status === 'found' && next.status === 'found') {
-    if (prev.latest !== null && next.latest !== null && prev.latest !== next.latest) events.push(ev('latest_changed', prev.latest, next.latest));
+    if (prev.latest !== null && next.latest !== null && prev.latest !== next.latest) events.push(ev('latest_changed', prev.latest, next.latest, prev.modified));
     if (prev.deprecated === false && next.deprecated === true) events.push(ev('deprecated', next.latest, null));
     if (prev.deprecated === true && next.deprecated === false) events.push(ev('undeprecated', next.latest, null));
   }

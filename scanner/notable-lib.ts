@@ -14,6 +14,7 @@ export const NOTABLE_RULE_VERSION = 1;
 export const RULE_IDS = [
   'P1_npm_deprecated',
   'P2_npm_not_found',
+  'P3_npm_release_after_dormancy',
   'P4_pypi_archived',
   'P5_pypi_latest_yanked',
   'P6_pypi_not_found',
@@ -46,7 +47,12 @@ export interface ChangeIn {
   kind: string;
   old_value: string | null;
   new_value: string | null;
+  /** npm latest_changed 에만 (P3). 없으면 P3 를 판단하지 않는다. */
+  prev_modified?: string | null;
 }
+
+/** P3: 직전 기록 수정 시각이 그날보다 이만큼 이상 전이면 "휴면 뒤 새 버전" */
+export const DORMANT_DAYS = 180;
 
 export interface NewStateIn {
   ident: string;
@@ -140,6 +146,20 @@ export function buildNotable(input: NotableInput): { rows: NotableRow[]; skipped
     }
     if (c.kind === 'deprecated') push('P1_npm_deprecated', 'npm', c.ident, { version: ver(c.old_value) });
     else if (c.kind === 'not_found') push('P2_npm_not_found', 'npm', c.ident, { last_seen_latest: ver(c.old_value) });
+    else if (c.kind === 'latest_changed' && typeof c.prev_modified === 'string') {
+      const before = Date.parse(c.prev_modified);
+      const dayStart = Date.parse(`${input.day}T00:00:00Z`);
+      if (!Number.isFinite(before) || !Number.isFinite(dayStart)) continue;
+      const dormant = Math.floor((dayStart - before) / 86_400_000);
+      if (dormant >= DORMANT_DAYS) {
+        push('P3_npm_release_after_dormancy', 'npm', c.ident, {
+          old_version: ver(c.old_value),
+          new_version: ver(c.new_value),
+          dormant_days_at_least: dormant,
+          previous_activity: new Date(before).toISOString().slice(0, 10),
+        });
+      }
+    }
   }
 
   const statuses = new Set<string>(PROJECT_STATUSES);
@@ -242,13 +262,14 @@ async function initialDay(cfg: SupabaseConfig, table: string, deps: DiffIoDeps):
 
 export async function fetchNotableInput(cfg: SupabaseConfig, day: string, deps: DiffIoDeps = {}): Promise<NotableInput> {
   const changeCols = 'detected_on,ident,kind,old_value,new_value';
+  const npmChangeCols = `${changeCols},prev_modified`;
   const stateCols = 'ident,status,baseline,first_checked_at';
   const dayRange: Array<[string, string]> = [
     ['first_checked_at', `gte.${day}T00:00:00Z`],
     ['first_checked_at', `lt.${nextDay(day)}T00:00:00Z`],
   ];
   const [npmChanges, pypiChanges, npmFirstChecked, pypiFirstChecked, npmInitialDay, pypiInitialDay, declarations] = await Promise.all([
-    getSmall<ChangeIn>(cfg, 'npm_package_changes', [['select', changeCols], ['detected_on', `eq.${day}`], ['kind', 'in.(deprecated,not_found)']], deps),
+    getSmall<ChangeIn>(cfg, 'npm_package_changes', [['select', npmChangeCols], ['detected_on', `eq.${day}`], ['kind', 'in.(deprecated,not_found,latest_changed)']], deps),
     getSmall<ChangeIn>(cfg, 'pypi_package_changes', [['select', changeCols], ['detected_on', `eq.${day}`], ['kind', 'in.(status_changed,yanked,not_found)']], deps),
     getSmall<NewStateIn>(cfg, 'npm_package_state', [['select', stateCols], ['status', 'eq.not_found'], ...dayRange], deps),
     getSmall<NewStateIn>(cfg, 'pypi_package_state', [['select', stateCols], ['status', 'eq.not_found'], ...dayRange], deps),

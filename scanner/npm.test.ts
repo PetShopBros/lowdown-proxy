@@ -86,6 +86,14 @@ describe('npm 패키지 — 상태와 이벤트', () => {
     assert.deepEqual(diffPackage(undefined, { ident: 'x', kind: 'error', error: 'timeout' }, CTX), { row: null, events: [] });
   });
 
+  test('latest_changed 에는 전날까지 기록된 수정 시각(prev_modified), 다른 이벤트는 null — 일괄 쓰기 키를 맞춘다', () => {
+    const a = diffPackage(state('x', { modified: '2025-01-02T03:04:05.000Z' }), found('x', '1.1.0', true), CTX);
+    assert.deepEqual(a.events.map((e) => [e.kind, e.prev_modified]), [['latest_changed', '2025-01-02T03:04:05.000Z'], ['deprecated', null]]);
+    assert.ok(a.events.every((e) => 'prev_modified' in e));
+    const gone = diffPackage(state('x'), { ident: 'x', kind: 'not_found' }, CTX);
+    assert.equal(gone.events[0]?.prev_modified, null);
+  });
+
   test('latest 변경(낮아져도 해석 없이 기록), deprecated 표시 생김·없어짐', () => {
     const a = diffPackage(state('x'), found('x', '1.1.0'), CTX);
     assert.deepEqual(a.events.map((e) => [e.kind, e.old_value, e.new_value, e.detected_on]), [['latest_changed', '1.0.0', '1.1.0', '2026-10-23']]);

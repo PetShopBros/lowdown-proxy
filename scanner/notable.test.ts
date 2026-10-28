@@ -56,6 +56,26 @@ describe('레이다 1단계 — 패키지 규칙', () => {
     assert.equal(archived.group_key, 'ns:io.github.acme');
   });
 
+  test('P3: npm 새 버전, 전날까지 기록된 수정 시각이 180일 이상 전이면 — 값이 없거나 짧으면 내지 않는다', () => {
+    const lc = (ident: string, prev_modified: string | null | undefined) => ({ ...ch(ident, 'latest_changed', '1.0.0', '1.1.0'), prev_modified });
+    const { rows } = buildNotable(
+      base({
+        npmChanges: [lc('woke-up', '2026-04-29T12:00:00Z'), lc('busy', '2026-10-20T00:00:00Z'), lc('unknown', null), lc('legacy', undefined), lc('edge', '2026-04-30T00:00:00Z')],
+        declarations: [{ name: 'io.github.w/woke', packages_key: 'npm woke-up 1.1.0 stdio' }],
+      }),
+    );
+    assert.deepEqual(rows.map((r) => `${r.rule_id} ${r.subject}`), ['P3_npm_release_after_dormancy edge', 'P3_npm_release_after_dormancy woke-up']);
+    const woke = rows.find((r) => r.subject === 'woke-up')!;
+    assert.deepEqual(woke.evidence, {
+      package: 'woke-up',
+      old_version: '1.0.0',
+      new_version: '1.1.0',
+      dormant_days_at_least: 180,
+      previous_activity: '2026-04-29',
+      registry_names: ['io.github.w/woke'],
+    });
+  });
+
   test('다른 날 이벤트는 넣지 않는다', () => {
     const { rows } = buildNotable(base({ npmChanges: [ch('a-pkg', 'deprecated', '1.0.0', null, '2026-10-26')] }));
     assert.equal(rows.length, 0);
