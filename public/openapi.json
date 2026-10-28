@@ -48,6 +48,29 @@
               "pattern": "^[A-Za-z0-9._:-]{1,64}$"
             },
             "description": "Optional referral tag used to measure where lookups come from."
+          },
+          {
+            "name": "menu",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "status",
+                "packages",
+                "tools",
+                "declared-vs-observed",
+                "content-flags",
+                "tool-list",
+                "registry",
+                "history",
+                "agent-reports",
+                "install-check",
+                "change-watch",
+                "full"
+              ]
+            },
+            "description": "Return only the part of the record that answers one question (see https://lowdown-proxy.vercel.app/menu.json). Sets: install-check (before installing: status, packages, declared-vs-observed, content-flags), change-watch (recent changes). Dishes: status, packages, tools, declared-vs-observed, content-flags, tool-list, registry, history, agent-reports. Omit (or 'full') for the full record. 'stdio', 'radar', 'watch' and 'bulk-history' are not available yet and return 400 with their status."
           }
         ],
         "responses": {
@@ -1239,6 +1262,79 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/feedback": {
+      "post": {
+        "summary": "Tell Lowdown whether a lookup was useful",
+        "description": "Fixed choices plus a short optional note (stored, never shown back). Up to 1,000 per day in total; then 429.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "useful"
+                ],
+                "properties": {
+                  "useful": {
+                    "type": "string",
+                    "enum": [
+                      "yes",
+                      "no",
+                      "partly"
+                    ]
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "menu": {
+                    "type": "string"
+                  },
+                  "missing": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "stdio_results",
+                        "risk_facts",
+                        "longer_history",
+                        "more_servers",
+                        "alerts",
+                        "faster_response",
+                        "other"
+                      ]
+                    }
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 200
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Stored"
+          },
+          "400": {
+            "description": "Invalid body; the response includes the format"
+          },
+          "429": {
+            "description": "Daily limit reached"
+          }
+        }
+      },
+      "get": {
+        "summary": "Format of the feedback body",
+        "responses": {
+          "200": {
+            "description": "The accepted fields and choices"
           }
         }
       }

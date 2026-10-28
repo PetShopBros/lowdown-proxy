@@ -968,3 +968,69 @@ describe('입력 정리 — 앞뒤 공백만 제거, 글자는 고치지 않는�
     assert.ok(!plain.body.message.includes('escape sequence'));
   });
 });
+
+describe('메뉴 (?menu=)', () => {
+  test('메뉴 없음·full 은 전체 응답 그대로, 조회 기록에 menu 키 없음', async () => {
+    const a = await call('mcp:io.github.acme/solo');
+    const b = await call('mcp:io.github.acme/solo', { menu: 'full' });
+    assert.deepEqual(Object.keys(b.body), Object.keys(a.body));
+    assert.ok(!('menu' in lookupsInserted[0]!));
+  });
+
+  test('단품: 공통 필드 + 그 부분만, 전체 응답과 같은 모양, 출처는 맨 끝, 기록에 menu', async () => {
+    const full = await call('mcp:io.github.acme/solo');
+    lookupsInserted = [];
+    const r = await call('mcp:io.github.acme/solo', { menu: 'declared-vs-observed' });
+    assert.equal(r.status, 200);
+    assert.deepEqual(Object.keys(r.body), ['target', 'resolved_target', 'message', 'menu', 'scanner', 'source']);
+    assert.deepEqual(r.body.scanner, { declared_vs_observed: full.body.scanner.declared_vs_observed });
+    assert.equal(r.body.message, full.body.message);
+    assert.equal(lookupsInserted[0]!.menu, 'declared-vs-observed');
+    const t = await call('mcp:io.github.acme/solo', { menu: 'tools' });
+    assert.deepEqual(t.body.scanner.definition_changes, full.body.scanner.definition_changes);
+    assert.equal(t.body.registry, undefined);
+    const reg = await call('mcp:io.github.acme/solo', { menu: 'registry' });
+    assert.deepEqual(reg.body.registry, full.body.registry);
+    assert.equal(reg.body.scanner, undefined);
+  });
+
+  test('세트 install-check: status·packages·선언 대 관측·내용 표지, 아직 없는 메뉴는 사실대로', async () => {
+    const r = await call('mcp:io.github.acme/solo', { menu: 'install-check' });
+    assert.equal(r.status, 200);
+    assert.ok('packages' in r.body);
+    assert.ok(r.body.scanner.declared_vs_observed);
+    assert.deepEqual(r.body.content_flags.checked, false);
+    assert.deepEqual(r.body.not_yet_included.map((x: any) => x.menu), ['stdio', 'radar']);
+    const keys = Object.keys(r.body);
+    assert.equal(keys[keys.length - 1], 'source');
+  });
+
+  test('관찰 표본 밖이면 scanner 는 observed:false 사실만 (문제 없음으로 읽히지 않게)', async () => {
+    const full = await call('mcp:io.github.acme/outside');
+    if (full.body.scanner?.observed !== false) return; // 이 픽스처에 표본 밖 대상이 없으면 건너뜀
+    const r = await call('mcp:io.github.acme/outside', { menu: 'tools' });
+    assert.equal(r.body.scanner.observed, false);
+  });
+
+  test('준비 중·모르는·형식 아닌 메뉴는 400 + 메뉴 목록, DB 를 읽지 않는다', async () => {
+    lookupsInserted = [];
+    const p = await call('mcp:io.github.acme/solo', { menu: 'stdio' });
+    assert.equal(p.status, 400);
+    assert.equal(p.body.error, 'menu_not_available');
+    assert.match(p.body.status, /not published/);
+    const w = await call('mcp:io.github.acme/solo', { menu: 'watch' });
+    assert.match(w.body.status, /paid/);
+    const u = await call('mcp:io.github.acme/solo', { menu: 'nope' });
+    assert.equal(u.body.error, 'unknown_menu');
+    assert.ok(u.body.dishes.includes('status') && u.body.sets.includes('install-check'));
+    const bad = await call('mcp:io.github.acme/solo', { menu: 'DROP TABLE' });
+    assert.equal(bad.body.error, 'invalid_menu');
+    assert.equal(lookupsInserted.length, 0);
+  });
+
+  test('출처에 메뉴판·피드백 주소', async () => {
+    const r = await call('mcp:io.github.acme/solo');
+    assert.equal(r.body.source.menu_card, 'https://lowdown-proxy.vercel.app/menu.json');
+    assert.equal(r.body.source.feedback, 'https://lowdown-proxy.vercel.app/api/feedback');
+  });
+});

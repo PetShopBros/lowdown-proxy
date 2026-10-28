@@ -27,6 +27,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // 조회 유입 측정용 태그 (예: ?ref=report). 안전한 문자만 허용.
   const refRaw = req.query.ref;
   const ref = typeof refRaw === "string" && /^[A-Za-z0-9._:-]{1,64}$/.test(refRaw) ? refRaw : null;
+  // 메뉴(?menu=): 전체 응답에서 필요한 부분만. 없으면 전체(기존과 같음). 준비 중·모르는 메뉴는 400 + 메뉴 목록.
+  const menuParsed = parseMenu(req.query.menu);
+  if (!menuParsed.ok) return res.status(menuParsed.status).json(menuParsed.body);
+  const menu = menuParsed.menu;
   // 부분 일치 패턴: 3자 이상만, LIKE 특수문자(\ % _)는 글자 그대로 찾게 이스케이프
   const fuzzyPattern = typeof target === "string" && target.length >= 3 ? `%${target.replace(/[\\%_]/g, "\\$&")}%` : null;
 
@@ -127,7 +131,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       statusFailed: evidence?.statusFailed === true,
     });
 
-    const logged = await supabase.from("reputation_lookups").insert({ ...lookupRow, result_kind: unavailable ? "unavailable" : resultKind(taskType, scannerLookup, evidence, data) } as never);
+    // menu 열도 같은 방식: 열이 없으면 아래 재시도(lookupRow 만)로 기록은 남는다.
+    const logged = await supabase.from("reputation_lookups").insert({ ...lookupRow, result_kind: unavailable ? "unavailable" : resultKind(taskType, scannerLookup, evidence, data), ...(menu ? { menu } : {}) } as never);
     if (logged.error) await supabase.from("reputation_lookups").insert(lookupRow as never);
 
     // 오류를 "데이터 없음"(200)으로 답하면 수집기·에이전트가 틀린 사실로 저장한다(2026-10-25 DB 포화 때 관찰).
@@ -139,7 +144,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (error || !data) {
-      return res.status(200).json({
+      return res.status(200).json(applyMenu({
         target,
         task_type: taskType ?? undefined,
         ...evidenceHead(evidence, scannerLookup, 0, inputNote),
@@ -148,7 +153,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         success_rate: null,
         confidence: "none",
         source: lookupSource(evidence, Date.now()),
-      });
+      }, menu));
     }
 
     // confidence 계산 (성공률 분모 = rated_interactions 기반. 0.1.17 이전 뷰에는 없어서 interactions 로 대체)
@@ -194,7 +199,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // node_id 없으면 기본 응답
     if (!nodeId) {
-      return res.status(200).json(baseResponse);
+      return res.status(200).json(applyMenu(baseResponse, menu));
     }
 
     // node_id 있으면 상세 데이터 추가
@@ -232,11 +237,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       recentTrends.push({ date, count });
     }
 
-    return res.status(200).json({
+    return res.status(200).json(applyMenu({
       ...baseResponse,
       task_breakdown: taskBreakdown,
       recent_trends: recentTrends,
-    });
+    }, menu));
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Internal server error" });
@@ -260,6 +265,8 @@ export function lookupSource(ev: Evidence | null, now: number): Record<string, u
     retrieved_at: new Date(now).toISOString(),
     freshness: "Lowdown observes servers daily, so this record changes from day to day. A copy older than 1 day may be outdated: query the lookup URL for the current record before relying on it.",
     cite: `Lowdown (https://github.com/PetShopBros/lowdown-data), retrieved ${day}, CC BY 4.0`,
+    menu_card: MENU_CARD_URL,
+    feedback: FEEDBACK_URL,
   };
 }
 
@@ -1579,3 +1586,203 @@ export function escapeNote(target: string): string | null {
   const m = target.match(/\\(?:u[0-9A-Fa-f]{4}|[nrt"\\/])/);
   return m ? `The target contains a literal escape sequence (${m[0]}); it was looked up as given.` : null;
 }
+
+// 메뉴: GET /api/reputation/:target?menu=<단품|세트> — 전체 응답에서 필요한 부분만 골라 낸다(새 계산 없음).
+//   메뉴가 없으면 지금과 똑같은 전체 응답(호환). 응답 모양은 전체 응답의 부분집합이라 필드 이름·위치가 같다.
+//   모든 메뉴에 공통으로: target, resolved_target, message(첫 문장), 후보 목록(이름이 여럿 맞을 때), menu, source(맨 끝).
+//   "준비 중" 메뉴는 400 으로 무엇이 언제 열리는지 사실만 말한다. 결제·키 없음. 지시문("평가해 달라" 등)은 넣지 않는다.
+//   API 함수 파일끼리는 import 하지 않는다(배포 빌드와 node --test 의 확장자 규칙이 달라서) → 이 파일 안에 둔다.
+//   피드백 선택지는 api/feedback.ts 와 같아야 한다(테스트가 확인).
+
+// ─────────────────────────────────────────────
+// 메뉴 (?menu=)
+// ─────────────────────────────────────────────
+
+export const MENU_CARD_URL = "https://lowdown-proxy.vercel.app/menu.json";
+export const FEEDBACK_URL = "https://lowdown-proxy.vercel.app/api/feedback";
+
+export interface MenuItem {
+  /** 이 메뉴가 답하는 질문 */
+  question: string;
+  /** 무엇이 들어 있나 (응답 필드) */
+  contains: string;
+}
+
+export const DISHES: Record<string, MenuItem> = {
+  status: { question: "Does this MCP server answer right now, and does it require authentication?", contains: "status, scanner.latest (latest probe: reach level, HTTP status, latency — one location, once a day)" },
+  packages: { question: "Are the npm or PyPI packages it declares deprecated, yanked, archived, or gone (404)?", contains: "packages, packages_note" },
+  tools: { question: "Did its tool definitions change, when, and with or without a server version change?", contains: "scanner.definition_changes" },
+  "declared-vs-observed": { question: "Does what the MCP Registry declares (version, hosts) match what is observed?", contains: "scanner.declared_vs_observed" },
+  "content-flags": { question: "Did a tool definition change add a URL or invisible characters?", contains: "content_flags (from scanner.definition_changes events with new_flags)" },
+  "tool-list": { question: "Which tools does it expose, without connecting to it?", contains: "scanner.tools" },
+  registry: { question: "What does the official MCP Registry declare, and what changed there in 30 days?", contains: "registry" },
+  history: { question: "What happened on each of the last 30 days?", contains: "scanner.daily_30d, scanner.missing_days" },
+  "agent-reports": { question: "What did agents report after using it?", contains: "interactions, success_rate, confidence and related fields (few external reports so far)" },
+};
+
+export const SETS: Record<string, MenuItem & { includes: string[] }> = {
+  "install-check": {
+    question: "Should I install or connect this MCP server? Facts to decide before installing.",
+    contains: "status, packages, declared-vs-observed, content-flags (and stdio results when published)",
+    includes: ["status", "packages", "declared-vs-observed", "content-flags"],
+  },
+  "change-watch": {
+    question: "What changed recently on this server?",
+    contains: "tools, content-flags, declared-vs-observed, registry changes (30 days)",
+    includes: ["tools", "content-flags", "declared-vs-observed", "registry-changes"],
+  },
+  full: { question: "Everything recorded (same as no menu).", contains: "the full response", includes: [] },
+};
+
+/** 아직 열지 않은 메뉴: 이름만 예약. 무엇인지·언제인지 사실만. */
+export const PLANNED: Record<string, { what: string; status: string }> = {
+  stdio: { what: "Results of installing the declared npm or PyPI package in an isolated sandbox and running initialize and tools/list over stdio.", status: "pilot running; not published yet" },
+  radar: { what: "Rule-based notable facts (for example a deprecated package, or tool definitions that changed without a server version change), with the rule and the evidence. No scores.", status: "recorded privately; publication criteria not decided yet" },
+  watch: { what: "Notify when chosen servers change.", status: "planned paid set; not available" },
+  "bulk-history": { what: "Many servers and history longer than 30 days in one request (the raw daily data stays free in the public dataset).", status: "planned paid set; not available" },
+};
+
+/** 메뉴 안내: 응답·오류·메뉴판에서 같은 목록을 쓴다 */
+export function menuList(): { dishes: string[]; sets: string[]; planned: string[]; menu_card: string } {
+  return { dishes: Object.keys(DISHES), sets: Object.keys(SETS), planned: Object.keys(PLANNED), menu_card: MENU_CARD_URL };
+}
+
+export type MenuParse = { ok: true; menu: string | null } | { ok: false; status: number; body: Record<string, unknown> };
+
+export function parseMenu(raw: unknown): MenuParse {
+  if (raw === undefined || raw === null || raw === "") return { ok: true, menu: null };
+  const v = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof v !== "string" || !/^[a-z][a-z-]{0,39}$/.test(v)) return { ok: false, status: 400, body: { error: "invalid_menu", ...menuList() } };
+  if (v === "full") return { ok: true, menu: null };
+  if (DISHES[v] || SETS[v]) return { ok: true, menu: v };
+  if (PLANNED[v]) return { ok: false, status: 400, body: { error: "menu_not_available", menu: v, ...PLANNED[v], ...menuList() } };
+  return { ok: false, status: 400, body: { error: "unknown_menu", ...menuList() } };
+}
+
+type Body = Record<string, any>;
+const COMMON = ["target", "task_type", "resolved_target", "message", "registry_candidates", "scanner_candidates", "npm_candidates"];
+const AGENT_REPORT_KEYS = [
+  "target_type", "interactions", "rated_interactions", "success_rate", "protocol_requests", "rejected_requests", "by_source",
+  "success_rate_basis", "avg_latency_ms", "failure_breakdown", "reviews", "avg_rating", "review_conversion_rate", "confidence",
+  "task_breakdown", "recent_trends",
+];
+
+function scannerPart(sc: Body | undefined, keys: string[]): Body | undefined {
+  if (!sc || typeof sc !== "object") return undefined;
+  // 관찰 표본 밖이면 그 사실(observed: false + note)을 그대로 — "기록 없음"이 "문제 없음"으로 읽히지 않게
+  if (sc.observed === false) return { observed: false, ...(sc.note ? { note: sc.note } : {}) };
+  const out: Body = {};
+  for (const k of keys) if (sc[k] !== undefined) out[k] = sc[k];
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function contentFlags(sc: Body | undefined): Body | undefined {
+  const dc = sc?.definition_changes;
+  if (!dc || typeof dc !== "object") return sc?.observed === false ? undefined : { checked: false, events: [] };
+  const events = (Array.isArray(dc.events) ? dc.events : [])
+    .filter((e: Body) => Array.isArray(e?.new_flags) && e.new_flags.length > 0)
+    .map((e: Body) => ({ day: e.day, new_flags: e.new_flags, ...(e.remote_host ? { remote_host: e.remote_host } : {}) }));
+  return {
+    checked: dc.content_flags_checked ?? null,
+    events,
+    ...(dc.content_flags_basis ? { basis: dc.content_flags_basis } : {}),
+  };
+}
+
+/** 한 단품의 필드(전체 응답 모양 그대로)를 out 에 더한다 */
+function addDish(out: Body, b: Body, dish: string): void {
+  const sc = b.scanner as Body | undefined;
+  const mergeScanner = (part: Body | undefined) => {
+    if (part) out.scanner = { ...(out.scanner ?? {}), ...part };
+  };
+  switch (dish) {
+    case "status":
+      if (b.status !== undefined) out.status = b.status;
+      mergeScanner(scannerPart(sc, ["latest", "last_observed_at", "observation_basis"]));
+      break;
+    case "packages":
+      out.packages = b.packages ?? [];
+      if (b.packages_note) out.packages_note = b.packages_note;
+      if (b.sandbox) {
+        out.sandbox = b.sandbox;
+        if (b.sandbox_note) out.sandbox_note = b.sandbox_note;
+      }
+      break;
+    case "tools":
+      mergeScanner(scannerPart(sc, ["definition_changes"]));
+      break;
+    case "declared-vs-observed":
+      mergeScanner(scannerPart(sc, ["declared_vs_observed"]));
+      break;
+    case "content-flags": {
+      const cf = contentFlags(sc);
+      if (cf) out.content_flags = cf;
+      else mergeScanner(scannerPart(sc, []));
+      break;
+    }
+    case "tool-list":
+      mergeScanner(scannerPart(sc, ["tools"]));
+      break;
+    case "registry":
+      if (b.registry !== undefined) out.registry = b.registry;
+      break;
+    case "registry-changes":
+      if (b.registry && typeof b.registry === "object") {
+        out.registry = { ...(out.registry ?? {}), ...(b.registry.name ? { name: b.registry.name } : {}), changes_30d: b.registry.changes_30d ?? [] };
+      }
+      break;
+    case "history":
+      mergeScanner(scannerPart(sc, ["daily_30d", "missing_days"]));
+      break;
+    case "agent-reports":
+      for (const k of AGENT_REPORT_KEYS) if (b[k] !== undefined) out[k] = b[k];
+      break;
+  }
+}
+
+/** 전체 응답 → 메뉴 응답. menu 가 null 이면 그대로. */
+export function applyMenu(body: Body, menu: string | null): Body {
+  if (!menu) return body;
+  const out: Body = {};
+  for (const k of COMMON) if (body[k] !== undefined) out[k] = body[k];
+  out.menu = menu;
+  const set = SETS[menu];
+  const dishes = set ? set.includes : [menu];
+  for (const d of dishes) addDish(out, body, d);
+  if (set && menu === "install-check") {
+    const notYet = Object.entries(PLANNED).filter(([k]) => k === "stdio" || k === "radar").map(([k, v]) => ({ menu: k, status: v.status }));
+    if (!body.sandbox) out.not_yet_included = notYet;
+    else out.not_yet_included = notYet.filter((x) => x.menu !== "stdio");
+  }
+  if (body.source !== undefined) out.source = body.source; // 출처는 항상 맨 끝
+  return out;
+}
+
+/** /menu.json 내용 (메뉴판). 질문 → 메뉴 → 예시 주소 */
+export function menuCard(): Record<string, unknown> {
+  const base = "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}";
+  const item = (name: string, m: MenuItem) => ({ menu: name, question: m.question, contains: m.contains, example: `${base}?menu=${name}` });
+  return {
+    name: "Lowdown menu",
+    description:
+      "Lowdown records what MCP Registry servers declare and what is observed about them, daily, as dated facts (no scores). " +
+      "Call the lookup with ?menu=<name> to get only the part that answers your question. Without menu you get everything. No authentication.",
+    lookup: `${base}?menu={menu}`,
+    recommended: ["install-check", "status", "packages", "tools", "declared-vs-observed"],
+    sets: Object.entries(SETS).map(([k, v]) => ({ ...item(k, v), includes: v.includes })),
+    dishes: Object.entries(DISHES).map(([k, v]) => item(k, v)),
+    also: [
+      { name: "compare_tools", via: "MCP server: npx -y -p lowdown-proxy lowdown-mcp", question: "How do several tools compare on agent-reported outcomes?" },
+      { name: "daily dataset", via: "https://github.com/PetShopBros/lowdown-data", question: "Records for many servers at once (CC BY 4.0)." },
+    ],
+    planned: Object.entries(PLANNED).map(([k, v]) => ({ menu: k, ...v })),
+    feedback: {
+      url: FEEDBACK_URL,
+      method: "POST",
+      body: { target: "mcp:{namespace}/{name} (optional)", menu: "menu name (optional)", useful: "yes | no | partly", missing: "list of: " + MENU_FEEDBACK_MISSING.join(", "), note: "optional, up to 200 characters" },
+    },
+  };
+}
+
+// 피드백 선택지 (api/feedback.ts 의 FEEDBACK_MISSING 과 같아야 한다 — scanner/menu.test.ts 가 확인)
+export const MENU_FEEDBACK_MISSING = ["stdio_results", "risk_facts", "longer_history", "more_servers", "alerts", "faster_response", "other"] as const;

@@ -7,6 +7,21 @@ Lowdown keeps two kinds of data apart:
 - **Scanner observations.** Once a day, Lowdown Scanner connects to a fixed sample of 10,000 entries from the official MCP Registry (cohort `2026-10-29-v3`, which keeps all 5,000 entries of `2026-10-19-v2`, which in turn keeps all 2,000 entries of the first cohort `2026-10-07-v1`) that declare a `streamable-http` remote. It sends `initialize` and `tools/list` only, never calls a tool, and does not authenticate. It records HTTP status, reach level, latency, tool count, and hashes of tool schemas and descriptions. A `401` is recorded as a `401`, not as success or failure. Since 2026-10-27, entries that someone looks up here before they have any observation are added to the daily run (up to 1,000 new per day, 3,000 total) and marked `observation_basis: on_request`; they are not part of the fixed sample, so do not read their history as a sample statistic. These are single probes from one location, not uptime.
 - **Reported interactions.** Agents and the `lowdown-proxy` stdio proxy can report the outcome of using a tool or service. These are never mixed with Scanner observations.
 
+## Menu
+
+Ask for only the part that answers your question: `GET https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu={menu}`. Without `menu` you get the full record. No authentication. The full list with questions and examples is in [menu.json](https://lowdown-proxy.vercel.app/menu.json).
+
+- `install-check` (set): before installing or connecting a server — `status`, `packages`, `declared-vs-observed`, `content-flags`.
+- `change-watch` (set): what changed recently — `tools`, `content-flags`, `declared-vs-observed`, Registry changes in 30 days.
+- `status`: does it answer now, does it require authentication (latest daily check).
+- `packages`: are the declared npm or PyPI packages deprecated, yanked, archived, or gone (404).
+- `tools`: when its tool definitions changed, and whether the server version changed with them.
+- `declared-vs-observed`: does what the Registry declares (version, hosts) match what is observed.
+- `content-flags`: did a tool definition change add a URL or invisible characters.
+- `tool-list`, `registry`, `history` (30 days), `agent-reports`.
+- Not available yet: `stdio` (sandbox install-and-run results, pilot running), `radar` (rule-based notable facts), and two planned paid sets, `watch` and `bulk-history`. Asking for them returns HTTP 400 with their status.
+- Feedback: `POST https://lowdown-proxy.vercel.app/api/feedback` with `{"useful": "yes|no|partly", "missing": [...], "menu": "...", "target": "..."}` (`GET` the same URL for the format).
+
 ## Query
 
 - [Server pages](https://lowdown-proxy.vercel.app/servers): one human-readable page per observed MCP Registry server at `https://lowdown-proxy.vercel.app/servers/{namespace}/{name}`, with the same facts as the Lookup API (daily status, authentication, tool changes and content markers, tool names, Registry declaration). Listed in `/sitemap.xml`.

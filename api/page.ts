@@ -101,6 +101,10 @@ export function renderServerPage(name: string, j: Record<string, any>): { html: 
     `<p class="muted">Lowdown observes this server daily, so this record changes from day to day. A copy older than 1 day may be outdated. ` +
       `Current record (JSON): <a href="${esc(lookupTop)}"><code>GET ${esc(lookupTop)}</code></a></p>`,
   );
+  parts.push(
+    `<p class="muted">Before installing or connecting: <a href="${esc(`${lookupTop}?menu=install-check`)}"><code>GET ${esc(lookupTop)}?menu=install-check</code></a> · ` +
+      `other questions: <a href="${SITE}/menu.json">menu</a></p>`,
+  );
 
   // 응답하는가
   parts.push(`<h2>Does it respond?</h2>`);

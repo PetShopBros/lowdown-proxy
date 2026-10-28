@@ -1,0 +1,146 @@
+{
+  "name": "Lowdown menu",
+  "description": "Lowdown records what MCP Registry servers declare and what is observed about them, daily, as dated facts (no scores). Call the lookup with ?menu=<name> to get only the part that answers your question. Without menu you get everything. No authentication.",
+  "lookup": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu={menu}",
+  "recommended": [
+    "install-check",
+    "status",
+    "packages",
+    "tools",
+    "declared-vs-observed"
+  ],
+  "sets": [
+    {
+      "menu": "install-check",
+      "question": "Should I install or connect this MCP server? Facts to decide before installing.",
+      "contains": "status, packages, declared-vs-observed, content-flags (and stdio results when published)",
+      "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=install-check",
+      "includes": [
+        "status",
+        "packages",
+        "declared-vs-observed",
+        "content-flags"
+      ]
+    },
+    {
+      "menu": "change-watch",
+      "question": "What changed recently on this server?",
+      "contains": "tools, content-flags, declared-vs-observed, registry changes (30 days)",
+      "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=change-watch",
+      "includes": [
+        "tools",
+        "content-flags",
+        "declared-vs-observed",
+        "registry-changes"
+      ]
+    },
+    {
+      "menu": "full",
+      "question": "Everything recorded (same as no menu).",
+      "contains": "the full response",
+      "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=full",
+      "includes": []
+    }
+  ],
+  "dishes": [
+    {
+      "menu": "status",
+      "question": "Does this MCP server answer right now, and does it require authentication?",
+      "contains": "status, scanner.latest (latest probe: reach level, HTTP status, latency — one location, once a day)",
+      "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=status"
+    },
+    {
+      "menu": "packages",
+      "question": "Are the npm or PyPI packages it declares deprecated, yanked, archived, or gone (404)?",
+      "contains": "packages, packages_note",
+      "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=packages"
+    },
+    {
+      "menu": "tools",
+      "question": "Did its tool definitions change, when, and with or without a server version change?",
+      "contains": "scanner.definition_changes",
+      "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=tools"
+    },
+    {
+      "menu": "declared-vs-observed",
+      "question": "Does what the MCP Registry declares (version, hosts) match what is observed?",
+      "contains": "scanner.declared_vs_observed",
+      "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=declared-vs-observed"
+    },
+    {
+      "menu": "content-flags",
+      "question": "Did a tool definition change add a URL or invisible characters?",
+      "contains": "content_flags (from scanner.definition_changes events with new_flags)",
+      "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=content-flags"
+    },
+    {
+      "menu": "tool-list",
+      "question": "Which tools does it expose, without connecting to it?",
+      "contains": "scanner.tools",
+      "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=tool-list"
+    },
+    {
+      "menu": "registry",
+      "question": "What does the official MCP Registry declare, and what changed there in 30 days?",
+      "contains": "registry",
+      "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=registry"
+    },
+    {
+      "menu": "history",
+      "question": "What happened on each of the last 30 days?",
+      "contains": "scanner.daily_30d, scanner.missing_days",
+      "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=history"
+    },
+    {
+      "menu": "agent-reports",
+      "question": "What did agents report after using it?",
+      "contains": "interactions, success_rate, confidence and related fields (few external reports so far)",
+      "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=agent-reports"
+    }
+  ],
+  "also": [
+    {
+      "name": "compare_tools",
+      "via": "MCP server: npx -y -p lowdown-proxy lowdown-mcp",
+      "question": "How do several tools compare on agent-reported outcomes?"
+    },
+    {
+      "name": "daily dataset",
+      "via": "https://github.com/PetShopBros/lowdown-data",
+      "question": "Records for many servers at once (CC BY 4.0)."
+    }
+  ],
+  "planned": [
+    {
+      "menu": "stdio",
+      "what": "Results of installing the declared npm or PyPI package in an isolated sandbox and running initialize and tools/list over stdio.",
+      "status": "pilot running; not published yet"
+    },
+    {
+      "menu": "radar",
+      "what": "Rule-based notable facts (for example a deprecated package, or tool definitions that changed without a server version change), with the rule and the evidence. No scores.",
+      "status": "recorded privately; publication criteria not decided yet"
+    },
+    {
+      "menu": "watch",
+      "what": "Notify when chosen servers change.",
+      "status": "planned paid set; not available"
+    },
+    {
+      "menu": "bulk-history",
+      "what": "Many servers and history longer than 30 days in one request (the raw daily data stays free in the public dataset).",
+      "status": "planned paid set; not available"
+    }
+  ],
+  "feedback": {
+    "url": "https://lowdown-proxy.vercel.app/api/feedback",
+    "method": "POST",
+    "body": {
+      "target": "mcp:{namespace}/{name} (optional)",
+      "menu": "menu name (optional)",
+      "useful": "yes | no | partly",
+      "missing": "list of: stdio_results, risk_facts, longer_history, more_servers, alerts, faster_response, other",
+      "note": "optional, up to 200 characters"
+    }
+  }
+}
