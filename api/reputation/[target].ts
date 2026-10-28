@@ -351,7 +351,7 @@ interface ScannerLookup {
 
 const SCANNER_UNOBSERVED = {
   observed: false,
-   note: "No Lowdown Scanner observation exists for this target. The Scanner observes a fixed sample of MCP Registry entries daily (5,000 from 2026-10-19, 2,000 before), and since 2026-10-27 also begins observing entries that someone looked up here, from the next daily run (separate from the fixed sample). Absence of data says nothing about the target's status.",
+   note: "No Lowdown Scanner observation exists for this target. The Scanner observes a fixed sample of MCP Registry entries daily (10,000 from 2026-10-30, 5,000 from 2026-10-19, 2,000 before), and since 2026-10-27 also begins observing entries that someone looked up here, from the next daily run (separate from the fixed sample). Absence of data says nothing about the target's status.",
 };
 
 function scannerFields(lookup: ScannerLookup | null): Record<string, unknown> {

@@ -709,7 +709,7 @@ export function datasetJsonLd(cfg: SiteConfig): string {
     '@type': 'Dataset',
     name: 'Lowdown MCP server observations',
     description:
-      'Daily record of what the official MCP Registry declares and what Lowdown observes. Once a day, Lowdown connects to a fixed sample of 5,000 Registry entries with a streamable-http remote, sends initialize and tools/list only (it never calls a tool), and records HTTP status, reach level, latency, tool count and hashes of tool schemas and descriptions. It also records daily changes in Registry declarations. Facts as recorded; no scores, rankings or verdicts.',
+      'Daily record of what the official MCP Registry declares and what Lowdown observes. Once a day, Lowdown connects to a fixed sample of 10,000 Registry entries with a streamable-http remote, sends initialize and tools/list only (it never calls a tool), and records HTTP status, reach level, latency, tool count and hashes of tool schemas and descriptions. It also records daily changes in Registry declarations. Facts as recorded; no scores, rankings or verdicts.',
     url: `${cfg.baseUrl}about.html`,
     license: LICENSE_URL,
     isAccessibleForFree: true,
