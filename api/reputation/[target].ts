@@ -67,7 +67,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
         }
       } else {
-        data = summarizeRows(target, rows);
+        data = summarizeRows(target, rows ?? []);
       }
     } else {
       // 기존 reputation_summary 뷰 조회
@@ -258,6 +258,7 @@ export function lookupSource(ev: Evidence | null, now: number): Record<string, u
     license_url: "https://creativecommons.org/licenses/by/4.0/",
     license_applies_to: "registry and scanner blocks (MCP Registry records and Lowdown Scanner observations)",
     retrieved_at: new Date(now).toISOString(),
+    freshness: "Lowdown observes servers daily, so this record changes from day to day. A copy older than 1 day may be outdated: query the lookup URL for the current record before relying on it.",
     cite: `Lowdown (https://github.com/PetShopBros/lowdown-data), retrieved ${day}, CC BY 4.0`,
   };
 }

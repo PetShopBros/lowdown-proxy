@@ -96,6 +96,11 @@ export function renderServerPage(name: string, j: Record<string, any>): { html: 
   parts.push(`<p class="muted"><a href="${SITE}/servers">MCP servers observed by Lowdown</a></p>`);
   parts.push(`<h1>${esc(name)} MCP server: daily status and tool changes</h1>`);
   parts.push(`<p class="lead">${esc(message)}</p>`);
+  const lookupTop = typeof j.source?.lookup === "string" && j.source.lookup.startsWith(SITE) ? j.source.lookup : `${SITE}/api/reputation/mcp:${name}`;
+  parts.push(
+    `<p class="muted">Lowdown observes this server daily, so this record changes from day to day. A copy older than 1 day may be outdated. ` +
+      `Current record (JSON): <a href="${esc(lookupTop)}"><code>GET ${esc(lookupTop)}</code></a></p>`,
+  );
 
   // 응답하는가
   parts.push(`<h2>Does it respond?</h2>`);
