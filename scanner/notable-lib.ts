@@ -18,6 +18,10 @@ export const RULE_IDS = [
   'P5_pypi_latest_yanked',
   'P6_pypi_not_found',
   'P7_declared_missing_package',
+  // 레이다 2단계: 도구 정의 (scanner/notable-tools-lib.ts)
+  'R1_first_change_after_stable',
+  'R2_changed_same_server_version',
+  'R3_tool_removed',
 ] as const;
 export type RuleId = (typeof RULE_IDS)[number];
 
@@ -25,7 +29,7 @@ export interface NotableRow {
   day: string;
   rule_id: RuleId;
   rule_version: number;
-  subject_kind: 'npm' | 'pypi';
+  subject_kind: 'npm' | 'pypi' | 'server';
   subject: string;
   group_key: string;
   evidence: Record<string, unknown>;

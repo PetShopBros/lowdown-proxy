@@ -1,0 +1,54 @@
+name: notable-tools
+# 레이다 2단계: 최근 21일 관찰 → 확인된 도구 정의 변경(R1·R2·R3) → scanner_notable (비공개, published=false)
+# scanner(본 관찰)가 끝나면 돈다. 그날 관찰로 전날 변경을 확인하는 구조라 하루 늦게 기록된다.
+# 매일 같은 기간을 다시 계산하고 이미 있는 행은 건너뛴다(예비 실행·수동 실행에 안전). 원자료는 읽기만 한다.
+
+on:
+  workflow_run:
+    workflows: [scanner]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      days:
+        description: '읽을 관찰 기간(일, 9~60)'
+        type: string
+        default: '21'
+      dry_run:
+        description: '계산만 (DB 쓰기 없음)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write # 실패 시 이슈 생성(알림)
+
+concurrency:
+  group: notable-tools
+  cancel-in-progress: false
+
+jobs:
+  notable-tools:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Tool definition notable facts (private)
+        run: node scanner/notable-tools.ts --days=${{ inputs.days || '21' }} ${{ inputs.dry_run && '--dry-run' || '' }}
+        env:
+          LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
+          LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
+
+      - name: Open issue on failure
+        if: failure() && github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "notable-tools 실패 $(date -u +%F)" \
+            --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
