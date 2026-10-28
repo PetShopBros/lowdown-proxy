@@ -464,7 +464,7 @@
                     },
                     "scanner": {
                       "type": "object",
-                      "description": "Observations by Lowdown Scanner (initialize + tools/list only; no tool calls). Separate from interaction data; not included in success_rate. When the target is outside the Scanner's fixed sample of daily-observed MCP Registry entries (10,000 from 2026-10-30, 5,000 from 2026-10-19, 2,000 before), this block contains only `observed: false` and a note; absence of data says nothing about the target's status.",
+                      "description": "Observations by Lowdown Scanner (initialize + tools/list only; no tool calls). Separate from interaction data; not included in success_rate. When the target is outside the Scanner's fixed sample of daily-observed MCP Registry entries (10,000 from 2026-10-29, 5,000 from 2026-10-19, 2,000 before), this block contains only `observed: false` and a note; absence of data says nothing about the target's status.",
                       "properties": {
                         "observed": {
                           "type": "boolean",

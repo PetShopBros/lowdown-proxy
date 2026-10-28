@@ -65,7 +65,7 @@ jobs:
   scan:
     # ubuntu-latest 는 2026-10-19부터 26.04로 바뀐다. 검증 전까지 24.04 고정.
     runs-on: ubuntu-24.04
-    # 2026-10-30 v3(10,000): 고정 10,000 + 조회 대상 3,000 ≈ 13,000행. 10/28 실측(8,000행 14분 + Registry 목록 약 13분)으로
+    # 2026-10-29 v3(10,000): 고정 10,000 + 조회 대상 3,000 ≈ 13,000행. 10/28 실측(8,000행 14분 + Registry 목록 약 13분)으로
     # 약 36분 예상 → 상한 60분. v3 첫 주 실측 뒤 다시 정한다.
     timeout-minutes: 60
     outputs:
@@ -88,9 +88,9 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           SCAN_LIMIT: ${{ inputs.limit }}
           SKIP_IF_DONE: ${{ github.event_name == 'schedule' && '1' || '' }}
-          # v3(2026-10-30): v2 5,000개 전부 + 추가 5,000개, 호스트당 상한 3. 선정 계산(10/29 plan-only): 후보 32,971, 부족분 0,
+          # v3(2026-10-29): v2 5,000개 전부 + 추가 5,000개, 호스트당 상한 3. 선정 계산(10/29 plan-only): 후보 32,971, 부족분 0,
           #   고유 호스트 9,234, 상위 1개 호스트 2.1%. v2·v1 멤버 행에는 cohort_versions 로 이전 시계열이 이어진다.
-          COHORT_VERSION: ${{ inputs.cohort_version || '2026-10-30-v3' }}
+          COHORT_VERSION: ${{ inputs.cohort_version || '2026-10-29-v3' }}
           COHORT_SIZE: ${{ inputs.cohort_size || '10000' }}
           COHORT_BASE: ${{ inputs.cohort_base || '2026-10-19-v2' }}
           PLAN_ONLY: ${{ inputs.plan_only && '1' || '' }}
