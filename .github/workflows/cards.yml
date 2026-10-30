@@ -1,0 +1,59 @@
+name: cards
+# 서버 카드 조리 (2026-10-30). scanner/cards.ts, supabase/2026-10-30_server_cards.sql
+# 순서(UTC): npm 19:37 → pypi 20:37 → scanner 01:17(최대 60분) → target_status_summary 갱신 03:37 → 카드 04:07
+# 카드는 만든 UTC 날짜에만 쓰인다(API 가 확인). 예약이 늦어져도 그날 안에 돌면 된다.
+
+on:
+  schedule:
+    - cron: '7 4 * * *' # 13:07 KST
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'DB에 쓰지 않고 요약만 출력'
+        type: boolean
+        default: false
+      limit:
+        description: '앞에서 N개만 (비우면 전체)'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: cards
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # 첫 실측 전 상한. 1만 3천 개 × 동시 6 으로 약 20~40분 예상.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # 핸들러가 @supabase/supabase-js 를 쓴다
+      - name: Install
+        run: npm ci --omit=dev --no-audit --no-fund
+
+      - name: Build cards
+        run: node scanner/cards.ts
+        env:
+          LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
+          LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
+          CARD_LIMIT: ${{ inputs.limit }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+
+      - name: Open issue on failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "cards 실패 $(date -u +%F)" \
+            --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

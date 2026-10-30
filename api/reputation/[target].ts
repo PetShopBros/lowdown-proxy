@@ -136,8 +136,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     // menu 열도 같은 방식: 열이 없으면 아래 재시도(lookupRow 만)로 기록은 남는다.
-    const logged = await supabase.from("reputation_lookups").insert({ ...lookupRow, result_kind: unavailable ? "unavailable" : resultKind(taskType, scannerLookup, evidence, data), ...(menu ? { menu } : {}) } as never);
-    if (logged.error) await supabase.from("reputation_lookups").insert(lookupRow as never);
+    // 서버 카드 조리(scanner/cards.ts, Actions 프로세스 환경 변수)는 조회가 아니라서 남기지 않는다. 요청으로는 바꿀 수 없는 값.
+    if (process.env.LOWDOWN_CARD_BUILD !== "1") {
+      const logged = await supabase.from("reputation_lookups").insert({ ...lookupRow, result_kind: unavailable ? "unavailable" : resultKind(taskType, scannerLookup, evidence, data), ...(menu ? { menu } : {}) } as never);
+      if (logged.error) await supabase.from("reputation_lookups").insert(lookupRow as never);
+    }
 
     // 오류를 "데이터 없음"(200)으로 답하면 수집기·에이전트가 틀린 사실로 저장한다(2026-10-25 DB 포화 때 관찰).
     // 503 + Retry-After 로 답해 나중에 다시 오게 한다.
