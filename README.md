@@ -51,7 +51,7 @@ https://lowdown-proxy.vercel.app/mcp
 
 - Transport: Streamable HTTP. Read-only.
 - Tool: `get_lowdown` with `target` (an `mcp:` Registry name, a short name, or an `npm:` / `pypi:` package) and an optional `menu` (`install-check` before installing, `change-watch` for recent changes, or one part such as `status` or `packages`; see [menu.json](https://lowdown-proxy.vercel.app/menu.json)).
-- In Claude: add it as a custom connector with this URL and no sign-in. Then ask, for example, "Before I install the MCP server io.github.user/server, what has Lowdown recorded about it?"
+- In Claude: install it from the [Claude connectors directory](https://claude.ai/directory/connectors/lowdown), or add it as a custom connector with this URL and no sign-in. Then ask, for example, "Before I install the MCP server io.github.user/server, what has Lowdown recorded about it?"
 - Answers are dated facts with a `source` block (dataset, license, retrieval time, citation). They are not scores. Absence of data says nothing about a server's status.
 - [Privacy policy](https://lowdown-proxy.vercel.app/privacy). Support: atom.art2meta@gmail.com or [GitHub issues](https://github.com/PetShopBros/lowdown-proxy/issues).
 
