@@ -211,6 +211,36 @@ export function renderServerPage(name: string, j: Record<string, any>): { html: 
   return { html, noindex };
 }
 
+/** /privacy: 원격 MCP·조회 API 의 개인정보 처리 안내 (Claude Connectors Directory 등 제출 필수 항목). 사실만, 기록 코드와 같아야 한다. */
+export function renderPrivacy(): string {
+  return shell({
+    title: "Lowdown privacy policy",
+    description: "What Lowdown records when you use its lookup API, server pages, or remote MCP server, and what it does not record.",
+    canonical: `${SITE}/privacy`,
+    noindex: false,
+    body:
+      `<h1>Privacy policy</h1>` +
+      `<p class="muted">Effective 2026-10-30. Applies to ${esc(SITE)} (lookup API, server pages, discovery files) and the remote MCP server at ${esc(SITE)}/mcp. Operated by ART2META (Republic of Korea).</p>` +
+      `<h2>What Lowdown records</h2><ul>` +
+      `<li><strong>Requests:</strong> the path and query of each request (for example the server name you looked up and the menu you chose), the HTTP method, the User-Agent header, the Referer header, and the time.</li>` +
+      `<li><strong>Lookups:</strong> the lookup target, the User-Agent, the <code>ref</code> tag (for example <code>mcp</code> for the remote MCP server), the menu, and the kind of answer returned.</li>` +
+      `<li><strong>Reported interactions:</strong> only if you call the reporting endpoint or the local proxy reports for you: the identifiers and outcome you send.</li>` +
+      `<li><strong>Feedback:</strong> only what you send to the feedback endpoint.</li></ul>` +
+      `<h2>What Lowdown does not record</h2><ul>` +
+      `<li>IP addresses. Lowdown does not store them.</li>` +
+      `<li>Cookies, accounts, or sign-in data. Lowdown has no accounts and sets no cookies.</li>` +
+      `<li>The content of your conversation with an AI assistant. The remote MCP server receives only the tool arguments (the lookup target and menu).</li></ul>` +
+      `<h2>How records are used</h2>` +
+      `<p>To count how Lowdown is used (for example how many lookups come through the remote MCP server), to find errors, and to decide what to build. Request and lookup records are not published and are not sold. The public dataset contains Scanner observations and Registry records, not request records.</p>` +
+      `<h2>Retention</h2>` +
+      `<p>Records are kept without a fixed deletion date, as part of Lowdown's long-term record.</p>` +
+      `<h2>Service providers</h2>` +
+      `<p>Lowdown runs on Vercel (hosting) and Supabase (database). They process requests under their own terms and may keep operational logs, including IP addresses, as their own services do.</p>` +
+      `<h2>Contact</h2>` +
+      `<p>Questions or requests: <a href="https://github.com/PetShopBros/lowdown-proxy/issues">GitHub issues</a>.</p>`,
+  });
+}
+
 export interface ListRow {
   target_id: string;
   latest_day: string | null;
@@ -310,6 +340,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       body = "Not found";
       type = "text/plain; charset=utf-8";
     } else body = page.html;
+  } else if (kind === "privacy") {
+    path = "/privacy";
+    body = renderPrivacy();
   } else if (kind === "index" || kind === "home" || kind === "sitemap") {
     if (!supabase) return unavailable();
     const rows = await listRows(supabase);

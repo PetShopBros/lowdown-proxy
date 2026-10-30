@@ -91,6 +91,14 @@ describe('서버 기록 페이지', () => {
     assert.match(sm, /<url><loc>https:\/\/lowdown-proxy\.vercel\.app\/servers\/ai\.trendsmcp\/google-trends<\/loc><lastmod>2026-10-26<\/lastmod><\/url>/);
     assert.equal((sm.match(/<url>/g) ?? []).length, 2); // 목록 페이지 + 1
   });
+
+  test('개인정보 안내: IP 를 저장하지 않는다고 명시, 원격 MCP 주소 포함', async () => {
+    const { renderPrivacy } = (await load()) as unknown as { renderPrivacy: () => string };
+    const html = renderPrivacy();
+    assert.match(html, /<title>Lowdown privacy policy<\/title>/);
+    assert.match(html, /IP addresses\. Lowdown does not store them/);
+    assert.match(html, /vercel\.app\/mcp/);
+  });
 });
 
 function fakeRes() {

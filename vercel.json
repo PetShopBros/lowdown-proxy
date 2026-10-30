@@ -1,6 +1,14 @@
 {
   "rewrites": [
     {
+      "source": "/mcp",
+      "destination": "/api/mcp"
+    },
+    {
+      "source": "/privacy",
+      "destination": "/api/page?kind=privacy"
+    },
+    {
       "source": "/",
       "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
       "destination": "/api/page?kind=home&nc=1"
