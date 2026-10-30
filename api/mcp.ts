@@ -94,6 +94,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader("Allow", "POST, OPTIONS");
     return res.status(405).json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed. Send MCP JSON-RPC messages with POST." }, id: null });
   }
+  // 본문이 JSON 이 아니면 서버 오류(500)가 아니라 JSON-RPC 형식 오류(400, -32700)로 답한다.
+  // Vercel 은 Content-Type: application/json 본문이 깨져 있으면 req.body 를 읽을 때 예외를 던진다(2026-10-31, PowerShell 따옴표로 확인).
+  let body: unknown;
+  try {
+    body = req.body;
+    if (typeof body === "string") body = JSON.parse(body);
+  } catch {
+    return res.status(400).json({ jsonrpc: "2.0", error: { code: -32700, message: "Parse error: the request body is not valid JSON." }, id: null });
+  }
   const host = header(req, "host", 200) ?? "lowdown-proxy.vercel.app";
   const server = buildServer({ host, ua: header(req, "user-agent", 300) });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
@@ -103,7 +112,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   });
   try {
     await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
+    await transport.handleRequest(req, res, body);
   } catch (err) {
     console.error("mcp error", err);
     if (!res.headersSent) res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "Internal server error" }, id: null });
