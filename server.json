@@ -6,7 +6,7 @@
     "url": "https://github.com/PetShopBros/lowdown-proxy",
     "source": "github"
   },
-  "version": "0.1.19",
+  "version": "0.1.20",
   "packages": [
     {
       "registryType": "npm",
@@ -15,6 +15,12 @@
       "transport": {
         "type": "stdio"
       }
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://lowdown-proxy.vercel.app/mcp"
     }
   ]
 }
