@@ -801,19 +801,40 @@ describe('export & utils', () => {
     assert.equal(csv.split('\n')[1], '1,r,n,io.x/y,mcp_server,now,streamable-http,,0,5,dns,scanner,"{""a"":1}"');
     assert.ok(csv.endsWith('\n'));
   });
-  test('fetchMonthRows keyset 페이지네이션', async () => {
+  test('fetchMonthRows: (observed_at, id) keyset, 결과는 id 순서', async () => {
     const urls: string[] = [];
+    // id 와 observed_at 순서가 어긋난 행(늦게 저장된 이른 관측)을 섞는다
+    const all = [
+      { id: 1, observed_at: '2026-10-07T01:00:00.000001+00:00' },
+      { id: 3, observed_at: '2026-10-07T01:00:00.000001+00:00' },
+      { id: 2, observed_at: '2026-10-07T02:00:00+00:00' },
+      { id: 5, observed_at: '2026-10-07T00:30:00+00:00' },
+      { id: 4, observed_at: '2026-10-07T03:00:00+00:00' },
+    ];
+    const key = (r: { id: number; observed_at: string }) => [Date.parse(r.observed_at.replace(/(\.\d{3})\d+/, '$1')), r.observed_at, r.id] as const;
+    const sorted = [...all].sort((a, b) => key(a)[0] - key(b)[0] || (key(a)[1] < key(b)[1] ? -1 : key(a)[1] > key(b)[1] ? 1 : 0) || a.id - b.id);
     const f = (async (u: string) => {
       urls.push(u);
-      const gt = Number(new URL(u).searchParams.get('id')!.replace('gt.', ''));
-      const all = [1, 2, 3, 4, 5];
-      return new Response(JSON.stringify(all.filter((i) => i > gt).slice(0, 2).map((id) => ({ id }))), { status: 200 });
+      const q = new URL(u).searchParams;
+      assert.equal(q.get('order'), 'observed_at.asc,id.asc');
+      const or = q.get('or');
+      let rest = sorted;
+      if (or) {
+        const m = /^\(observed_at\.gt\."([^"]+)",and\(observed_at\.eq\."([^"]+)",id\.gt\.(\d+)\)\)$/.exec(or)!;
+        assert.ok(m, or);
+        const at = m[1]!;
+        const id = Number(m[3]);
+        const i = sorted.findIndex((r) => r.observed_at === at && r.id === id);
+        rest = sorted.slice(i + 1);
+      }
+      return new Response(JSON.stringify(rest.slice(0, 2)), { status: 200 });
     }) as unknown as typeof fetch;
     const rows = await fetchMonthRows(CFG, monthRanges(new Date('2026-10-07T00:00:00Z'), 1)[0]!, { fetchImpl: f, pageSize: 2 });
     assert.deepEqual(rows.map((r) => r.id), [1, 2, 3, 4, 5]);
     assert.equal(urls.length, 3);
     const q = new URL(urls[0]!).searchParams;
     assert.deepEqual(q.getAll('observed_at'), ['gte.2026-10-01T00:00:00.000Z', 'lt.2026-11-01T00:00:00.000Z']);
+    assert.equal(q.get('or'), null);
   });
   test('runPool 동시성 상한과 순서 보존', async () => {
     let active = 0;

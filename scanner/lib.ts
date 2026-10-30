@@ -1705,20 +1705,25 @@ export interface FetchRowsDeps {
   pageSize?: number;
 }
 
-/** 한 달치 scanner_observations 를 id 오름차순 keyset 페이지네이션으로 읽는다. */
+/**
+ * 기간(달·날) 안의 scanner_observations 를 (observed_at, id) keyset 페이지네이션으로 읽고 id 오름차순으로 돌려준다.
+ * 2026-10-31: 예전에는 id 순서로만 페이지를 넘겼는데, Postgres 가 기본키를 표 처음부터 훑으며 기간을 거르는 계획을 골라
+ *   관측 행이 쌓일수록 느려졌다(10/30 backup 57014 statement timeout). (observed_at, id) 인덱스
+ *   (supabase/2026-10-31_observations_day_index.sql) 순서 그대로 읽으면 그 기간만 본다. 결과는 예전과 같은 id 순서로 정렬해 돌려준다.
+ */
 export async function fetchMonthRows(cfg: SupabaseConfig, range: MonthRange, deps: FetchRowsDeps = {}): Promise<Array<Record<string, unknown>>> {
   const f = deps.fetchImpl ?? fetch;
   const pageSize = deps.pageSize ?? 1000;
   const base = cfg.url.replace(/\/+$/, '');
   const rows: Array<Record<string, unknown>> = [];
-  let lastId = 0;
+  let after: { at: string; id: number } | null = null;
   for (;;) {
     const qs = new URLSearchParams();
     qs.set('select', EXPORT_COLUMNS.join(','));
     qs.append('observed_at', `gte.${range.start}`);
     qs.append('observed_at', `lt.${range.end}`);
-    qs.set('id', `gt.${lastId}`);
-    qs.set('order', 'id.asc');
+    if (after) qs.set('or', `(observed_at.gt."${after.at}",and(observed_at.eq."${after.at}",id.gt.${after.id}))`);
+    qs.set('order', 'observed_at.asc,id.asc');
     qs.set('limit', String(pageSize));
     const res = await f(`${base}/rest/v1/scanner_observations?${qs.toString()}`, {
       headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }),
@@ -1729,10 +1734,14 @@ export async function fetchMonthRows(cfg: SupabaseConfig, range: MonthRange, dep
     if (!Array.isArray(page)) throw new Error('supabase read: unexpected response shape');
     rows.push(...page);
     if (page.length < pageSize) break;
-    const last = page[page.length - 1]?.id;
-    if (typeof last !== 'number' || last <= lastId) throw new Error('supabase read: id keyset did not advance');
-    lastId = last;
+    const last = page[page.length - 1];
+    const at = last?.observed_at;
+    const id = last?.id;
+    if (typeof at !== 'string' || typeof id !== 'number') throw new Error('supabase read: keyset columns missing');
+    if (after && at === after.at && id <= after.id) throw new Error('supabase read: keyset did not advance');
+    after = { at, id };
   }
+  rows.sort((a, b) => (a.id as number) - (b.id as number));
   return rows;
 }
 
