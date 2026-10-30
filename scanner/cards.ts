@@ -1,5 +1,5 @@
 // 서버 카드 조리 (2026-10-30, 2단계 주방). supabase/2026-10-30_server_cards.sql
-// 하루 1번(cards.yml) 관찰 중인 서버마다 조회 API 응답 전체를 미리 만들어 server_cards 에 덮어쓴다.
+// 하루 2번(cards.yml, 연결 상태 요약 갱신 UTC 03:37·14:37 뒤) 관찰 중인 서버마다 조회 API 응답 전체를 미리 만들어 server_cards 에 덮어쓴다.
 // 판정 로직을 새로 만들지 않는다: api/reputation/[target].ts 의 핸들러를 그대로 불러 같은 응답을 만든다(테스트와 같은 방식).
 // 이 실행의 조회는 reputation_lookups 에 남기지 않는다(LOWDOWN_CARD_BUILD=1, 핸들러가 확인).
 // 원본 관측 데이터는 건드리지 않는다. 카드는 파생물이라 매일 덮어쓴다.
@@ -73,7 +73,8 @@ function fakeRes() {
   const r = {
     code: 0,
     body: undefined as unknown,
-    setHeader() { return r; },
+    headers: {} as Record<string, string>,
+    setHeader(k: string, v: unknown) { r.headers[k.toLowerCase()] = String(v); return r; },
     status(c: number) { r.code = c; return r; },
     json(b: unknown) { r.body = b; return r; },
     send(b: unknown) { r.body = b; return r; },
@@ -138,13 +139,15 @@ async function main() {
           data_day: dataDay,
           built_at: new Date().toISOString(),
           builder_version: BUILDER_VERSION,
+          // 핸들러가 계산한 응답 종류(조회 기록의 result_kind 와 같은 값)
+          result_kind: res.headers["x-lowdown-result-kind"] ?? null,
         });
         if (batch.length >= 200) await flush();
       } catch (err) {
         stats.failed++;
         if (stats.failed <= 5) console.error("card failed", targetId, err);
       }
-      if ((stats.built + stats.skipped + stats.failed) % 1000 === 0) console.log(`progress ${stats.built + stats.skipped + stats.failed}/${targets.length}`);
+      if ((stats.built + stats.skipped + stats.failed) % 200 === 0) console.log(`progress ${stats.built + stats.skipped + stats.failed}/${targets.length}`);
     }
   };
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));

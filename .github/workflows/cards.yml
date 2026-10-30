@@ -5,7 +5,8 @@ name: cards
 
 on:
   schedule:
-    - cron: '7 4 * * *' # 13:07 KST
+    - cron: '7 4 * * *'  # 13:07 KST (상태 요약 UTC 03:37 갱신 뒤)
+    - cron: '7 15 * * *' # 00:07 KST (예비 스캔 13:17 · 상태 요약 14:37 갱신 뒤)
   workflow_dispatch:
     inputs:
       dry_run:
@@ -29,7 +30,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     # 첫 실측 전 상한. 1만 3천 개 × 동시 6 으로 약 20~40분 예상.
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 

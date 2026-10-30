@@ -39,8 +39,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const fuzzyPattern = typeof target === "string" && target.length >= 3 ? `%${target.replace(/[\\%_]/g, "\\$&")}%` : null;
 
 
+  // 조회 기록 행 (organic vs seeded 구분). 카드 응답과 실시간 계산이 같은 행을 쓴다.
+  const lookupRow = {
+    requester: (req.headers["x-lowdown-actor"] as string) ?? null,
+    target: rawTarget,
+    source: req.headers["x-lowdown-source"] === "seeded" ? "seeded" : "organic",
+    user_agent: (req.headers["user-agent"] as string) ?? null,
+    ...(ref ? { ref } : {}),
+  };
+
   try {
     const supabase = getSupabase();
+
+    // 서버 카드 (2026-10-30, 2단계 주방): mcp:이름 그대로 온 기본 조회는 미리 만든 응답 1행을 꺼낸다.
+    // 카드가 없거나, 오늘(UTC) 데이터 갱신 뒤에 만든 것이 아니거나, 읽기에 실패하면 아래 실시간 계산(기존과 같음).
+    if (!taskType && !req.headers["x-lowdown-node-id"] && process.env.LOWDOWN_CARD_BUILD !== "1" && CARD_TARGET_RE.test(target)) {
+      const card = await readCard(supabase, target, Date.now());
+      if (card) {
+        const logged = await supabase.from("reputation_lookups").insert({ ...lookupRow, ...(card.resultKind ? { result_kind: card.resultKind } : {}), ...(menu ? { menu } : {}) } as never);
+        if (logged.error) await supabase.from("reputation_lookups").insert(lookupRow as never);
+        res.setHeader("X-Lowdown-Card", card.builtAt);
+        return res.status(200).json(applyMenu(card.body, menu));
+      }
+    }
 
     // task_type 필터가 있으면 interactions 테이블에서 직접 집계
     let data: any = null;
@@ -111,19 +132,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const evidence = taskType ? null : await buildEvidence(supabase, effectiveTarget, scannerLookup, npmQuery);
     const inputNote = escapeNote(target);
 
-    // 조회 자체를 로깅 (organic vs seeded 구분)
-    const source = req.headers["x-lowdown-source"] === "seeded" ? "seeded" : "organic";
-    const requester = (req.headers["x-lowdown-actor"] as string) ?? null;
-
-    const userAgent = (req.headers["user-agent"] as string) ?? null;
-
-    const lookupRow = {
-      requester,
-      target: rawTarget,
-      source,
-      user_agent: userAgent,
-      ...(ref ? { ref } : {}),
-    };
     // 응답 종류(result_kind)를 함께 남겨 "답이 없어 낭비된 조회" 비율을 잰다.
     // 열이 아직 없는 DB 에서도 조회 기록이 빠지지 않도록, 실패하면 result_kind 없이 한 번 더 쓴다.
     // 핵심 조회(평판 집계·Registry·Scanner)가 DB 오류로 실패했는가. "조회했는데 없음"과 구분한다.
@@ -137,9 +145,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // menu 열도 같은 방식: 열이 없으면 아래 재시도(lookupRow 만)로 기록은 남는다.
     // 서버 카드 조리(scanner/cards.ts, Actions 프로세스 환경 변수)는 조회가 아니라서 남기지 않는다. 요청으로는 바꿀 수 없는 값.
+    // 카드 조리 때는 응답 종류를 헤더로 넘겨 카드에 함께 저장한다(카드 응답의 조회 기록에 같은 값을 쓰려고).
+    const kind = unavailable ? "unavailable" : resultKind(taskType, scannerLookup, evidence, data);
     if (process.env.LOWDOWN_CARD_BUILD !== "1") {
-      const logged = await supabase.from("reputation_lookups").insert({ ...lookupRow, result_kind: unavailable ? "unavailable" : resultKind(taskType, scannerLookup, evidence, data), ...(menu ? { menu } : {}) } as never);
+      const logged = await supabase.from("reputation_lookups").insert({ ...lookupRow, result_kind: kind, ...(menu ? { menu } : {}) } as never);
       if (logged.error) await supabase.from("reputation_lookups").insert(lookupRow as never);
+    } else {
+      res.setHeader("X-Lowdown-Result-Kind", kind);
     }
 
     // 오류를 "데이터 없음"(200)으로 답하면 수집기·에이전트가 틀린 사실로 저장한다(2026-10-25 DB 포화 때 관찰).
@@ -275,6 +287,39 @@ export function lookupSource(ev: Evidence | null, now: number): Record<string, u
     menu_card: MENU_CARD_URL,
     feedback: FEEDBACK_URL,
   };
+}
+
+// ── 서버 카드 (scanner/cards.ts 가 만들고, 여기서 읽는다) ─────────────────────
+// 데이터는 UTC 03:37 에 연결 상태 요약이 갱신된 뒤 하루치가 갖춰진다(npm 19:37 · pypi 20:37 · scanner 01:17 · 상태 03:37).
+// 카드는 오늘(UTC) 그 뒤에 만든 것만 쓴다. 그 전·전날 카드는 쓰지 않는다 → 날짜에 따라 바뀌는 문장(경과 일수, 최근 7일 표시)이 틀리지 않게.
+export const CARD_READY_UTC_HOUR = 4;
+const CARD_TARGET_RE = /^mcp:[A-Za-z0-9._~-]{1,200}\/[A-Za-z0-9._~-]{1,200}$/;
+
+/** 카드를 써도 되는가: 오늘(UTC) CARD_READY_UTC_HOUR 이후에 만든 것. */
+export function cardUsable(builtAt: unknown, now: number): boolean {
+  if (typeof builtAt !== "string") return false;
+  const t = Date.parse(builtAt);
+  if (Number.isNaN(t) || t > now + 60_000) return false;
+  const d = new Date(now);
+  const ready = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), CARD_READY_UTC_HOUR);
+  return t >= ready;
+}
+
+/** 카드 응답: 출처의 retrieved_at 만 지금 시각으로 바꾼다(cite 의 날짜는 같은 UTC 날이라 그대로). */
+export function cardBody(body: Record<string, any>, now: number): Record<string, any> {
+  if (!body.source || typeof body.source !== "object") return body;
+  return { ...body, source: { ...body.source, retrieved_at: new Date(now).toISOString() } };
+}
+
+async function readCard(supabase: any, target: string, now: number): Promise<{ body: Record<string, any>; builtAt: string; resultKind: string | null } | null> {
+  try {
+    const r = await supabase.from("server_cards").select("body,built_at,result_kind").eq("target_id", target).limit(1);
+    const row = r.error ? null : (r.data ?? [])[0];
+    if (!row || !row.body || typeof row.body !== "object" || !cardUsable(row.built_at, now)) return null;
+    return { body: cardBody(row.body, now), builtAt: String(row.built_at), resultKind: typeof row.result_kind === "string" ? row.result_kind : null };
+  } catch {
+    return null; // 카드 읽기 실패 → 실시간 계산
+  }
 }
 
 export const BULK_DATA_LINK = '<https://github.com/PetShopBros/lowdown-data>; rel="related"; title="Daily dataset for bulk use (CC BY 4.0)"';
