@@ -1652,6 +1652,7 @@ export function escapeNote(target: string): string | null {
 
 export const MENU_CARD_URL = "https://lowdown-proxy.vercel.app/menu.json";
 export const FEEDBACK_URL = "https://lowdown-proxy.vercel.app/api/feedback";
+export const FIND_URL = "https://lowdown-proxy.vercel.app/api/find";
 
 export interface MenuItem {
   /** 이 메뉴가 답하는 질문 */
@@ -1823,6 +1824,13 @@ export function menuCard(): Record<string, unknown> {
     recommended: ["install-check", "status", "packages", "tools", "declared-vs-observed"],
     sets: Object.entries(SETS).map(([k, v]) => ({ ...item(k, v), includes: v.includes })),
     dishes: Object.entries(DISHES).map(([k, v]) => item(k, v)),
+    find: {
+      url: FIND_URL,
+      question: "Which MCP servers match given conditions (answered without credentials, tool count, tool list unchanged for N days, Registry or package state)?",
+      contains: "matching servers with the values used to filter and sort, each with its lookup URL; the chosen sort key is the only order (no ranking)",
+      example: `${FIND_URL}?no_auth=1&stable_days=14&sort=tools&limit=10`,
+      sorts: ["name", "newest", "updated", "tools", "stable", "answering", "changed", "release"],
+    },
     also: [
       { name: "compare_tools", via: "MCP server: npx -y -p lowdown-proxy lowdown-mcp", question: "How do several tools compare on agent-reported outcomes?" },
       { name: "daily dataset", via: "https://github.com/PetShopBros/lowdown-data", question: "Records for many servers at once (CC BY 4.0)." },
