@@ -1,4 +1,4 @@
-{
+﻿{
   "rewrites": [
     {
       "source": "/mcp",
@@ -83,6 +83,11 @@
     {
       "source": "/sitemap.xml",
       "destination": "/api/page?kind=sitemap"
+    },
+    {
+      "source": "/api/find",
+      "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
+      "destination": "/api/find?nc=1"
     },
     {
       "source": "/api/reputation/:ns/:name",

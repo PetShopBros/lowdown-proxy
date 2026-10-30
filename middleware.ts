@@ -18,6 +18,7 @@ export const config = {
     "/menu.json",
     "/robots.txt",
     "/api/reputation/:path*",
+    "/api/find",
     "/mcp",
     "/privacy",
     "/terms",
