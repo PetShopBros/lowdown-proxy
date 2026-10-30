@@ -2,7 +2,17 @@
   "rewrites": [
     {
       "source": "/",
+      "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
+      "destination": "/api/page?kind=home&nc=1"
+    },
+    {
+      "source": "/",
       "destination": "/api/page?kind=home"
+    },
+    {
+      "source": "/openapi.json",
+      "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
+      "destination": "/api/discovery?file=openapi.json&nc=1"
     },
     {
       "source": "/openapi.json",
@@ -10,7 +20,17 @@
     },
     {
       "source": "/robots.txt",
+      "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
+      "destination": "/api/discovery?file=robots.txt&nc=1"
+    },
+    {
+      "source": "/robots.txt",
       "destination": "/api/discovery?file=robots.txt"
+    },
+    {
+      "source": "/menu.json",
+      "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
+      "destination": "/api/discovery?file=menu.json&nc=1"
     },
     {
       "source": "/menu.json",
@@ -18,7 +38,17 @@
     },
     {
       "source": "/llms.txt",
+      "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
+      "destination": "/api/discovery?file=llms.txt&nc=1"
+    },
+    {
+      "source": "/llms.txt",
       "destination": "/api/discovery?file=llms.txt"
+    },
+    {
+      "source": "/servers",
+      "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
+      "destination": "/api/page?kind=index&nc=1"
     },
     {
       "source": "/servers",
@@ -26,7 +56,17 @@
     },
     {
       "source": "/servers/:ns/:name",
+      "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
+      "destination": "/api/page?kind=server&ns=:ns&name=:name&nc=1"
+    },
+    {
+      "source": "/servers/:ns/:name",
       "destination": "/api/page?kind=server&ns=:ns&name=:name"
+    },
+    {
+      "source": "/sitemap.xml",
+      "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
+      "destination": "/api/page?kind=sitemap&nc=1"
     },
     {
       "source": "/sitemap.xml",
@@ -34,7 +74,17 @@
     },
     {
       "source": "/api/reputation/:ns/:name",
+      "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
+      "destination": "/api/reputation/_slash?t=:ns/:name&nc=1"
+    },
+    {
+      "source": "/api/reputation/:ns/:name",
       "destination": "/api/reputation/_slash?t=:ns/:name"
+    },
+    {
+      "source": "/api/reputation/:target",
+      "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
+      "destination": "/api/reputation/:target?nc=1"
     }
   ]
 }

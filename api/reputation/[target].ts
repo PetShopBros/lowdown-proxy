@@ -17,6 +17,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
+  // CDN 캐시 (2026-10-30): 같은 주소 반복 조회는 6시간 캐시로 받는다 → 캐시 적중은 reputation_lookups 에 안 남음(첫 조회만 기록).
+  // 실사용·검색 봇(Claude-User 등)은 vercel.json rewrite 가 nc=1 을 붙여 보낸다 → 캐시하지 않고 매번 기록.
+  // 503(아래)은 no-store 로 덮어써 캐시되지 않는다. 400·500 은 CDN 이 캐시하지 않는 상태 코드.
+  res.setHeader("Cache-Control", req.query.nc === "1" ? "no-store" : "public, max-age=0, s-maxage=21600, stale-while-revalidate=86400");
   // Registry 이름의 '/' 를 그대로 쓴 주소(/api/reputation/mcp:ns/name)는 vercel.json rewrite 가 _slash?t=ns/name 으로 넘긴다.
   const slashT = req.query.t;
   const rawTarget = (req.query.target === "_slash" && typeof slashT === "string" && slashT.length > 0 ? slashT : req.query.target) as string;

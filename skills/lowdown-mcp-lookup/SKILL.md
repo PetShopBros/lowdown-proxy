@@ -7,7 +7,7 @@ tools:
 
 ## Lowdown MCP lookup
 
-Lowdown is a time-series record of the gap between what the official MCP Registry declares and what is actually observed. It keeps a daily record of every Registry declaration, and once a day it connects to a fixed sample of 5,000 Registry servers, sends `initialize` and `tools/list` only (it never calls a tool or authenticates), and records what it sees. It does not score, grade, or rank servers.
+Lowdown is a time-series record of the gap between what the official MCP Registry declares and what is actually observed. It keeps a daily record of every Registry declaration, and once a day it connects to a fixed sample of 10,000 Registry servers, sends `initialize` and `tools/list` only (it never calls a tool or authenticates), and records what it sees. It does not score, grade, or rank servers.
 
 This skill reads that record. It uses one public GET endpoint, needs no API key, and sends nothing but the server name.
 

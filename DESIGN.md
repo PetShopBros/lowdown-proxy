@@ -24,7 +24,7 @@ Agents should not have to trust an agent/tool they've never interacted with.
 ## v0.4 — Scanner (cold-start 관찰)
 - Scanner는 제품이 아니라 Lowdown의 cold-start 데이터 생산기다. 사용자가 없어도 관찰 데이터가 쌓이게 한다.
 - 대상: 공식 MCP Registry의 원격(streamable-http) 서버. 하루 1회 initialize → tools/list 까지만 호출한다. tools/call 은 하지 않는다.
-- 규모(2026-10-07 dry run 실측): Registry 40,120건 중 probe 가능 target 24,064개 / remote 24,290개. 무료 인프라(DB 500MB)에서 매일 전체 관찰은 불가능하므로 고정 코호트를 매일 관찰한다. **2026-10-18까지 2,000개(`2026-10-07-v1`), 2026-10-19부터 5,000개(`2026-10-19-v2`: v1 전부 + 추가 3,000, 추가분은 호스트당 최대 3개)**.
+- 규모(2026-10-07 dry run 실측): Registry 40,120건 중 probe 가능 target 24,064개 / remote 24,290개. 무료 인프라(DB 500MB)에서 매일 전체 관찰은 불가능하므로 고정 코호트를 매일 관찰한다. **2026-10-18까지 2,000개(`2026-10-07-v1`), 2026-10-19부터 5,000개(`2026-10-19-v2`: v1 전부 + 추가 3,000, 추가분은 호스트당 최대 3개), 2026-10-29부터 10,000개(`2026-10-29-v3`: v2 전부 + 추가 5,000, 추가분은 호스트당 최대 3개)**.
 - 고정 코호트: Day 0 에 probe 가능 target 을 SHA-256 순으로 2,000개 확정해 `scanner_cohort`(cohort_version 예: 2026-10-07-v1)에 저장하고, 같은 버전 동안은 같은 대상만 관찰한다. remote URL 은 매일 최신 Registry 값을 쓴다. Registry 에서 사라진 멤버는 실패로 기록하지 않고 `cohort_missing` 으로만 센다. 확장은 새 버전으로 한다. v2(5,000)는 v1 멤버를 모두 포함하고(`COHORT_BASE`), 리포트는 v1 멤버를 따로 세어 추이를 잇는다.
 - 해석 주의: 코호트는 "Registry 항목"의 표본이다. 운영자 수가 아니다(한 업체가 여러 항목을 등록할 수 있음).
 - 관찰(scanner_observations)과 상호작용(interactions)은 섞지 않는다. 관찰 = 우리가 봤다, interaction = 실제 에이전트가 썼다.

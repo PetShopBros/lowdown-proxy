@@ -248,7 +248,7 @@ Just run the proxy and share what your agents experience.
 
 ## Status
 
-Running continuously since September 2026. Since October 6, 2026 the Scanner has observed a fixed sample of MCP Registry entries every day: 2,000 entries through October 18, and from October 19 a 5,000-entry sample that keeps all of the first 2,000. The daily report and raw data are public at [PetShopBros/lowdown-data](https://github.com/PetShopBros/lowdown-data), with a daily copy on [Hugging Face](https://huggingface.co/datasets/art2meta/lowdown-mcp-observations).
+Running continuously since September 2026. Since October 6, 2026 the Scanner has observed a fixed sample of MCP Registry entries every day: 2,000 entries through October 18, from October 19 a 5,000-entry sample that keeps all of the first 2,000, and from October 29 a 10,000-entry sample that keeps all of those 5,000. The daily report and raw data are public at [PetShopBros/lowdown-data](https://github.com/PetShopBros/lowdown-data), with a daily copy on [Hugging Face](https://huggingface.co/datasets/art2meta/lowdown-mcp-observations).
 Since October 21, 2026 the Scanner also keeps the full tool definitions it receives, privately and once per distinct definition, so that changes can be traced over time. Public data and API responses contain hashes only; the definitions themselves are not published.
 See [DESIGN.md](./DESIGN.md) for what's in scope and what's been ruled out.
 
