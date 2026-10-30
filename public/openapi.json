@@ -988,6 +988,210 @@
         }
       }
     },
+    "/api/find": {
+      "get": {
+        "operationId": "findServers",
+        "summary": "Find MCP Registry servers by condition",
+        "description": "Filters Lowdown's prepared per-server records (built twice a day from MCP Registry records, one daily initialize + tools/list check with no credentials, and npm/PyPI metadata) and sorts them by one chosen key. No score or ranking. Each result carries the values used to filter and sort and its lookup URL (GET /api/reputation/{target}) for the full record. Null values sort last.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._~\\-/]{2,100}$"
+            },
+            "description": "Part of the Registry name."
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "answered",
+                "auth_required",
+                "list_failed",
+                "no_response",
+                "invalid_response",
+                "mixed"
+              ]
+            },
+            "description": "Latest daily check result. Only servers checked in the last 2 days match."
+          },
+          {
+            "name": "no_auth",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            },
+            "description": "Same as state=answered (answered tools/list with no credentials)."
+          },
+          {
+            "name": "answered_days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30
+            },
+            "description": "Minimum daily checks in the last 30 days that answered tools/list."
+          },
+          {
+            "name": "stable_days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3650
+            },
+            "description": "Current tool list first observed at least this many days ago."
+          },
+          {
+            "name": "tools_min",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "description": "Minimum tool count on the latest answered check."
+          },
+          {
+            "name": "tools_max",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "description": "Maximum tool count on the latest answered check."
+          },
+          {
+            "name": "registry",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "active",
+                "deprecated"
+              ]
+            },
+            "description": "MCP Registry status."
+          },
+          {
+            "name": "package",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ok",
+                "flagged",
+                "none"
+              ]
+            },
+            "description": "ok: declared npm/PyPI packages with no deprecated, yanked, quarantined or 404 latest; flagged: at least one; none: no declared packages."
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "name",
+                "newest",
+                "updated",
+                "tools",
+                "stable",
+                "answering",
+                "changed",
+                "release"
+              ],
+              "default": "name"
+            },
+            "description": "Sort key. newest: day Lowdown first recorded the Registry entry; updated: latest Registry change in 30 days; tools: tool count; stable: day the current tool list was first observed; answering: answered checks in 30 days; changed: latest tool definition change; release: latest npm modified or PyPI upload day."
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            },
+            "description": "Sort direction. Default depends on sort (name and stable: asc; others: desc)."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 20
+            },
+            "description": "Results per request."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2000,
+              "default": 0
+            },
+            "description": "Results to skip; next_offset gives the next page."
+          },
+          {
+            "name": "ref",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,64}$"
+            },
+            "description": "Optional referral tag used to measure where lookups come from."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching servers. Fields: query, sort {key, order, meaning}, total, count, offset, next_offset (when more remain), results[] {name, sort_value, state, latest_check, stale, tool_count, checks_30d, consecutive_days, consecutive_since, tool_set_since, last_definition_change, registry {status, first_recorded, recorded_since_baseline, last_change_30d}, packages {flagged, updated}, observation_basis, lookup, page}, basis, parameters, source {cards_built, retrieved_at, license, cite}.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown parameter value; the body names the parameter and the allowed values."
+          },
+          "503": {
+            "description": "Lowdown could not read its own records; retry later. Not an empty result."
+          }
+        }
+      }
+    },
     "/api/interactions": {
       "post": {
         "operationId": "recordInteraction",

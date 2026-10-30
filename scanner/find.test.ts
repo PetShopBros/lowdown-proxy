@@ -1,5 +1,6 @@
 // find (조건 검색): 쿼리 검증·정규화·결과 모양
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, test } from 'node:test';
 
 const findPath = '../api/find.ts';
@@ -44,6 +45,18 @@ describe('find', () => {
   test('조회 수 정렬은 없다', async () => {
     const m = await load();
     assert.deepEqual(Object.keys(m.SORTS).sort(), ['answering', 'changed', 'name', 'newest', 'release', 'stable', 'tools', 'updated']);
+  });
+
+  test('안내 일치: openapi·menu.json 의 정렬 키 = SORTS', async () => {
+    const m = await load();
+    const keys = Object.keys(m.SORTS).sort();
+    const o = JSON.parse(readFileSync(new URL('../public/openapi.json', import.meta.url), 'utf8'));
+    const sort = o.paths['/api/find'].get.parameters.find((x: any) => x.name === 'sort');
+    assert.deepEqual([...sort.schema.enum].sort(), keys);
+    const card = JSON.parse(readFileSync(new URL('../public/menu.json', import.meta.url), 'utf8'));
+    assert.deepEqual([...card.find.sorts].sort(), keys);
+    const state = o.paths['/api/find'].get.parameters.find((x: any) => x.name === 'state');
+    assert.deepEqual(state.schema.enum, [...m.STATES]);
   });
 
   test('결과: 오래된 점검은 상태를 말하지 않고, 조회 주소를 붙인다', async () => {
