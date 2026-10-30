@@ -237,7 +237,7 @@ export function renderPrivacy(): string {
       `<h2>Service providers</h2>` +
       `<p>Lowdown runs on Vercel (hosting) and Supabase (database). They process requests under their own terms and may keep operational logs, including IP addresses, as their own services do.</p>` +
       `<h2>Contact</h2>` +
-      `<p>Questions or requests: <a href="https://github.com/PetShopBros/lowdown-proxy/issues">GitHub issues</a>.</p>`,
+      `<p>Questions or requests: <a href="mailto:atom.art2meta@gmail.com">atom.art2meta@gmail.com</a> or <a href="https://github.com/PetShopBros/lowdown-proxy/issues">GitHub issues</a>.</p>`,
   });
 }
 
