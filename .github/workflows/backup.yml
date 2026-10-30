@@ -28,10 +28,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # lowdown-data 는 README 등으로 초기화된(비어 있지 않은) 레포여야 한다.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/lowdown-data
           # 만료 없는 deploy key(lowdown-data 레포에 쓰기 권한으로 등록). 토큰 만료 위험 제거.
@@ -39,17 +39,17 @@ jobs:
           path: data-repo
 
       # 원문 비공개 보관용(비공개 레포). 이 레포의 내용은 공개 로그·공개 레포로 나가지 않는다.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/lowdown-private
           ssh-key: ${{ secrets.LOWDOWN_PRIVATE_DEPLOY_KEY }}
           path: private-repo
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 

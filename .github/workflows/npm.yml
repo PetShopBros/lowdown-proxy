@@ -56,10 +56,10 @@ jobs:
             echo "backup run: no successful daily dispatch run since $since"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: steps.gate.outputs.skip != '1'
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         if: steps.gate.outputs.skip != '1'
         with:
           node-version: '24'

@@ -22,16 +22,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/lowdown-data
           # 만료 없는 deploy key(lowdown-data 레포에 쓰기 권한으로 등록). 토큰 만료 위험 제거.
           ssh-key: ${{ secrets.LOWDOWN_DATA_DEPLOY_KEY }}
           path: data-repo
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
 

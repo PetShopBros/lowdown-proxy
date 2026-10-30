@@ -72,9 +72,9 @@ jobs:
       scanned: ${{ steps.run.outputs.scanned }}
       registry_fallback: ${{ steps.run.outputs.registry_fallback }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
 
@@ -104,7 +104,7 @@ jobs:
       # 저장하지 못한 관찰 행(scanner-unsaved-*.jsonl)이 있으면 보관(90일). 없으면 아무것도 올리지 않는다.
       - name: Upload unsaved observations
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: scanner-unsaved-${{ github.run_id }}
           path: scanner-unsaved-*.jsonl
@@ -114,7 +114,7 @@ jobs:
       # artifact 는 90일 뒤 사라지므로 같은 행을 비공개 레포에 영구 보관한다(재적재 원본). 파일이 없으면 건너뛴다.
       - name: Checkout private repo (unsaved only)
         if: always() && hashFiles('scanner-unsaved-*.jsonl') != ''
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/lowdown-private
           ssh-key: ${{ secrets.LOWDOWN_PRIVATE_DEPLOY_KEY }}

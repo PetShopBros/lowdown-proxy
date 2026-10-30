@@ -28,17 +28,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # lowdown-pages 는 README 등으로 초기화된(비어 있지 않은) 레포여야 한다.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/lowdown-pages
           # 만료 없는 deploy key(lowdown-pages 레포에 쓰기 권한으로 등록)
           ssh-key: ${{ secrets.LOWDOWN_PAGES_DEPLOY_KEY }}
           path: pages-repo
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
 
