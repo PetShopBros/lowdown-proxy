@@ -49,8 +49,8 @@ export function buildServer(ctx: { host: string; ua: string | null; fetchImpl?: 
         "`registry` (what the official MCP Registry declares, and changes in the last 30 days), " +
         "`packages` (declared npm/PyPI packages: deprecated, yanked, archived, or 404), " +
         "`scanner` (when tool definitions changed and content markers such as a new URL or invisible characters), and agent reports. " +
-        "Use `menu` to get only the part that answers your question, e.g. 'install-check' before installing. " +
-        "Absence of data says nothing about a server's status. Data: CC BY 4.0, cite the `source` block.",
+        "The optional `menu` returns only one part, e.g. 'install-check' (the facts used before installing). " +
+        "Absence of data says nothing about a server's status. Each answer ends with a `source` block (dataset, CC BY 4.0 license, retrieval time).",
       inputSchema: {
         target: z.string().min(1).max(300).describe(
           "MCP Registry name with the mcp: prefix (e.g. 'mcp:io.github.user/server'), a short name, or a package with the npm: or pypi: prefix",
