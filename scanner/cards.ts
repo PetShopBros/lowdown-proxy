@@ -41,7 +41,7 @@ async function builtSince(since: number): Promise<number | null> {
   const m = /\/(\d+)$/.exec(r.headers.get("content-range") ?? "");
   return m ? Number(m[1]) : null;
 }
-export const BUILDER_VERSION = "cards-1";
+export const BUILDER_VERSION = "cards-2";
 const NAME_RE = /^[A-Za-z0-9._~-]{1,200}\/[A-Za-z0-9._~-]{1,200}$/;
 
 if (!BASE || !KEY) {
@@ -81,6 +81,13 @@ export function cardColumns(body: Record<string, any>) {
     p?.npm?.status === "not_found" || p?.npm?.latest_deprecated === true ||
     p?.pypi?.status === "not_found" || p?.pypi?.latest_yanked === true || PYPI_BAD.has(String(p?.pypi?.project_status)));
   const basis = status?.observation_basis ?? scanner?.observation_basis;
+  const registry = body.registry && typeof body.registry === "object" ? body.registry : null;
+  const checks = status?.checks_30d && typeof status.checks_30d === "object" ? status.checks_30d : null;
+  const lastDay = (xs: Array<string | null>): string | null => {
+    const ds = xs.filter((d): d is string => d !== null).sort();
+    return ds.length ? ds[ds.length - 1]! : null;
+  };
+  const regChanges: any[] = Array.isArray(registry?.changes_30d) ? registry.changes_30d : [];
   return {
     latest_state: typeof status?.state === "string" ? status.state : null,
     latest_day: isoDay(status?.latest_check),
@@ -89,6 +96,16 @@ export function cardColumns(body: Record<string, any>) {
     package_flag: packageFlag,
     registry_status: typeof body.registry?.status === "string" ? body.registry.status : null,
     observation_basis: basis === "fixed_cohort" || basis === "on_request" ? basis : null,
+    // find 조건·정렬용 (cards-2, 2026-10-31)
+    answered_days_30d: int(checks?.answered),
+    observed_days_30d: int(checks?.observed),
+    consecutive_days: int(status?.consecutive_days),
+    consecutive_since: isoDay(status?.consecutive_since),
+    tool_set_since: isoDay(scanner?.tools?.set_first_observed_at),
+    registry_first_day: isoDay(registry?.first_recorded_at),
+    registry_baseline: typeof registry?.recorded_since_baseline === "boolean" ? registry.recorded_since_baseline : null,
+    registry_last_change_day: lastDay(regChanges.map((c) => isoDay(c?.on))),
+    package_updated_day: lastDay(pkgs.map((p) => isoDay(p?.npm?.modified) ?? isoDay(p?.pypi?.latest_uploaded))),
   };
 }
 
