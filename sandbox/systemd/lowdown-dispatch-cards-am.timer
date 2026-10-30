@@ -1,0 +1,12 @@
+[Unit]
+Description=Lowdown: build server cards at 13:07 KST (04:07 UTC, 상태 요약 UTC 03:37 갱신 뒤)
+
+[Timer]
+OnCalendar=*-*-* 04:07:00 UTC
+AccuracySec=1s
+# 꺼져 있던 동안 놓친 실행을 켜질 때 몰아서 하지 않는다(그때는 GitHub 예약이 예비로 돈다)
+Persistent=false
+Unit=lowdown-dispatch@cards.yml.service
+
+[Install]
+WantedBy=timers.target

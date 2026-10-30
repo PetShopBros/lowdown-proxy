@@ -3,8 +3,8 @@
 # GitHub 의 예약 실행(schedule)은 부하에 따라 몇 시간씩 늦거나 빠질 수 있어서, 이 서버의 systemd 타이머가 정시에 "실행" 버튼을 대신 누른다.
 # 실제 작업은 지금처럼 GitHub Actions 에서 돈다. 워크플로의 기존 예약은 예비로 남고, 그날 이 실행이 이미 끝났으면 건너뛴다.
 #
-# 사용: dispatch.sh <scanner.yml|npm.yml|pypi.yml>          지금 실행 시작
-#       dispatch.sh --check <scanner.yml|npm.yml|pypi.yml>  토큰·저장소 확인만(실행하지 않음, 워크플로 정보 읽기)
+# 사용: dispatch.sh <scanner.yml|npm.yml|pypi.yml|cards.yml>          지금 실행 시작
+#       dispatch.sh --check <scanner.yml|npm.yml|pypi.yml|cards.yml>  토큰·저장소 확인만(실행하지 않음, 워크플로 정보 읽기)
 # 환경(/etc/lowdown/dispatch.env, root 600):
 #   GITHUB_DISPATCH_TOKEN  이 저장소 하나에만 "Actions: Read and write" 권한이 있는 fine-grained 토큰
 #   GITHUB_REPO            기본 PetShopBros/lowdown-proxy
@@ -14,8 +14,8 @@ CHECK=0
 if [ "${1:-}" = --check ]; then CHECK=1; shift; fi
 WF="${1:-}"
 case "$WF" in
-  scanner.yml | npm.yml | pypi.yml) ;;
-  *) echo "unknown workflow: '$WF' (scanner.yml, npm.yml, pypi.yml)" >&2; exit 2 ;;
+  scanner.yml | npm.yml | pypi.yml | cards.yml) ;;
+  *) echo "unknown workflow: '$WF' (scanner.yml, npm.yml, pypi.yml, cards.yml)" >&2; exit 2 ;;
 esac
 : "${GITHUB_DISPATCH_TOKEN:?GITHUB_DISPATCH_TOKEN is not set (/etc/lowdown/dispatch.env)}"
 REPO="${GITHUB_REPO:-PetShopBros/lowdown-proxy}"

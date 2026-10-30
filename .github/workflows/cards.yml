@@ -9,6 +9,10 @@ on:
     - cron: '7 15 * * *' # 00:07 KST (예비 스캔 13:17 · 상태 요약 14:37 갱신 뒤)
   workflow_dispatch:
     inputs:
+      daily:
+        description: '정시 본 실행 (서버 dispatch.sh 가 보냄)'
+        type: boolean
+        default: false
       dry_run:
         description: 'DB에 쓰지 않고 요약만 출력'
         type: boolean
@@ -49,6 +53,7 @@ jobs:
           LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
           CARD_LIMIT: ${{ inputs.limit }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          SKIP_IF_DONE: ${{ github.event_name == 'schedule' && '1' || '' }}
 
       - name: Open issue on failure
         if: failure() && github.event_name == 'schedule'

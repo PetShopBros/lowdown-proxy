@@ -12,7 +12,7 @@ fi
 chmod 600 /etc/lowdown/dispatch.env
 
 sed "s#@REPO_DIR@#$REPO_DIR#g" "$REPO_DIR/sandbox/systemd/lowdown-dispatch@.service" > /etc/systemd/system/lowdown-dispatch@.service
-for t in scanner npm pypi; do
+for t in scanner npm pypi cards-am cards-pm; do
   install -m 644 "$REPO_DIR/sandbox/systemd/lowdown-dispatch-$t.timer" /etc/systemd/system/lowdown-dispatch-$t.timer
 done
 systemctl daemon-reload
@@ -22,8 +22,8 @@ cat <<EOF
   1) 토큰 입력:  sudo nano /etc/lowdown/dispatch.env
   2) 토큰 확인:  sudo systemd-run -p EnvironmentFile=/etc/lowdown/dispatch.env -p DynamicUser=yes --wait --pipe \\
                    /bin/bash $REPO_DIR/sandbox/dispatch.sh --check scanner.yml
-  3) 켜기:       sudo systemctl enable --now lowdown-dispatch-scanner.timer lowdown-dispatch-npm.timer lowdown-dispatch-pypi.timer
+  3) 켜기:       sudo systemctl enable --now lowdown-dispatch-scanner.timer lowdown-dispatch-npm.timer lowdown-dispatch-pypi.timer lowdown-dispatch-cards-am.timer lowdown-dispatch-cards-pm.timer
   4) 확인:       systemctl list-timers 'lowdown-*'
 기록:            journalctl -u 'lowdown-dispatch@*' --since today
-멈추기:          sudo systemctl disable --now lowdown-dispatch-scanner.timer lowdown-dispatch-npm.timer lowdown-dispatch-pypi.timer
+멈추기:          sudo systemctl disable --now lowdown-dispatch-scanner.timer lowdown-dispatch-npm.timer lowdown-dispatch-pypi.timer lowdown-dispatch-cards-am.timer lowdown-dispatch-cards-pm.timer
 EOF

@@ -9,6 +9,8 @@
 //   CARD_LIMIT     앞에서 N개만 (비우면 전체)
 //   CARD_CONCURRENCY 동시 조리 수 (기본 6)
 //   DRY_RUN=1      DB 에 쓰지 않고 요약만 출력
+//   SKIP_IF_DONE=1 이번 시간대(UTC 04:00~ / 15:00~)에 만든 카드가 대상의 90% 이상이면 건너뛴다
+//                  (서버 dispatch 로 정시에 이미 돈 날, 늦게 도는 GitHub 예약 실행이 같은 일을 반복하지 않게 — cards.yml 이 schedule 일 때 켠다)
 
 process.env.LOWDOWN_CARD_BUILD = "1";
 const BASE = process.env.LOWDOWN_SUPABASE_URL ?? "";
@@ -18,6 +20,27 @@ process.env.LOWDOWN_SUPABASE_KEY = process.env.LOWDOWN_SUPABASE_KEY || KEY;
 const LIMIT = Number(process.env.CARD_LIMIT || 0) || 0;
 const CONCURRENCY = Math.max(1, Math.min(16, Number(process.env.CARD_CONCURRENCY || 6) || 6));
 const DRY = process.env.DRY_RUN === "1";
+const SKIP_IF_DONE = process.env.SKIP_IF_DONE === "1";
+
+/** 지금이 속한 조리 시간대의 시작(UTC 04:00 또는 15:00, 그 전이면 전날 15:00). */
+export function slotStart(now: number): number {
+  const d = new Date(now);
+  const day = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const am = day + 4 * 3_600_000;
+  const pm = day + 15 * 3_600_000;
+  if (now >= pm) return pm;
+  if (now >= am) return am;
+  return pm - 86_400_000;
+}
+
+async function builtSince(since: number): Promise<number | null> {
+  const r = await fetch(`${BASE}/rest/v1/server_cards?select=target_id&built_at=gte.${encodeURIComponent(new Date(since).toISOString())}`, {
+    headers: { ...headers, Prefer: "count=exact", Range: "0-0", "Range-Unit": "items" },
+  });
+  if (!r.ok) return null;
+  const m = /\/(\d+)$/.exec(r.headers.get("content-range") ?? "");
+  return m ? Number(m[1]) : null;
+}
 export const BUILDER_VERSION = "cards-1";
 const NAME_RE = /^[A-Za-z0-9._~-]{1,200}\/[A-Za-z0-9._~-]{1,200}$/;
 
@@ -88,6 +111,14 @@ async function main() {
   const { default: handler } = (await import("../api/reputation/[target].ts" as string)) as { default: (req: unknown, res: unknown) => Promise<unknown> };
   let targets = await listTargets();
   if (LIMIT) targets = targets.slice(0, LIMIT);
+  if (SKIP_IF_DONE) {
+    const since = slotStart(Date.now());
+    const done = await builtSince(since);
+    if (done !== null && done >= targets.length * 0.9) {
+      console.log(`skip: ${done}/${targets.length} cards already built since ${new Date(since).toISOString()}`);
+      return;
+    }
+  }
   const dataDay = new Date().toISOString().slice(0, 10);
   console.log(`targets ${targets.length}, concurrency ${CONCURRENCY}, data_day ${dataDay}${DRY ? ", dry run" : ""}`);
 
