@@ -12,6 +12,9 @@ const FILES: Record<string, string> = {
   "menu.json": "application/json; charset=utf-8", // 메뉴판 (api/reputation/[target].ts 의 menuCard() 와 같아야 한다)
 };
 
+// 대량 사용 안내 (2026-10-30): api/reputation/[target].ts 의 BULK_DATA_LINK 와 같아야 한다.
+const BULK_DATA_LINK = '<https://github.com/PetShopBros/lowdown-data>; rel="related"; title="Daily dataset for bulk use (CC BY 4.0)"';
+
 function getSupabase() {
   const url = process.env.LOWDOWN_SUPABASE_URL;
   const key = process.env.LOWDOWN_SUPABASE_KEY;
@@ -62,6 +65,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   res.setHeader("Content-Type", contentType);
+  res.setHeader("Link", BULK_DATA_LINK);
   // CDN 캐시 (2026-10-30): 수집기 반복 방문은 6시간 캐시로 받는다 → 캐시 적중은 함수·기록에 안 잡힘(첫 방문만 기록).
   // 실사용·검색 봇(Claude-User 등)은 vercel.json rewrite 가 nc=1 을 붙여 보낸다 → 캐시하지 않고 매번 기록.
   res.setHeader("Cache-Control", req.query.nc === "1" ? "no-store" : "public, max-age=0, s-maxage=21600, stale-while-revalidate=86400");

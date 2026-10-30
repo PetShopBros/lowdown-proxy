@@ -84,6 +84,9 @@ describe('서버 기록 페이지', () => {
     assert.match(home, /<title>Lowdown: daily evidence about MCP servers<\/title>/);
     assert.match(home, /<link rel="canonical" href="https:\/\/lowdown-proxy\.vercel\.app\/">/);
     assert.match(home, /href="\/servers\/ai\.trendsmcp\/google-trends"/);
+    // 대량 사용 안내: 목록·첫 화면 모두 맨 위에 하루치 파일 링크
+    assert.match(idx, /All servers at once:.*days\/latest\.json/);
+    assert.match(home, /All servers at once:.*days\/latest\.json/);
     const sm = renderSitemap(rows);
     assert.match(sm, /<url><loc>https:\/\/lowdown-proxy\.vercel\.app\/servers\/ai\.trendsmcp\/google-trends<\/loc><lastmod>2026-10-26<\/lastmod><\/url>/);
     assert.equal((sm.match(/<url>/g) ?? []).length, 2); // 목록 페이지 + 1
@@ -110,18 +113,31 @@ describe('페이지 핸들러', () => {
     return res;
   };
 
-  test('방문자 User-Agent 와 ref=page 로 API 를 부르고, HTML 을 캐시 없이 내려준다', async () => {
+  test('방문자 User-Agent 와 ref=page 로 API 를 부르고, HTML 을 6시간 CDN 캐시로 내려준다', async () => {
     const seen: Array<{ url: string; ua: string | null }> = [];
     globalThis.fetch = (async (u: string | URL | Request, init?: RequestInit) => {
       seen.push({ url: String(u), ua: new Headers(init?.headers).get('user-agent') });
       return new Response(JSON.stringify(api()), { status: 200, headers: { 'content-type': 'application/json' } });
     }) as typeof fetch;
-    const res = await call({ kind: 'server', ns: 'ai.trendsmcp', name: 'google-trends' }, 'Claude-SearchBot/1.0');
+    const res = await call({ kind: 'server', ns: 'ai.trendsmcp', name: 'google-trends' }, 'ClaudeBot/1.0');
     assert.equal(res.code, 200);
     assert.equal(seen[0]!.url, 'https://lowdown-proxy.vercel.app/api/reputation/mcp:ai.trendsmcp/google-trends?ref=page');
-    assert.equal(seen[0]!.ua, 'Claude-SearchBot/1.0');
-    assert.equal(res.headers['cache-control'], 'no-store');
+    assert.equal(seen[0]!.ua, 'ClaudeBot/1.0');
+    assert.equal(res.headers['cache-control'], 'public, max-age=0, s-maxage=21600, stale-while-revalidate=86400');
+    assert.match(res.headers['link'] ?? '', /lowdown-data/);
     assert.match(String(res.body), /<!doctype html>/);
+  });
+
+  test('nc=1(실사용·검색 봇, vercel.json rewrite 가 붙임)이면 캐시 없이, 안쪽 API 에도 nc=1', async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (u: string | URL | Request) => {
+      seen.push(String(u));
+      return new Response(JSON.stringify(api()), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const res = await call({ kind: 'server', ns: 'ai.trendsmcp', name: 'google-trends', nc: '1' }, 'Claude-User/1.0');
+    assert.equal(res.code, 200);
+    assert.equal(seen[0], 'https://lowdown-proxy.vercel.app/api/reputation/mcp:ai.trendsmcp/google-trends?ref=page&nc=1');
+    assert.equal(res.headers['cache-control'], 'no-store');
   });
 
   test('API 가 503 이면 페이지도 503 + Retry-After', async () => {

@@ -10,6 +10,15 @@ import { createClient } from "@supabase/supabase-js";
 // 원격 서버가 보낸 문자열은 API 가 이미 형식 검사를 했고, 여기서도 모든 값을 HTML 이스케이프한다.
 
 export const SITE = "https://lowdown-proxy.vercel.app";
+// 대량 사용 안내 (2026-10-30): 전체가 필요한 수집기는 페이지를 하나씩 열지 말고 하루치 파일로 → Vercel 사용량과 무관.
+// Link 헤더 값은 api/reputation/[target].ts 의 BULK_DATA_LINK 와 같아야 한다(그 모듈을 불러오면 함수가 커져서 복사해 둔다).
+export const BULK_DATA_LINK = '<https://github.com/PetShopBros/lowdown-data>; rel="related"; title="Daily dataset for bulk use (CC BY 4.0)"';
+const BULK_LINE =
+  `<p><strong>All servers at once:</strong> download the daily files instead of opening every page or calling the API once per server (CC BY 4.0, updated daily): ` +
+  `<a href="https://petshopbros.github.io/lowdown-data/days/latest.json">latest day (JSON)</a> · ` +
+  `<a href="https://github.com/PetShopBros/lowdown-data/tree/main/scanner_observations">raw observations (CSV, Parquet)</a> · ` +
+  `<a href="https://github.com/PetShopBros/lowdown-data/blob/main/MANIFEST.csv">file list</a> · ` +
+  `<a href="https://huggingface.co/datasets/art2meta/lowdown-mcp-observations">Hugging Face copy</a></p>`;
 const NAME_RE = /^[A-Za-z0-9._~-]{1,200}\/[A-Za-z0-9._~-]{1,200}$/;
 const MAX_LIST = 10_000;
 
@@ -230,8 +239,9 @@ export function renderIndex(rows: ListRow[], opts: { home?: boolean } = {}): str
       (home
         ? `<h1>Lowdown</h1><p class="lead">Lowdown records, once a day, what MCP Registry servers actually do: whether they answer initialize and tools/list, whether they require authentication, and when their tool definitions change. Recorded facts with dates, not scores.</p>` +
           `<p>Look up one server: <code>GET ${SITE}/api/reputation/mcp:{namespace}/{name}</code> · <a href="${SITE}/llms.txt">llms.txt</a> · <a href="${SITE}/openapi.json">OpenAPI</a> · <a href="https://github.com/PetShopBros/lowdown-data">daily dataset (CC BY 4.0)</a> · <a href="https://github.com/PetShopBros/lowdown-proxy">source</a></p>` +
+          BULK_LINE +
           `<h2>Observed servers</h2>`
-        : `<h1>MCP servers observed by Lowdown</h1>`) +
+        : `<h1>MCP servers observed by Lowdown</h1>` + BULK_LINE) +
       `<p class="lead">${esc(items.length)} MCP Registry servers with a recorded daily check. Each page states whether the server answered initialize and tools/list, whether it required authentication, and how its tool definitions changed, with dates.</p>` +
       `<p class="muted">Recorded facts from one network location, not scores. <a href="${SITE}/llms.txt">llms.txt</a> · <a href="https://github.com/PetShopBros/lowdown-data">dataset</a></p>` +
       `<ul>${items.join("")}</ul>`,
@@ -327,6 +337,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   res.setHeader("Content-Type", type);
+  res.setHeader("Link", BULK_DATA_LINK);
   // CDN 캐시 (2026-10-30): 수집기 반복 방문은 6시간 캐시로 받는다 → 캐시 적중은 함수·방문 기록에 안 잡힘(첫 방문만 기록).
   // 실사용·검색 봇(Claude-User 등)은 vercel.json rewrite 가 nc=1 을 붙여 보낸다 → 캐시하지 않고 매번 기록.
   res.setHeader("Cache-Control", req.query.nc === "1" ? "no-store" : "public, max-age=0, s-maxage=21600, stale-while-revalidate=86400");
