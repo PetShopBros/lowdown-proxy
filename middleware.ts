@@ -20,6 +20,7 @@ export const config = {
     "/api/reputation/:path*",
     "/mcp",
     "/privacy",
+    "/terms",
   ],
 };
 

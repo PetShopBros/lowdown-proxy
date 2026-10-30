@@ -99,6 +99,15 @@ describe('서버 기록 페이지', () => {
     assert.match(html, /IP addresses\. Lowdown does not store them/);
     assert.match(html, /vercel\.app\/mcp/);
   });
+
+  test('이용약관: 무료·보증 없음·CC BY 4.0·연락처', async () => {
+    const { renderTerms } = (await load()) as unknown as { renderTerms: () => string };
+    const html = renderTerms();
+    assert.match(html, /<title>Lowdown terms of service<\/title>/);
+    assert.match(html, /does not score, grade, rank, certify, or endorse/);
+    assert.match(html, /CC BY 4\.0/);
+    assert.match(html, /atom\.art2meta@gmail\.com/);
+  });
 });
 
 function fakeRes() {

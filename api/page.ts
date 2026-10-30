@@ -241,6 +241,37 @@ export function renderPrivacy(): string {
   });
 }
 
+/** /terms: 이용약관 (ChatGPT 플러그인 등 공개 제출 필수 항목). 무료·인증 없음·관측 사실·보증 없음. */
+export function renderTerms(): string {
+  return shell({
+    title: "Lowdown terms of service",
+    description: "Terms for using Lowdown's lookup API, server pages, daily dataset, and remote MCP server.",
+    canonical: `${SITE}/terms`,
+    noindex: false,
+    body:
+      `<h1>Terms of service</h1>` +
+      `<p class="muted">Effective 2026-10-30. Applies to ${esc(SITE)} (lookup API, server pages, discovery files), the remote MCP server at ${esc(SITE)}/mcp, and the public daily dataset. Operated by ART2META (Republic of Korea).</p>` +
+      `<h2>The service</h2>` +
+      `<p>Lowdown records what MCP Registry servers declare and what is observed about them once a day, and returns those records with dates and sources. It is free to use. No account, sign-in, or API key is needed.</p>` +
+      `<h2>What the records are and are not</h2><ul>` +
+      `<li>Records are observed facts from one network location at the time stated. They can be incomplete, delayed, or wrong, and they change from day to day.</li>` +
+      `<li>Lowdown does not score, grade, rank, certify, or endorse any server. A record is not a security assessment, and the absence of a record says nothing about a server.</li>` +
+      `<li>Decisions you or your software make using the records are your own. Check the current record before relying on an older copy.</li></ul>` +
+      `<h2>Data license</h2>` +
+      `<p>MCP Registry records and Lowdown Scanner observations are available under <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. Keep the <code>source</code> block or cite "Lowdown (https://github.com/PetShopBros/lowdown-data)" with the retrieval date when you republish them. The source code is available under the MIT license in the repository.</p>` +
+      `<h2>Fair use of the service</h2><ul>` +
+      `<li>To read records for many servers, use the <a href="https://github.com/PetShopBros/lowdown-data">daily dataset</a> instead of calling the lookup API once per server.</li>` +
+      `<li>Do not try to disrupt the service, bypass its limits, or submit false reports through the reporting endpoint.</li>` +
+      `<li>Lowdown may limit or refuse requests that harm the service for other users.</li></ul>` +
+      `<h2>No warranty</h2>` +
+      `<p>The service and data are provided "as is", without warranties of any kind, to the extent permitted by law. ART2META is not liable for losses arising from use of the records, to the extent permitted by law.</p>` +
+      `<h2>Changes</h2>` +
+      `<p>These terms may change. The effective date above shows the latest version. The service may change or stop.</p>` +
+      `<h2>Privacy and contact</h2>` +
+      `<p>See the <a href="${SITE}/privacy">privacy policy</a>. Questions: <a href="mailto:atom.art2meta@gmail.com">atom.art2meta@gmail.com</a> or <a href="https://github.com/PetShopBros/lowdown-proxy/issues">GitHub issues</a>. These terms are governed by the laws of the Republic of Korea.</p>`,
+  });
+}
+
 export interface ListRow {
   target_id: string;
   latest_day: string | null;
@@ -340,6 +371,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       body = "Not found";
       type = "text/plain; charset=utf-8";
     } else body = page.html;
+  } else if (kind === "terms") {
+    path = "/terms";
+    body = renderTerms();
   } else if (kind === "privacy") {
     path = "/privacy";
     body = renderPrivacy();

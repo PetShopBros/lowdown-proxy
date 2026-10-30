@@ -9,6 +9,10 @@
       "destination": "/api/page?kind=privacy"
     },
     {
+      "source": "/terms",
+      "destination": "/api/page?kind=terms"
+    },
+    {
       "source": "/",
       "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
       "destination": "/api/page?kind=home&nc=1"
