@@ -30,7 +30,11 @@ before(async () => {
     req.on('data', (c) => (body += c));
     req.on('end', async () => {
       const r: any = req;
-      r.body = body ? JSON.parse(body) : undefined;
+      // Vercel 처럼: 깨진 JSON 이면 req.body 를 읽을 때 예외
+      let parsed: unknown;
+      let bad = false;
+      try { parsed = body ? JSON.parse(body) : undefined; } catch { bad = true; }
+      Object.defineProperty(r, 'body', { configurable: true, get() { if (bad) throw new Error('Invalid JSON'); return parsed; } });
       r.query = {};
       r.headers.host = 'lowdown.test';
       const s: any = res;
@@ -74,6 +78,17 @@ describe('원격 MCP', () => {
     const bad: any = await client.callTool({ name: 'get_lowdown', arguments: { target: 'has space' } });
     assert.equal(bad.isError, true);
     await client.close();
+  });
+
+  test('깨진 JSON 본문은 400 (-32700), 500 이 아님', async () => {
+    const r = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: '{jsonrpc:2.0,id:1,method:tools/list}',
+    });
+    assert.equal(r.status, 400);
+    const j = (await r.json()) as any;
+    assert.equal(j.error.code, -32700);
   });
 
   test('GET 은 405', async () => {
