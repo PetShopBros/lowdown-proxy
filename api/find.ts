@@ -150,7 +150,7 @@ const PARAMETERS = {
   state: `latest daily check result: ${STATES.join(", ")} (only servers checked in the last ${STALE_DAYS} days)`,
   no_auth: "1 = same as state=answered (answered tools/list with no credentials)",
   answered_days: "minimum daily checks in the last 30 days that answered tools/list (1-30)",
-  stable_days: "current tool list first observed at least this many days ago (1-3650)",
+  stable_days: "current tool list first observed at least this many days ago (1-3650); tool lists are recorded from 2026-10-20, so a longer period returns nothing yet",
   tools_min: "minimum tool count", tools_max: "maximum tool count",
   registry: `Registry status: ${REGISTRY_STATUSES.join(", ")}`,
   package: "ok = declared packages with no deprecated/yanked/quarantined/404 latest; flagged = at least one; none = no declared packages",

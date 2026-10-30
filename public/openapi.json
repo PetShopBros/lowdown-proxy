@@ -1053,7 +1053,7 @@
               "minimum": 1,
               "maximum": 3650
             },
-            "description": "Current tool list first observed at least this many days ago."
+            "description": "Current tool list first observed at least this many days ago. Tool lists are recorded from 2026-10-20, so a longer period returns nothing yet."
           },
           {
             "name": "tools_min",
