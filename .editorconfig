@@ -1,0 +1,6 @@
+# 이 레포의 텍스트 파일은 BOM 없는 UTF-8 (2026-10-31·11-01 vercel.json BOM 으로 배포 실패)
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
