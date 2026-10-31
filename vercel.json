@@ -1,8 +1,12 @@
-{
+﻿{
   "rewrites": [
     {
       "source": "/mcp",
       "destination": "/api/mcp"
+    },
+    {
+      "source": "/.well-known/glama.json",
+      "destination": "/public/.well-known/glama.json"
     },
     {
       "source": "/privacy",
