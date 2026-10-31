@@ -27,6 +27,10 @@ export interface DatasetSpec {
   from: string;
   /** 닫힌 날 중 최근 며칠은 건너뛴다 — 실행이 UTC 자정을 넘겨 늦게 기록되는 행을 기다리기 위해 */
   settleDays?: number;
+  /** true 면 (시각 열, 키) 순서로 페이지를 넘기고 다 읽은 뒤 키 순서로 다시 정렬한다(파일 바이트는 같다).
+   *  키 순서 LIMIT 페이지는 DB 가 기본키를 표 처음부터 훑게 만든다 → 큰 표에서 시간 초과(2026-10-31 tool_defs HTTP 500).
+   *  필요 인덱스: (시각 열, 키). supabase/2026-11-01_private_archive_keyset_idx.sql */
+  timeKeyset?: boolean;
 }
 
 export const SPECS: Record<PrivateDataset, DatasetSpec> = {
@@ -37,6 +41,7 @@ export const SPECS: Record<PrivateDataset, DatasetSpec> = {
     columns: ['def_hash', 'tool_name', 'body', 'tool_schema_hash', 'tool_desc_hash', 'byte_size', 'first_seen_at', 'first_scan_run_id'],
     pageSize: 500,
     from: PRIVATE_FROM,
+    timeKeyset: true,
   },
   tool_set_versions: {
     table: 'scanner_tool_set_versions',
@@ -45,6 +50,7 @@ export const SPECS: Record<PrivateDataset, DatasetSpec> = {
     columns: ['tool_set_hash', 'def_hashes', 'tool_count', 'first_seen_at', 'first_scan_run_id'],
     pageSize: 1000,
     from: PRIVATE_FROM,
+    timeKeyset: true,
   },
   tool_flags: {
     table: 'scanner_tool_flags',
@@ -178,11 +184,19 @@ export async function fetchPrivateDay(cfg: SupabaseConfig, spec: DatasetSpec, ra
   const base = `${cfg.url.replace(/\/+$/, '')}/rest/v1/${spec.table}`;
   const out: Array<Record<string, unknown>> = [];
   let last: string | number | null = null;
+  let lastTime: string | null = null;
+  // PostgREST or=(...) 안의 값은 예약 문자(, . : ( ))가 있으면 큰따옴표로 감싼다
+  const q = (v: string | number) => `"${String(v).replace(/"/g, '')}"`;
+  const cols = spec.columns ? [...spec.columns] : null;
   for (;;) {
-    const qs = new URLSearchParams({ select: spec.columns ? spec.columns.join(',') : '*', order: `${spec.key}.asc`, limit: String(spec.pageSize) });
+    const order = spec.timeKeyset ? `${spec.timeColumn}.asc,${spec.key}.asc` : `${spec.key}.asc`;
+    const qs = new URLSearchParams({ select: cols ? cols.join(',') : '*', order, limit: String(spec.pageSize) });
     qs.append(spec.timeColumn, `gte.${range.start}`);
     qs.append(spec.timeColumn, `lt.${range.end}`);
-    if (last !== null) qs.append(spec.key, `gt.${last}`);
+    if (last !== null) {
+      if (spec.timeKeyset && lastTime !== null) qs.append('or', `(${spec.timeColumn}.gt.${q(lastTime)},and(${spec.timeColumn}.eq.${q(lastTime)},${spec.key}.gt.${q(last)}))`);
+      else qs.append(spec.key, `gt.${last}`);
+    }
     let res: Response;
     try {
       res = await fetchImpl(`${base}?${qs.toString()}`, { headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }), signal: AbortSignal.timeout(60_000) });
@@ -194,9 +208,20 @@ export async function fetchPrivateDay(cfg: SupabaseConfig, spec: DatasetSpec, ra
     if (!Array.isArray(page)) throw new Error(`${spec.table} read failed: unexpected response`);
     out.push(...page);
     if (page.length < spec.pageSize) break;
-    const k = page[page.length - 1]?.[spec.key];
-    if ((typeof k !== 'string' && typeof k !== 'number') || (last !== null && k <= last)) throw new Error(`${spec.table} read: keyset did not advance`);
+    const lastRow = page[page.length - 1];
+    const k = lastRow?.[spec.key];
+    if (typeof k !== 'string' && typeof k !== 'number') throw new Error(`${spec.table} read: keyset did not advance`);
+    if (spec.timeKeyset) {
+      const t = lastRow?.[spec.timeColumn];
+      if (typeof t !== 'string') throw new Error(`${spec.table} read: keyset did not advance`);
+      if (lastTime !== null && last !== null && (Date.parse(t) < Date.parse(lastTime) || (t === lastTime && k <= last))) throw new Error(`${spec.table} read: keyset did not advance`);
+      lastTime = t;
+    } else if (last !== null && k <= last) {
+      throw new Error(`${spec.table} read: keyset did not advance`);
+    }
     last = k;
   }
+  // 파일은 예전과 같은 키 순서 (같은 행이면 같은 바이트·해시)
+  if (spec.timeKeyset) out.sort((a, b) => { const x = a[spec.key] as string | number; const y = b[spec.key] as string | number; return x < y ? -1 : x > y ? 1 : 0; });
   return out;
 }

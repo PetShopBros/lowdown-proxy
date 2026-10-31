@@ -63,14 +63,42 @@ describe('원문 비공개 보관', () => {
       const page = call === 1 ? [{ def_hash: 'a' }, { def_hash: 'b' }] : [{ def_hash: 'c' }];
       return new Response(JSON.stringify(page), { status: 200 });
     }) as typeof fetch;
-    const rows = await fetchPrivateDay({ url: 'https://db', key: 'sb_x' }, { ...SPECS.tool_defs, pageSize: 2 }, { start: '2026-10-21T00:00:00.000Z', end: '2026-10-22T00:00:00.000Z' }, fetchImpl);
+    const rows = await fetchPrivateDay({ url: 'https://db', key: 'sb_x' }, { ...SPECS.tool_defs, pageSize: 2, timeKeyset: false }, { start: '2026-10-21T00:00:00.000Z', end: '2026-10-22T00:00:00.000Z' }, fetchImpl);
     assert.equal(rows.length, 3);
     const u = new URL(urls[1]!);
     assert.deepEqual(u.searchParams.getAll('first_seen_at'), ['gte.2026-10-21T00:00:00.000Z', 'lt.2026-10-22T00:00:00.000Z']);
-    assert.equal(u.searchParams.get('def_hash'), 'gt.b');
     assert.equal(u.searchParams.get('order'), 'def_hash.asc');
+    assert.equal(u.searchParams.get('def_hash'), 'gt.b'); // timeKeyset 끈 경우: 키만
     const bad = (async () => new Response('{"body":"secret description"}', { status: 500 })) as typeof fetch;
     await assert.rejects(fetchPrivateDay({ url: 'https://db', key: 'k' }, SPECS.tool_defs, { start: 'a', end: 'b' }, bad), (e: Error) => !e.message.includes('secret'));
+  });
+
+  test('DB 읽기 (시각, 키) keyset: tool_defs·tool_set_versions, 결과는 키 순서로 다시 정렬', async () => {
+    assert.equal(SPECS.tool_defs.timeKeyset, true);
+    assert.equal(SPECS.tool_set_versions.timeKeyset, true);
+    assert.equal(SPECS.lookups.timeKeyset, undefined); // 나머지는 그대로
+    const urls: string[] = [];
+    let call = 0;
+    const fetchImpl = (async (input: string | URL | Request) => {
+      urls.push(String(input));
+      call++;
+      const page = call === 1
+        ? [{ def_hash: 'c', first_seen_at: '2026-10-21T01:00:00.5+00:00' }, { def_hash: 'a', first_seen_at: '2026-10-21T02:00:00+00:00' }]
+        : [{ def_hash: 'b', first_seen_at: '2026-10-21T02:00:00+00:00' }];
+      return new Response(JSON.stringify(page), { status: 200 });
+    }) as typeof fetch;
+    const rows = await fetchPrivateDay({ url: 'https://db', key: 'k' }, { ...SPECS.tool_defs, pageSize: 2 }, { start: '2026-10-21T00:00:00.000Z', end: '2026-10-22T00:00:00.000Z' }, fetchImpl);
+    assert.deepEqual(rows.map((r) => r.def_hash), ['a', 'b', 'c']);
+    const u1 = new URL(urls[0]!);
+    assert.equal(u1.searchParams.get('order'), 'first_seen_at.asc,def_hash.asc');
+    assert.equal(u1.searchParams.get('or'), null);
+    const u2 = new URL(urls[1]!);
+    assert.deepEqual(u2.searchParams.getAll('first_seen_at'), ['gte.2026-10-21T00:00:00.000Z', 'lt.2026-10-22T00:00:00.000Z']);
+    assert.equal(u2.searchParams.get('or'), '(first_seen_at.gt."2026-10-21T02:00:00+00:00",and(first_seen_at.eq."2026-10-21T02:00:00+00:00",def_hash.gt."a"))');
+    assert.equal(u2.searchParams.get('def_hash'), null);
+    // 같은 페이지가 다시 오면 멈춘다
+    const stuck = (async () => new Response(JSON.stringify([{ def_hash: 'a', first_seen_at: '2026-10-21T02:00:00+00:00' }, { def_hash: 'a', first_seen_at: '2026-10-21T02:00:00+00:00' }]), { status: 200 })) as typeof fetch;
+    await assert.rejects(fetchPrivateDay({ url: 'https://db', key: 'k' }, { ...SPECS.tool_defs, pageSize: 2 }, { start: 's', end: 'e' }, stuck), /did not advance/);
   });
 
   test('DB 가 유일한 사본이던 기록: 모든 열(select=*), 키 이름순, 같은 행은 같은 바이트', async () => {
