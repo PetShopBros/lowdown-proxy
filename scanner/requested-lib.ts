@@ -3,6 +3,9 @@
 //   고정 코호트와 섞지 않는다: 목록은 scanner_requested, 관찰 행은 source = 'scanner_requested'.
 //   한도: 하루에 새로 들어오는 수(dailyCap), 전체 크기(totalCap). 한도를 넘는 대상은 다음 날로 미룬다(버리지 않음).
 //   우선순위: 크롤러가 아닌 조회(분류 없음·AI 사용자 요청)가 많은 순 → 전체 조회 많은 순 → 이름순.
+//   실사용 자리(2026-11-01): AI 사용자(bot_kind = 'ai_user', 예: Claude-User·ChatGPT 원격 MCP) 조회가 있는 대상은
+//     전체 상한과 별도로 받는다(하루 userDailyCap, 전체 userRemaining). 10/28 전체 상한 3,000이 크롤러 조회로 찬 뒤
+//     실사용 조회 대상도 들어가지 못했기 때문. 분류 없음(null)은 넣지 않는다 — 브라우저 UA를 돌려쓰는 수집기가 대부분.
 
 import { supabaseHeaders, type SupabaseConfig } from './lib.ts';
 
@@ -10,6 +13,8 @@ export const REQUESTED_SOURCE = 'scanner_requested';
 export const REQUESTED_VERSION = 'requested';
 export const DEFAULT_REQUESTED_DAILY_CAP = 1000;
 export const DEFAULT_REQUESTED_TOTAL_CAP = 3000;
+export const DEFAULT_REQUESTED_USER_DAILY_CAP = 100;
+export const DEFAULT_REQUESTED_USER_TOTAL_CAP = 1000;
 export const LOOKUP_WINDOW_DAYS = 2;
 
 export interface LookupRef {
@@ -41,18 +46,23 @@ export interface PickOptions {
   dailyCap: number;
   /** 이미 있는 requested 수를 뺀 남은 자리 */
   remaining: number;
+  /** 실사용 자리: AI 사용자 조회가 있는 대상을 전체 상한과 별도로 받는 하루 수 (없으면 0) */
+  userDailyCap?: number;
+  /** 실사용 자리의 남은 전체 수 (없으면 userDailyCap 과 같음) */
+  userRemaining?: number;
 }
 
-export function pickRequested(lookups: readonly LookupRef[], o: PickOptions): { picks: RequestedPick[]; eligible: number; deferred: number } {
-  const stats = new Map<string, { human: number; total: number; firstKind: string | null; firstAt: string }>();
+export function pickRequested(lookups: readonly LookupRef[], o: PickOptions): { picks: RequestedPick[]; eligible: number; deferred: number; userPicks: number } {
+  const stats = new Map<string, { human: number; ai: number; total: number; firstKind: string | null; firstAt: string }>();
   for (const l of lookups) {
     const name = registryNameOf(l.target);
     if (!name || !o.probeable.has(name)) continue;
     const id = `mcp:${name}`;
     if (o.exclude.has(id)) continue;
-    const s = stats.get(id) ?? { human: 0, total: 0, firstKind: l.bot_kind ?? null, firstAt: l.created_at };
+    const s = stats.get(id) ?? { human: 0, ai: 0, total: 0, firstKind: l.bot_kind ?? null, firstAt: l.created_at };
     s.total++;
     if (l.bot_kind !== 'crawler') s.human++;
+    if (l.bot_kind === 'ai_user') s.ai++;
     if (l.created_at < s.firstAt) {
       s.firstAt = l.created_at;
       s.firstKind = l.bot_kind ?? null;
@@ -61,8 +71,13 @@ export function pickRequested(lookups: readonly LookupRef[], o: PickOptions): { 
   }
   const ordered = [...stats.entries()].sort((a, b) => b[1].human - a[1].human || b[1].total - a[1].total || (a[0] < b[0] ? -1 : 1));
   const room = Math.max(0, Math.min(o.dailyCap, o.remaining));
-  const picks = ordered.slice(0, room).map(([target_id, s]) => ({ target_id, first_bot_kind: s.firstKind, first_lookups: s.total }));
-  return { picks, eligible: ordered.length, deferred: ordered.length - picks.length };
+  const chosen = ordered.slice(0, room);
+  // 실사용 자리: 일반 자리에 못 든 대상 중 AI 사용자 조회가 있는 것 (AI 사용자 조회 많은 순 → 같은 정렬)
+  const userDaily = Math.max(0, o.userDailyCap ?? 0);
+  const userRoom = Math.max(0, Math.min(userDaily, o.userRemaining ?? userDaily));
+  const userChosen = ordered.slice(room).filter(([, s]) => s.ai > 0).sort((a, b) => b[1].ai - a[1].ai).slice(0, userRoom);
+  const picks = [...chosen, ...userChosen].map(([target_id, s]) => ({ target_id, first_bot_kind: s.firstKind, first_lookups: s.total }));
+  return { picks, eligible: ordered.length, deferred: ordered.length - picks.length, userPicks: userChosen.length };
 }
 
 export interface RequestedDeps {

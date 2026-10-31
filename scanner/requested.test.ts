@@ -33,6 +33,23 @@ describe('조회된 대상 관찰', () => {
     assert.deepEqual(a.map((p) => p.target_id), b.map((p) => p.target_id));
   });
 
+  test('실사용 자리: 전체 상한이 차도 AI 사용자 조회 대상은 별도로 받는다(분류 없음·크롤러는 아님)', () => {
+    const lookups = [L('a/x', 'crawler'), L('b/y', null), L('c/z', 'ai_user'), L('d/w', 'ai_user'), L('d/w', 'ai_user')];
+    const full = pickRequested(lookups, { probeable, exclude: new Set(), dailyCap: 5, remaining: 0, userDailyCap: 5, userRemaining: 5 });
+    assert.deepEqual(full.picks.map((p) => p.target_id), ['mcp:d/w', 'mcp:c/z']); // AI 사용자 조회 많은 순
+    assert.equal(full.userPicks, 2);
+    assert.equal(full.deferred, 2); // a/x(크롤러), b/y(분류 없음)는 미룸
+    // 일반 자리에 이미 든 대상은 실사용 자리를 쓰지 않는다
+    const open = pickRequested(lookups, { probeable, exclude: new Set(), dailyCap: 5, remaining: 5, userDailyCap: 5 });
+    assert.equal(open.picks.length, 4);
+    assert.equal(open.userPicks, 0);
+    // 실사용 자리 하루 상한·남은 자리
+    assert.equal(pickRequested(lookups, { probeable, exclude: new Set(), dailyCap: 5, remaining: 0, userDailyCap: 1, userRemaining: 5 }).picks.length, 1);
+    assert.equal(pickRequested(lookups, { probeable, exclude: new Set(), dailyCap: 5, remaining: 0, userDailyCap: 5, userRemaining: 0 }).picks.length, 0);
+    // 옵션이 없으면 예전과 같다(실사용 자리 0)
+    assert.equal(pickRequested(lookups, { probeable, exclude: new Set(), dailyCap: 5, remaining: 0 }).picks.length, 0);
+  });
+
   test('DB 읽기: result_kind 필터·페이지, 오류에 응답 본문 없음', async () => {
     const urls: string[] = [];
     const fetchImpl = (async (input: string | URL | Request) => {

@@ -18,6 +18,7 @@
 //       REGISTRY_BUDGET_SEC(기본 480) — Registry 목록 받기 시간 상한. 넘기거나 실패하면 직전 관찰 실행의 원격 주소로 같은 코호트를 관찰
 //         (행에 metadata.registry_fallback=true, registry_snapshot_run, registry_snapshot_at 기록)
 //       REQUESTED_DAILY_CAP(기본 1000) / REQUESTED_TOTAL_CAP(기본 3000) — 조회된 대상 관찰. 누군가 조회했지만 관찰된 적 없는 Registry 서버를 매일 함께 관찰한다.
+//       REQUESTED_USER_DAILY_CAP(기본 100) / REQUESTED_USER_TOTAL_CAP(기본 1000) — 실사용 자리: AI 사용자 조회 대상은 위 전체 상한과 별도로 받는다.
 //         고정 코호트와 섞지 않는다(목록 scanner_requested, 행 source='scanner_requested'). 0 이면 끈다. limit·fallback 날은 건너뜀
 //       RETRY_FAILED=0 — 직후 재시도 끄기(기본 켜짐). RETRY_DELAY_SEC(기본 60), RETRY_BUDGET_SEC(기본 720)
 // 직후 재시도: 메인 probe 후 일시적일 수 있는 실패(timeout/연결 실패/408/429/5xx)만 호스트당 1건씩 다시 시도해
@@ -57,7 +58,7 @@ import {
   selectCohort,
   utcDayStart,
 } from './lib.ts';
-import { DEFAULT_REQUESTED_DAILY_CAP, DEFAULT_REQUESTED_TOTAL_CAP, fetchRecentLookups, fetchRequestedIds, LOOKUP_WINDOW_DAYS, pickRequested, REQUESTED_SOURCE, REQUESTED_VERSION, saveRequested } from './requested-lib.ts';
+import { DEFAULT_REQUESTED_DAILY_CAP, DEFAULT_REQUESTED_TOTAL_CAP, DEFAULT_REQUESTED_USER_DAILY_CAP, DEFAULT_REQUESTED_USER_TOTAL_CAP, fetchRecentLookups, fetchRequestedIds, LOOKUP_WINDOW_DAYS, pickRequested, REQUESTED_SOURCE, REQUESTED_VERSION, saveRequested } from './requested-lib.ts';
 import { diffRegistry, fetchRegistryState, insertRegistryChanges, upsertRegistryState } from './registry-diff.ts';
 import { aggregateObserved, computeFirstSeen, fetchFirstSeen, insertToolSets, isPublishable, toolSetRows, upsertFirstSeen } from './first-seen.ts';
 import { insertToolDefs, insertToolFlags, insertToolSetVersions, oversizeFlags, ToolDefCollector, toolDefRows, toolSetVersionRows } from './tool-defs.ts';
@@ -316,6 +317,8 @@ async function main(): Promise<void> {
   {
     const dailyCap = envSeconds('REQUESTED_DAILY_CAP', DEFAULT_REQUESTED_DAILY_CAP);
     const totalCap = envSeconds('REQUESTED_TOTAL_CAP', DEFAULT_REQUESTED_TOTAL_CAP);
+    const userDailyCap = envSeconds('REQUESTED_USER_DAILY_CAP', DEFAULT_REQUESTED_USER_DAILY_CAP);
+    const userTotalCap = envSeconds('REQUESTED_USER_TOTAL_CAP', DEFAULT_REQUESTED_USER_TOTAL_CAP);
     if (dailyCap === 0 || totalCap === 0) requestedStats = { requested: 'off' };
     else if (limit) requestedStats = { requested: 'skipped (limit)' };
     else if (!registry) requestedStats = { requested: 'skipped (registry fallback)' };
@@ -327,14 +330,18 @@ async function main(): Promise<void> {
         const probeable = new Set(registry.targets.map((t) => t.name));
         const since = new Date(Date.now() - LOOKUP_WINDOW_DAYS * 86_400_000).toISOString();
         const lookups = await fetchRecentLookups(cohortReadCfg, since);
-        const pick = pickRequested(lookups, { probeable, exclude: new Set([...fixed, ...existing]), dailyCap, remaining: Math.max(0, totalCap - existing.length) });
+        // 실사용 자리는 전체 상한을 넘어 쌓인 수만큼 줄어든다 (총 목록 = totalCap + userTotalCap 이하)
+        const pick = pickRequested(lookups, {
+          probeable, exclude: new Set([...fixed, ...existing]), dailyCap, remaining: Math.max(0, totalCap - existing.length),
+          userDailyCap, userRemaining: Math.max(0, totalCap + userTotalCap - Math.max(totalCap, existing.length)),
+        });
         let saved = 'dry-run (not written)';
         if (supabase) saved = `sent ${await saveRequested(supabase, pick.picks)}`;
-        const ids = [...new Set([...existing, ...pick.picks.map((p) => p.target_id)])].filter((id) => !fixed.has(id)).slice(0, totalCap);
+        const ids = [...new Set([...existing, ...pick.picks.map((p) => p.target_id)])].filter((id) => !fixed.has(id)).slice(0, totalCap + userTotalCap);
         const reqJobs = planCohortJobs(registry.targets, ids, registry.registryInfo).jobs;
         for (const j of reqJobs) requestedNames.add(j.name);
         jobs = [...jobs, ...reqJobs];
-        requestedStats = { requested_existing: existing.length, requested_lookups: lookups.length, requested_eligible: pick.eligible, requested_new: pick.picks.length, requested_deferred: pick.deferred, requested_jobs: reqJobs.length, requested_saved: saved };
+        requestedStats = { requested_existing: existing.length, requested_lookups: lookups.length, requested_eligible: pick.eligible, requested_new: pick.picks.length, requested_new_user: pick.userPicks, requested_deferred: pick.deferred, requested_jobs: reqJobs.length, requested_saved: saved };
       } catch (e) {
         console.error(`requested 실패(고정 코호트 관찰은 계속): ${e instanceof Error ? e.message : 'unknown'}`);
         requestedStats = { requested: 'error' };
