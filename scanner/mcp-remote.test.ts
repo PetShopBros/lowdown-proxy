@@ -17,6 +17,10 @@ before(async () => {
   // 조회 API 호출만 가짜로 (MCP 클라이언트 ↔ 로컬 서버는 진짜 fetch)
   globalThis.fetch = (async (u: any, init?: any) => {
     const url = String(u instanceof Request ? u.url : u);
+    if (url.startsWith('https://lowdown.test/api/find')) {
+      seen.push({ url, ua: new Headers(init?.headers).get('user-agent') });
+      return new Response(JSON.stringify({ query: 'state=answered', count: 1, results: [{ name: 'a.b/c' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
     if (url.startsWith('https://lowdown.test/api/reputation/')) {
       seen.push({ url, ua: new Headers(init?.headers).get('user-agent') });
       if (url.includes('mcp%3Adown')) return new Response('{}', { status: 503 });
@@ -60,7 +64,9 @@ describe('원격 MCP', () => {
     const client = new Client({ name: 'test', version: '0' });
     await client.connect(new StreamableHTTPClientTransport(new URL(base), { requestInit: { headers: { 'user-agent': 'Claude-User/1.0' } } }));
     const { tools } = await client.listTools();
-    assert.deepEqual(tools.map((t) => t.name), ['get_lowdown']);
+    assert.deepEqual(tools.map((t) => t.name), ['get_lowdown', 'find_servers']);
+    assert.match(client.getInstructions() ?? '', /before installing or connecting/);
+    assert.equal(tools[1]!.annotations?.readOnlyHint, true);
     assert.equal(tools[0]!.title, 'Look up recorded facts about an MCP server');
     assert.equal(tools[0]!.annotations?.readOnlyHint, true);
     assert.equal(tools[0]!.annotations?.destructiveHint, false);
@@ -74,6 +80,15 @@ describe('원격 MCP', () => {
     const down: any = await client.callTool({ name: 'get_lowdown', arguments: { target: 'mcp:down/x' } });
     assert.equal(down.isError, true);
     assert.match(down.content[0].text, /503/);
+
+    const found: any = await client.callTool({ name: 'find_servers', arguments: { state: 'answered', sort: 'tools', limit: 10 } });
+    assert.equal(found.isError ?? false, false, JSON.stringify(found));
+    assert.match(found.content[0].text, /a\.b\/c/);
+    assert.equal(seen.at(-1)!.url, 'https://lowdown.test/api/find?ref=mcp&nc=1&state=answered&sort=tools&limit=10');
+    assert.equal(seen.at(-1)!.ua, 'Claude-User/1.0');
+
+    const badFind: any = await client.callTool({ name: 'find_servers', arguments: { state: 'nope' } });
+    assert.equal(badFind.isError, true);
 
     const bad: any = await client.callTool({ name: 'get_lowdown', arguments: { target: 'has space' } });
     assert.equal(bad.isError, true);

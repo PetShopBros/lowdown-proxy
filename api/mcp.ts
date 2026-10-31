@@ -6,7 +6,8 @@ import { z } from "zod";
 // 원격 MCP 서버 (2026-10-30). https://lowdown-proxy.vercel.app/mcp (vercel.json rewrite → /api/mcp)
 // 로컬 stdio 서버(src/mcp-server.ts)와 같은 조회를 HTTPS 주소 하나로 연다. 인증 없음(공개 데이터).
 // Streamable HTTP, 세션 없음(stateless), 일반 JSON 응답 → 요청 1건 = 함수 1회.
-// 1차는 읽기 전용 도구만: get_lowdown. 쓰기(record_interaction)·노드 통계·비교는 열지 않는다.
+// 읽기 전용 도구만: get_lowdown, find_servers(2026-11-01, /api/find 를 부름). 쓰기(record_interaction)·노드 통계·비교는 열지 않는다.
+// instructions(2026-11-01): 연결만 하고 도구를 부르지 않는 클라이언트가 많아(10/31 Claude-User tools/call 0건) 쓰임을 initialize 에서 알린다.
 // 조회는 같은 배포의 조회 API 를 부른다(판정 로직을 다시 만들지 않음). ref=mcp 로 원격 MCP 경유를 따로 센다.
 //   nc=1 → CDN 캐시를 건너뛰어 모든 원격 조회가 reputation_lookups 에 남는다(실사용 측정). 서버 카드가 있으면 카드 1행으로 답한다.
 //   middleware.ts 는 ref=mcp 안쪽 호출을 세지 않는다(바깥 /mcp 요청 1건만 edge_hits 에).
@@ -22,6 +23,32 @@ export const MENUS = [
 
 const TARGET_RE = /^[\x21-\x7e]{1,300}$/; // 출력 가능한 ASCII 만(공백·제어문자 없음). 형식 검사는 조회 API 가 한다.
 
+// find (api/find.ts 의 STATES·REGISTRY_STATUSES·PACKAGE_FILTERS·SORTS 키와 같아야 한다).
+// API 파일끼리 import 하지 않는 규칙(api/find.ts 머리말) 때문에 값을 여기 따로 둔다. 값 검사는 find API 가 한다.
+export const FIND_STATES = ["answered", "auth_required", "list_failed", "no_response", "invalid_response", "mixed"] as const;
+export const FIND_SORTS = ["name", "newest", "updated", "tools", "stable", "answering", "changed", "release"] as const;
+const FIND_REGISTRY = ["active", "deprecated"] as const;
+const FIND_PACKAGE = ["ok", "flagged", "none"] as const;
+
+// initialize 응답의 instructions: 클라이언트가 언제 이 서버를 쓰는지 알 수 있게. 지시문이 아니라 쓰임 설명.
+export const INSTRUCTIONS =
+  "Lowdown records dated facts about public MCP servers: daily initialize/tools/list checks, MCP Registry declarations, " +
+  "npm/PyPI package state and observed tool-definition changes. " +
+  "Use get_lowdown with a server name before installing or connecting to an MCP server (menu 'install-check' covers the usual pre-install facts). " +
+  "Use find_servers to list servers by observed facts (for example servers that answered without credentials, sorted by tool count) when no name is known yet. " +
+  "Facts are observations, not scores; absence of data says nothing about a server.";
+
+export type FindArgs = {
+  q?: string; state?: string; answered_days?: number; stable_days?: number; tools_min?: number; tools_max?: number;
+  registry?: string; package?: string; sort?: string; order?: string; limit?: number; offset?: number;
+};
+
+export function findUrl(host: string, a: FindArgs): string {
+  const q = new URLSearchParams({ ref: "mcp", nc: "1" });
+  for (const [k, v] of Object.entries(a)) if (v !== undefined && v !== null && v !== "") q.set(k, String(v));
+  return `https://${host}/api/find?${q.toString()}`;
+}
+
 function header(req: VercelRequest, name: string, max: number): string | null {
   const v = req.headers[name];
   const s = Array.isArray(v) ? v[0] : v;
@@ -36,7 +63,24 @@ export function lookupUrl(host: string, target: string, menu: string | null): st
 
 export function buildServer(ctx: { host: string; ua: string | null; fetchImpl?: typeof fetch }): McpServer {
   const doFetch = ctx.fetchImpl ?? fetch;
-  const server = new McpServer({ name: "lowdown", version: VERSION });
+  const server = new McpServer({ name: "lowdown", version: VERSION }, { instructions: INSTRUCTIONS });
+
+  // 같은 배포의 API 를 부르고 MCP 응답으로 바꾼다 (get_lowdown·find_servers 공통)
+  const callApi = async (url: string, what: string) => {
+    let r: Response;
+    try {
+      r = await doFetch(url, {
+        headers: { "user-agent": ctx.ua ?? "lowdown-remote-mcp", accept: "application/json" },
+        signal: AbortSignal.timeout(20_000),
+      });
+    } catch {
+      return { isError: true, content: [{ type: "text" as const, text: `Lowdown ${what} did not answer. Retry later.` }] };
+    }
+    const text = await r.text();
+    if (r.status === 503) return { isError: true, content: [{ type: "text" as const, text: "Lowdown cannot read its records right now (HTTP 503). Retry later; this is not 'no record'." }] };
+    if (!r.ok) return { isError: true, content: [{ type: "text" as const, text: `Lowdown ${what} answered HTTP ${r.status}: ${text.slice(0, 2000)}` }] };
+    return { content: [{ type: "text" as const, text }] };
+  };
 
   server.registerTool(
     "get_lowdown",
@@ -56,7 +100,7 @@ export function buildServer(ctx: { host: string; ua: string | null; fetchImpl?: 
           "MCP Registry name with the mcp: prefix (e.g. 'mcp:io.github.user/server'), a short name, or a package with the npm: or pypi: prefix",
         ),
         menu: z.enum(MENUS).optional().describe(
-          "Optional. 'install-check' (before installing: status, packages, declared-vs-observed, content-flags), 'change-watch' (what changed recently), " +
+          "Optional. Before installing, use 'install-check' (status, packages, declared-vs-observed, content-flags). 'change-watch' = what changed recently, " +
           "or one part: status, packages, tools, declared-vs-observed, content-flags, tool-list, registry, history, agent-reports. Omit or 'full' for everything.",
         ),
       },
@@ -65,20 +109,37 @@ export function buildServer(ctx: { host: string; ua: string | null; fetchImpl?: 
     async ({ target, menu }) => {
       const t = target.trim();
       if (!TARGET_RE.test(t)) return { isError: true, content: [{ type: "text", text: "target must be printable ASCII without spaces, up to 300 characters." }] };
-      let r: Response;
-      try {
-        r = await doFetch(lookupUrl(ctx.host, t, menu ?? null), {
-          headers: { "user-agent": ctx.ua ?? "lowdown-remote-mcp", accept: "application/json" },
-          signal: AbortSignal.timeout(20_000),
-        });
-      } catch {
-        return { isError: true, content: [{ type: "text", text: "Lowdown lookup did not answer. Retry later." }] };
-      }
-      const text = await r.text();
-      if (r.status === 503) return { isError: true, content: [{ type: "text", text: "Lowdown cannot read its records right now (HTTP 503). Retry later; this is not 'no record'." }] };
-      if (!r.ok) return { isError: true, content: [{ type: "text", text: `Lowdown lookup answered HTTP ${r.status}: ${text.slice(0, 2000)}` }] };
-      return { content: [{ type: "text", text }] };
+      return callApi(lookupUrl(ctx.host, t, menu ?? null), "lookup");
     },
+  );
+
+  server.registerTool(
+    "find_servers",
+    {
+      title: "Find MCP servers by observed facts",
+      description:
+        "List public MCP servers by facts Lowdown observed, when you do not have a server name yet. " +
+        "Filter by the latest daily check (e.g. state 'answered' = answered initialize and tools/list without credentials), days answered in the last 30, " +
+        "how long the tool list has been unchanged, tool count, Registry status and package state; sort by one key. " +
+        "No score or ranking: order is only the chosen sort key. Each result carries a lookup URL; call get_lowdown with its name for the full record. " +
+        "Tool lists are recorded from 2026-10-20, so a long stable_days returns nothing yet.",
+      inputSchema: {
+        q: z.string().min(2).max(100).optional().describe("Part of the Registry name, e.g. 'github' or 'io.github.user'"),
+        state: z.enum(FIND_STATES).optional().describe("Latest daily check result (only servers checked in the last 2 days). 'answered' = answered tools/list with no credentials"),
+        answered_days: z.number().int().min(1).max(30).optional().describe("Minimum daily checks in the last 30 days that answered tools/list"),
+        stable_days: z.number().int().min(1).max(3650).optional().describe("Current tool list first observed at least this many days ago"),
+        tools_min: z.number().int().min(0).max(10000).optional().describe("Minimum tool count"),
+        tools_max: z.number().int().min(0).max(10000).optional().describe("Maximum tool count"),
+        registry: z.enum(FIND_REGISTRY).optional().describe("MCP Registry status"),
+        package: z.enum(FIND_PACKAGE).optional().describe("ok = declared packages with no deprecated/yanked/404 latest; flagged = at least one; none = no declared packages"),
+        sort: z.enum(FIND_SORTS).optional().describe("Sort key (default name). tools = tool count, answering = days answered, stable = tool list unchanged longest, newest, updated, changed, release"),
+        order: z.enum(["asc", "desc"]).optional().describe("Default depends on sort"),
+        limit: z.number().int().min(1).max(50).optional().describe("1-50, default 20"),
+        offset: z.number().int().min(0).max(2000).optional().describe("For the next page, use next_offset from the previous answer"),
+      },
+      annotations: { title: "Find MCP servers by observed facts", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => callApi(findUrl(ctx.host, args as FindArgs), "find"),
   );
   return server;
 }
