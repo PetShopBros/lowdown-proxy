@@ -1826,9 +1826,10 @@ export function menuCard(): Record<string, unknown> {
     dishes: Object.entries(DISHES).map(([k, v]) => item(k, v)),
     find: {
       url: FIND_URL,
-      question: "Which MCP servers match given conditions (answered without credentials, tool count, tool list unchanged for N days, Registry or package state)?",
+      question: "Which MCP servers match given conditions (what they do, answered without credentials, tool count, tool list unchanged for N days, Registry or package state)?",
       contains: "matching servers with the values used to filter and sort, each with its lookup URL; the chosen sort key is the only order (no ranking)",
       example: `${FIND_URL}?no_auth=1&stable_days=7&sort=tools&limit=10`,
+      example_does: `${FIND_URL}?does=postgres&no_auth=1&limit=10`,
       sorts: ["name", "newest", "updated", "tools", "stable", "answering", "changed", "release"],
     },
     also: [

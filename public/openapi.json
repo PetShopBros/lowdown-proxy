@@ -1005,6 +1005,16 @@
             "description": "Part of the Registry name."
           },
           {
+            "name": "does",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._-]{2,30}( [A-Za-z0-9._-]{2,30}){0,2}$"
+            },
+            "description": "What the server does: 1-3 words separated by spaces (e.g. 'postgres', 'github issue'). Every word must appear in the Registry name or in a tool name from the latest observed tool list; tool descriptions are not searched. Each result then carries matched_in (name words, up to 5 matching tool names, tools_total)."
+          },
+          {
             "name": "state",
             "in": "query",
             "required": false,

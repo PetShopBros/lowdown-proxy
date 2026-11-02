@@ -33,12 +33,16 @@ export const SORTS: Record<string, { column: string; dir: "asc" | "desc"; meanin
 const COLUMNS =
   "name,latest_state,latest_day,tool_count,answered_days_30d,observed_days_30d,consecutive_days,consecutive_since," +
   "tool_set_since,last_definition_change_day,registry_status,registry_first_day,registry_baseline,registry_last_change_day," +
-  "package_flag,package_updated_day,observation_basis,built_at";
+  "package_flag,package_updated_day,observation_basis,built_at,tool_names";
 
 const Q_RE = /^[A-Za-z0-9._~\-/]{2,100}$/;
+/** does: 하는 일 단어 1~3개 (공백 구분, 단어마다 2~30자). 모두 들어 있어야 한다(AND). */
+const DOES_RE = /^[A-Za-z0-9._-]{2,30}( [A-Za-z0-9._-]{2,30}){0,2}$/;
+export const MATCHED_TOOLS_MAX = 5;
 
 export type FindQuery = {
   q: string | null;
+  does: string[] | null;
   state: (typeof STATES)[number] | null;
   answered_days: number | null;
   stable_days: number | null;
@@ -70,6 +74,10 @@ export function parseFind(raw: Record<string, unknown>): Parsed {
   const qRaw = one(raw.q)?.trim();
   if (qRaw && !Q_RE.test(qRaw)) return bad("q", "2-100 characters: letters, digits, . _ ~ - /");
   const q = qRaw ? qRaw : null;
+
+  const doesRaw = one(raw.does)?.trim().replace(/\s+/g, " ");
+  if (doesRaw && !DOES_RE.test(doesRaw)) return bad("does", "1-3 words separated by spaces, each 2-30 characters: letters, digits, . _ -");
+  const does = doesRaw ? [...new Set(doesRaw.toLowerCase().split(" "))] : null;
 
   let state = one(raw.state) ?? null;
   if (state && !(STATES as readonly string[]).includes(state)) return bad("state", STATES.join(", "));
@@ -109,6 +117,7 @@ export function parseFind(raw: Record<string, unknown>): Parsed {
     ok: true,
     query: {
       q,
+      does,
       state: state as FindQuery["state"],
       answered_days: answered,
       stable_days: stable,
@@ -128,6 +137,7 @@ export function parseFind(raw: Record<string, unknown>): Parsed {
 export function canonical(f: FindQuery): string {
   const p = new URLSearchParams();
   if (f.q) p.set("q", f.q);
+  if (f.does) p.set("does", f.does.join(" "));
   if (f.state) p.set("state", f.state);
   if (f.answered_days !== null) p.set("answered_days", String(f.answered_days));
   if (f.stable_days !== null) p.set("stable_days", String(f.stable_days));
@@ -147,6 +157,7 @@ const daysBefore = (now: number, n: number): string => utcDay(Date.parse(utcDay(
 
 const PARAMETERS = {
   q: "part of the Registry name (2-100 characters)",
+  does: "what the server does: 1-3 words (e.g. 'postgres', 'github issue'); each word must appear in the Registry name or in a tool name from the latest observed tool list. Tool descriptions are not searched",
   state: `latest daily check result: ${STATES.join(", ")} (only servers checked in the last ${STALE_DAYS} days)`,
   no_auth: "1 = same as state=answered (answered tools/list with no credentials)",
   answered_days: "minimum daily checks in the last 30 days that answered tools/list (1-30)",
@@ -162,7 +173,8 @@ const PARAMETERS = {
 const BASIS =
   "Filters and sorts Lowdown's prepared per-server cards, built twice a day from MCP Registry records, one daily check per server " +
   "(POST initialize, then tools/list; no tool calls, no credentials) and npm/PyPI metadata. No score or ranking: order is only the chosen sort key. " +
-  "Null values sort last. Each result's lookup URL returns the full record.";
+  "Null values sort last. Each result's lookup URL returns the full record. " +
+  "does= matches words in the Registry name and in tool names from the latest observed tool list (servers never observed answering have no tool names); matched_in shows where each word matched.";
 
 function getSupabase() {
   const url = process.env.LOWDOWN_SUPABASE_URL;
@@ -171,8 +183,20 @@ function getSupabase() {
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
+/** does 단어가 어디서 맞았는지 (이름 / 도구 이름, 도구는 최대 MATCHED_TOOLS_MAX개) */
+export function matchedIn(r: Record<string, any>, does: string[]): Record<string, unknown> {
+  const name = String(r.name ?? "").toLowerCase();
+  const tools: string[] = Array.isArray(r.tool_names) ? r.tool_names.filter((t: unknown): t is string => typeof t === "string") : [];
+  const hits = tools.filter((t) => does.some((w) => t.toLowerCase().includes(w)));
+  return {
+    name: does.filter((w) => name.includes(w)),
+    tools: hits.slice(0, MATCHED_TOOLS_MAX),
+    tools_total: hits.length,
+  };
+}
+
 /** 카드 행 → 결과 1건 */
-export function shapeResult(r: Record<string, any>, sortKey: string, now: number): Record<string, unknown> {
+export function shapeResult(r: Record<string, any>, sortKey: string, now: number, does: string[] | null = null): Record<string, unknown> {
   const name = String(r.name);
   const [ns, ...rest] = name.split("/");
   const latest = typeof r.latest_day === "string" ? r.latest_day.slice(0, 10) : null;
@@ -197,6 +221,7 @@ export function shapeResult(r: Record<string, any>, sortKey: string, now: number
     },
     packages: { flagged: r.package_flag ?? null, updated: r.package_updated_day ?? null },
     observation_basis: r.observation_basis ?? null,
+    ...(does ? { matched_in: matchedIn(r, does) } : {}),
     lookup: `${BASE_URL}/api/reputation/mcp:${name}`,
     page: `${BASE_URL}/servers/${ns}/${rest.join("/")}`,
   };
@@ -223,6 +248,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const supabase = getSupabase();
     let qb: any = supabase.from("server_cards").select(COLUMNS, { count: "exact" });
     if (f.q) qb = qb.ilike("name", `%${f.q.replace(/[\\%_]/g, "\\$&")}%`);
+    for (const w of f.does ?? []) qb = qb.ilike("search_text", `%${w.replace(/[\\%_]/g, "\\$&")}%`);
     if (f.state) qb = qb.eq("latest_state", f.state).gte("latest_day", daysBefore(now, STALE_DAYS));
     if (f.answered_days !== null) qb = qb.gte("answered_days_30d", f.answered_days);
     if (f.stable_days !== null) qb = qb.lte("tool_set_since", daysBefore(now, f.stable_days));
@@ -260,7 +286,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       count: rows.length,
       offset: f.offset,
       ...(count !== null && f.offset + rows.length < count ? { next_offset: f.offset + rows.length } : {}),
-      results: rows.map((r) => shapeResult(r, f.sort, now)),
+      results: rows.map((r) => shapeResult(r, f.sort, now, f.does)),
       basis: BASIS,
       parameters: PARAMETERS,
       source: {

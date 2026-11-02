@@ -34,7 +34,7 @@ describe('find', () => {
   test('모르는 값·범위 밖은 400 + 허용 값', async () => {
     const m = await load();
     for (const q of [{ sort: 'score' }, { state: 'healthy' }, { limit: '51' }, { limit: '0' }, { answered_days: '31' },
-      { offset: '2001' }, { q: 'a' }, { q: 'x%y' }, { registry: 'deleted' }, { package: 'bad' }, { order: 'up' }, { tools_min: '-1' }]) {
+      { offset: '2001' }, { q: 'a' }, { q: 'x%y' }, { does: 'a' }, { does: 'x%y' }, { does: 'a b c d' }, { does: 'one two three four' }, { registry: 'deleted' }, { package: 'bad' }, { order: 'up' }, { tools_min: '-1' }]) {
       const r = m.parseFind(q);
       assert.equal(r.ok, false, JSON.stringify(q));
       assert.equal(r.body.error, 'invalid_parameter');
@@ -72,5 +72,40 @@ describe('find', () => {
     const old = m.shapeResult({ ...row, latest_day: '2026-10-20' }, 'name', now);
     assert.equal(old.stale, true);
     assert.equal(old.state, null);
+  });
+
+  test('does: 1~3 단어, 소문자·중복 제거, 정규화 문자열에 들어간다', async () => {
+    const m = await load();
+    const r = m.parseFind({ does: '  Github   ISSUE github ' });
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.query.does, ['github', 'issue']);
+    assert.equal(m.canonical(r.query), 'does=github+issue');
+    assert.equal(m.parseFind({ does: 'pg_query' }).query.does[0], 'pg_query');
+    assert.equal(m.parseFind({}).query.does, null);
+  });
+
+  test('does: matched_in 은 이름 단어와 맞은 도구 이름(최대 5개)을 사실로 낸다', async () => {
+    const m = await load();
+    const now = Date.parse('2026-11-02T05:00:00Z');
+    const tools = ['pg_query', 'pg_schema', 'list_tables', 'pg_a', 'pg_b', 'pg_c', 'PG_D'];
+    const row = { name: 'io.github.a/postgres-mcp', latest_state: 'answered', latest_day: '2026-11-02', tool_names: tools };
+    const r = m.shapeResult(row, 'name', now, ['postgres', 'pg_']);
+    assert.deepEqual(r.matched_in.name, ['postgres']);
+    assert.deepEqual(r.matched_in.tools, ['pg_query', 'pg_schema', 'pg_a', 'pg_b', 'pg_c']);
+    assert.equal(r.matched_in.tools_total, 6);
+    assert.equal(m.MATCHED_TOOLS_MAX, 5);
+    // does 없으면 matched_in 없음 (기존 응답 그대로)
+    assert.equal('matched_in' in m.shapeResult(row, 'name', now), false);
+    // 도구 이름이 없는 카드
+    const none = m.shapeResult({ name: 'x.y/z' }, 'name', now, ['postgres']);
+    assert.deepEqual(none.matched_in, { name: [], tools: [], tools_total: 0 });
+  });
+
+  test('안내 일치: openapi·MCP 도구에 does 가 있다', async () => {
+    const o = JSON.parse(readFileSync(new URL('../public/openapi.json', import.meta.url), 'utf8'));
+    const names = o.paths['/api/find'].get.parameters.map((x: any) => x.name);
+    assert.ok(names.includes('does'));
+    const mcpSrc = readFileSync(new URL('../api/mcp.ts', import.meta.url), 'utf8');
+    assert.match(mcpSrc, /does: z\.string\(\)/);
   });
 });

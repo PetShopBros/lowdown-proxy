@@ -42,12 +42,12 @@ export const INSTRUCTIONS =
   "When a user asks whether to install, add, connect or trust an MCP server, use get_lowdown with its name. " +
   "Menus for get_lowdown: 'install-check' (status, packages, declared vs observed, content flags), 'change-watch' (what changed recently), " +
   `or one part: ${MENU_DISHES.join(", ")}; omit for everything. ` +
-  "When no name is known yet, use find_servers to list servers by observed facts (for example servers that answered without credentials, sorted by tool count). " +
+  "When no name is known yet, use find_servers to list servers by what they do (does, e.g. 'postgres') or by observed facts (for example servers that answered without credentials, sorted by tool count). " +
   "Full menu card: https://lowdown-proxy.vercel.app/menu.json. " +
   "Facts are observations, not scores; absence of data says nothing about a server.";
 
 export type FindArgs = {
-  q?: string; state?: string; answered_days?: number; stable_days?: number; tools_min?: number; tools_max?: number;
+  q?: string; does?: string; state?: string; answered_days?: number; stable_days?: number; tools_min?: number; tools_max?: number;
   registry?: string; package?: string; sort?: string; order?: string; limit?: number; offset?: number;
 };
 
@@ -127,12 +127,14 @@ export function buildServer(ctx: { host: string; ua: string | null; fetchImpl?: 
       title: "Find MCP servers by observed facts",
       description:
         "List public MCP servers by facts Lowdown observed, when you do not have a server name yet. " +
+        "Use does to find servers by what they do (words in the Registry name or tool names, e.g. 'postgres'). " +
         "Filter by the latest daily check (e.g. state 'answered' = answered initialize and tools/list without credentials), days answered in the last 30, " +
         "how long the tool list has been unchanged, tool count, Registry status and package state; sort by one key. " +
         "No score or ranking: order is only the chosen sort key. Each result carries a lookup URL; call get_lowdown with its name for the full record. " +
         "Tool lists are recorded from 2026-10-20, so a long stable_days returns nothing yet.",
       inputSchema: {
         q: z.string().min(2).max(100).optional().describe("Part of the Registry name, e.g. 'github' or 'io.github.user'"),
+        does: z.string().min(2).max(92).optional().describe("What the server does: 1-3 words separated by spaces, e.g. 'postgres' or 'github issue'. Every word must appear in the Registry name or in a tool name from the latest observed tool list; results show matched_in"),
         state: z.enum(FIND_STATES).optional().describe("Latest daily check result (only servers checked in the last 2 days). 'answered' = answered tools/list with no credentials"),
         answered_days: z.number().int().min(1).max(30).optional().describe("Minimum daily checks in the last 30 days that answered tools/list"),
         stable_days: z.number().int().min(1).max(3650).optional().describe("Current tool list first observed at least this many days ago"),

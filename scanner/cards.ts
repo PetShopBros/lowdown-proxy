@@ -41,7 +41,7 @@ async function builtSince(since: number): Promise<number | null> {
   const m = /\/(\d+)$/.exec(r.headers.get("content-range") ?? "");
   return m ? Number(m[1]) : null;
 }
-export const BUILDER_VERSION = "cards-2";
+export const BUILDER_VERSION = "cards-3";
 const NAME_RE = /^[A-Za-z0-9._~-]{1,200}\/[A-Za-z0-9._~-]{1,200}$/;
 
 if (!BASE || !KEY) {
@@ -88,6 +88,7 @@ export function cardColumns(body: Record<string, any>) {
     return ds.length ? ds[ds.length - 1]! : null;
   };
   const regChanges: any[] = Array.isArray(registry?.changes_30d) ? registry.changes_30d : [];
+  const toolNames = toolNamesOf(scanner);
   return {
     latest_state: typeof status?.state === "string" ? status.state : null,
     latest_day: isoDay(status?.latest_check),
@@ -106,7 +107,25 @@ export function cardColumns(body: Record<string, any>) {
     registry_baseline: typeof registry?.recorded_since_baseline === "boolean" ? registry.recorded_since_baseline : null,
     registry_last_change_day: lastDay(regChanges.map((c) => isoDay(c?.on))),
     package_updated_day: lastDay(pkgs.map((p) => isoDay(p?.npm?.modified) ?? isoDay(p?.pypi?.latest_uploaded))),
+    // find does= (하는 일로 찾기)용 (cards-3, 2026-11-02): 공개된 값만 — Registry 이름 + 마지막 관측 도구 이름. 도구 설명 원문은 넣지 않는다.
+    tool_names: toolNames,
+    search_text: searchText(typeof body.resolved_target === "string" ? body.resolved_target : typeof body.target === "string" ? body.target : "", toolNames),
   };
+}
+
+/** 마지막 관측 도구 이름 (최대 TOOL_NAMES_MAX개, 형식 밖 값은 버림) */
+export const TOOL_NAMES_MAX = 500;
+export function toolNamesOf(scanner: any): string[] | null {
+  const names: unknown[] = Array.isArray(scanner?.tools?.names) ? scanner.tools.names : [];
+  const out = names.filter((n): n is string => typeof n === "string" && n.length > 0 && n.length <= 128).slice(0, TOOL_NAMES_MAX);
+  return out.length ? out : null;
+}
+
+/** 검색 문자열: 소문자 이름 + 도구 이름 (공백 구분). 길이 상한 20,000자. */
+export function searchText(target: string, toolNames: string[] | null): string | null {
+  const name = target.replace(/^mcp:/, "");
+  const parts = [name, ...(toolNames ?? [])].filter((x) => x.length > 0);
+  return parts.length ? parts.join(" ").toLowerCase().slice(0, 20_000) : null;
 }
 
 function fakeRes() {
