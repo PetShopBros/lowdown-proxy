@@ -31,11 +31,19 @@ const FIND_REGISTRY = ["active", "deprecated"] as const;
 const FIND_PACKAGE = ["ok", "flagged", "none"] as const;
 
 // initialize 응답의 instructions: 클라이언트가 언제 이 서버를 쓰는지 알 수 있게. 지시문이 아니라 쓰임 설명.
+// 연결 때 서버가 클라이언트(모델)에 자동으로 보내는 안내문. 메뉴판 요약을 싣는다(2026-11-02).
+// 단품 목록은 MENUS 에서 만든다 → 메뉴를 바꾸면 안내문도 같이 바뀐다. 데이터(오늘의 변경 등)는 넣지 않는다.
+const MENU_SETS = ["install-check", "change-watch"] as const;
+const MENU_DISHES = MENUS.filter((m) => m !== "full" && !(MENU_SETS as readonly string[]).includes(m));
+
 export const INSTRUCTIONS =
   "Lowdown records dated facts about public MCP servers: daily initialize/tools/list checks, MCP Registry declarations, " +
   "npm/PyPI package state and observed tool-definition changes. " +
-  "Use get_lowdown with a server name before installing or connecting to an MCP server (menu 'install-check' covers the usual pre-install facts). " +
-  "Use find_servers to list servers by observed facts (for example servers that answered without credentials, sorted by tool count) when no name is known yet. " +
+  "When a user asks whether to install, add, connect or trust an MCP server, use get_lowdown with its name. " +
+  "Menus for get_lowdown: 'install-check' (status, packages, declared vs observed, content flags), 'change-watch' (what changed recently), " +
+  `or one part: ${MENU_DISHES.join(", ")}; omit for everything. ` +
+  "When no name is known yet, use find_servers to list servers by observed facts (for example servers that answered without credentials, sorted by tool count). " +
+  "Full menu card: https://lowdown-proxy.vercel.app/menu.json. " +
   "Facts are observations, not scores; absence of data says nothing about a server.";
 
 export type FindArgs = {

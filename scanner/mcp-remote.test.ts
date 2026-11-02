@@ -65,7 +65,12 @@ describe('원격 MCP', () => {
     await client.connect(new StreamableHTTPClientTransport(new URL(base), { requestInit: { headers: { 'user-agent': 'Claude-User/1.0' } } }));
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((t) => t.name), ['get_lowdown', 'find_servers']);
-    assert.match(client.getInstructions() ?? '', /before installing or connecting/);
+    const instructions = client.getInstructions() ?? '';
+    assert.match(instructions, /whether to install, add, connect or trust an MCP server, use get_lowdown/);
+    assert.match(instructions, /or one part: status, packages, tools, declared-vs-observed, content-flags, tool-list, registry, history, agent-reports; omit for everything\./);
+    assert.match(instructions, /'install-check'.*'change-watch'/);
+    assert.match(instructions, /https:\/\/lowdown-proxy\.vercel\.app\/menu\.json/);
+    assert.match(instructions, /use find_servers/);
     assert.equal(tools[1]!.annotations?.readOnlyHint, true);
     assert.equal(tools[0]!.title, 'Look up recorded facts about an MCP server');
     assert.equal(tools[0]!.annotations?.readOnlyHint, true);
