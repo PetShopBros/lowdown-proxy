@@ -203,18 +203,33 @@ describe('renderReport', () => {
 });
 
 describe('fetchReportRows / fetchFirstObservedAt', () => {
-  test('keyset 페이지네이션, 필요한 열만, 헤더', async () => {
+  test('(observed_at, id) keyset 페이지네이션, 필요한 열만, 헤더, id 순서로 돌려줌', async () => {
     const calls: Array<{ url: string; headers: Record<string, string> }> = [];
-    const all = Array.from({ length: 5 }, (_, i) => row('r', `mcp:${i}`, '2026-10-10T19:00:00Z', { id: i + 1 }));
+    // 관찰 시각 순서: id 3,1,5,2,4 (같은 시각도 섞음) → 결과는 id 오름차순
+    const ats = ['2026-10-10T19:00:02Z', '2026-10-10T19:00:03Z', '2026-10-10T19:00:00Z', '2026-10-10T19:00:03Z', '2026-10-10T19:00:02Z'];
+    const all = Array.from({ length: 5 }, (_, i) => row('r', `mcp:${i}`, ats[i]!, { id: i + 1 }));
+    const byKey = [...all].sort((a, b) => (a.observed_at < b.observed_at ? -1 : a.observed_at > b.observed_at ? 1 : a.id - b.id));
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       calls.push({ url, headers: init?.headers as Record<string, string> });
-      const after = Number(new URL(url).searchParams.get('id')!.replace('gt.', ''));
-      return new Response(JSON.stringify(all.filter((r) => r.id > after).slice(0, 2)), { status: 200 });
+      const or = new URL(url).searchParams.get('or');
+      let rest = byKey;
+      if (or) {
+        const m = /^\(observed_at\.gt\."([^"]+)",and\(observed_at\.eq\."([^"]+)",id\.gt\.(\d+)\)\)$/.exec(or)!;
+        const at = m[1]!;
+        const id = Number(m[3]);
+        rest = byKey.filter((r) => r.observed_at > at || (r.observed_at === at && r.id > id));
+      }
+      return new Response(JSON.stringify(rest.slice(0, 2)), { status: 200 });
     }) as typeof fetch;
     const rows = await fetchReportRows({ url: 'https://x.supabase.co/', key: 'sb_secret_abc' }, '2026-10-02T00:00:00Z', { fetchImpl, pageSize: 2 });
-    assert.equal(rows.length, 5);
+    assert.deepEqual(rows.map((r) => r.id), [1, 2, 3, 4, 5]);
     assert.equal(calls.length, 3);
+    const u0 = new URL(calls[0]!.url);
+    assert.equal(u0.searchParams.get('order'), 'observed_at.asc,id.asc');
+    assert.equal(u0.searchParams.get('id'), null);
+    assert.equal(u0.searchParams.get('source'), 'eq.scanner');
+    assert.equal(u0.searchParams.get('observed_at'), 'gte.2026-10-02T00:00:00Z');
     assert.match(decodeURIComponent(calls[0]!.url), /select=id,scan_run_id,target_id,observed_at,http_status,reached_level,error_type,cohort_version:metadata->>cohort_version/);
     assert.equal(calls[0]!.headers.apikey, 'sb_secret_abc');
     assert.equal(calls[0]!.headers.Authorization, undefined);

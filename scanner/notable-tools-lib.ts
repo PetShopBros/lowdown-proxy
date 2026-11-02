@@ -175,27 +175,35 @@ const OBS_SELECT =
   'id,target_id,observed_at,remote_url:metadata->>remote_url,schema_hash:metadata->>schema_hash,desc_hash:metadata->>desc_hash,' +
   'names_hash:metadata->>names_hash,server_version:metadata->>server_version,tool_count:metadata->>tool_count';
 
+/**
+ * 2026-11-02: (observed_at, id) keyset 으로 읽고 id 오름차순으로 돌려준다. id 순서 페이지는 기본키를 처음부터 훑으며
+ *   observed_at 을 걸러 관측 행이 쌓일수록 느려진다(report 11/02, backup 10/30 statement timeout 과 같은 원인). 결과 순서는 예전과 같다.
+ */
 export async function fetchObservations(cfg: SupabaseConfig, sinceIso: string, deps: DiffIoDeps = {}): Promise<ObsIn[]> {
   const f = deps.fetchImpl ?? fetch;
   const pageSize = deps.pageSize ?? 1000;
   const base = `${cfg.url.replace(/\/+$/, '')}/rest/v1/scanner_observations`;
   const out: ObsIn[] = [];
-  let lastId = 0;
+  let after: { at: string; id: number } | null = null;
   for (;;) {
-    const qs = new URLSearchParams({ select: OBS_SELECT, order: 'id.asc', limit: String(pageSize) });
-    qs.append('id', `gt.${lastId}`);
+    const qs = new URLSearchParams({ select: OBS_SELECT, order: 'observed_at.asc,id.asc', limit: String(pageSize) });
     qs.append('observed_at', `gte.${sinceIso}`);
     qs.append('source', 'eq.scanner');
     qs.append('reached_level', 'eq.2');
+    if (after) qs.append('or', `(observed_at.gt."${after.at}",and(observed_at.eq."${after.at}",id.gt.${after.id}))`);
     const res = await f(`${base}?${qs.toString()}`, { headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }), signal: AbortSignal.timeout(60_000) });
     if (!res.ok) throw new Error(`scanner_observations read failed: HTTP ${res.status}`);
     const page = (await res.json()) as ObsIn[];
     if (!Array.isArray(page)) throw new Error('scanner_observations read failed: unexpected response');
     out.push(...page);
     if (page.length < pageSize) break;
-    const last = page[page.length - 1]!.id;
-    if (typeof last !== 'number' || last <= lastId) throw new Error('scanner_observations read: keyset did not advance');
-    lastId = last;
+    const last = page[page.length - 1]!;
+    const at: unknown = last.observed_at;
+    const id = last.id;
+    if (typeof at !== 'string' || typeof id !== 'number') throw new Error('scanner_observations read: keyset columns missing');
+    if (after && at === after.at && id <= after.id) throw new Error('scanner_observations read: keyset did not advance');
+    after = { at, id };
   }
+  out.sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
   return out;
 }

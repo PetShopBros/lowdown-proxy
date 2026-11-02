@@ -30,20 +30,25 @@ export interface ReportFetchDeps {
   pageSize?: number;
 }
 
-/** since 이후 행을 id 오름차순 keyset 으로 읽는다 (집계에 필요한 열만). */
+/**
+ * since 이후 행을 (observed_at, id) keyset 으로 읽고 id 오름차순으로 돌려준다 (집계에 필요한 열만).
+ * 2026-11-02: 예전에는 id 순서로만 페이지를 넘겼는데, Postgres 가 기본키를 표 처음부터 훑으며 observed_at 을 거르는 계획을 골라
+ *   관측 행이 쌓일수록 느려졌다(11/02 report 57014 statement timeout). 10/31 backup(lib.ts fetchMonthRows)과 같은 방식으로
+ *   (observed_at, id) 인덱스(supabase/2026-10-31_observations_day_index.sql) 순서 그대로 읽는다. 결과 순서는 예전과 같다.
+ */
 export async function fetchReportRows(cfg: SupabaseConfig, sinceIso: string, deps: ReportFetchDeps = {}): Promise<ReportRow[]> {
   const f = deps.fetchImpl ?? fetch;
   const pageSize = deps.pageSize ?? 1000;
   const base = cfg.url.replace(/\/+$/, '');
   const rows: ReportRow[] = [];
-  let lastId = 0;
+  let after: { at: string; id: number } | null = null;
   for (;;) {
     const qs = new URLSearchParams();
     qs.set('select', REPORT_COLUMNS);
     qs.set('observed_at', `gte.${sinceIso}`);
     qs.set('source', 'eq.scanner'); // 고정 코호트만. 조회된 대상(scanner_requested)은 섞지 않는다
-    qs.set('id', `gt.${lastId}`);
-    qs.set('order', 'id.asc');
+    if (after) qs.set('or', `(observed_at.gt."${after.at}",and(observed_at.eq."${after.at}",id.gt.${after.id}))`);
+    qs.set('order', 'observed_at.asc,id.asc');
     qs.set('limit', String(pageSize));
     const res = await f(`${base}/rest/v1/scanner_observations?${qs.toString()}`, {
       headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }),
@@ -54,10 +59,14 @@ export async function fetchReportRows(cfg: SupabaseConfig, sinceIso: string, dep
     if (!Array.isArray(page)) throw new Error('report read: unexpected response shape');
     rows.push(...page);
     if (page.length < pageSize) break;
-    const last = page[page.length - 1]?.id;
-    if (typeof last !== 'number' || last <= lastId) throw new Error('report read: id keyset did not advance');
-    lastId = last;
+    const last = page[page.length - 1];
+    const at = last?.observed_at;
+    const id = last?.id;
+    if (typeof at !== 'string' || typeof id !== 'number') throw new Error('report read: keyset columns missing');
+    if (after && at === after.at && id <= after.id) throw new Error('report read: keyset did not advance');
+    after = { at, id };
   }
+  rows.sort((a, b) => a.id - b.id);
   return rows;
 }
 

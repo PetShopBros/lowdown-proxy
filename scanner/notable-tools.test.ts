@@ -125,19 +125,27 @@ describe('레이다 2단계 — 도구 정의 규칙', () => {
 });
 
 describe('관찰 읽기', () => {
-  test('고정 표본·L2·기간만, id keyset 으로 끝까지', async () => {
+  test('고정 표본·L2·기간만, (observed_at, id) keyset 으로 끝까지, id 순서로 돌려줌', async () => {
     const urls: string[] = [];
     let call = 0;
     const fetchImpl = (async (url: string) => {
       urls.push(url);
       call++;
-      const page = call === 1 ? [{ id: 1, target_id: 'mcp:a.b/c' }, { id: 2, target_id: 'mcp:a.b/c' }] : [{ id: 3, target_id: 'mcp:a.b/c' }];
+      // 관찰 시각 순서와 id 순서가 다른 경우: 시각 순으로 받아도 결과는 id 오름차순
+      const page =
+        call === 1
+          ? [{ id: 2, target_id: 'mcp:a.b/c', observed_at: '2026-10-09T00:00:00Z' }, { id: 1, target_id: 'mcp:a.b/c', observed_at: '2026-10-09T00:00:01Z' }]
+          : [{ id: 3, target_id: 'mcp:a.b/c', observed_at: '2026-10-09T00:00:02Z' }];
       return new Response(JSON.stringify(page), { status: 200 });
     }) as unknown as typeof fetch;
     const rows = await fetchObservations({ url: 'https://db.example', key: 'sb_secret' }, '2026-10-08T00:00:00.000Z', { fetchImpl, pageSize: 2 });
-    assert.equal(rows.length, 3);
+    assert.deepEqual(rows.map((r) => r.id), [1, 2, 3]);
+    const u0 = new URL(urls[0]!);
+    assert.equal(u0.searchParams.get('order'), 'observed_at.asc,id.asc');
+    assert.equal(u0.searchParams.get('or'), null);
     const u = new URL(urls[1]!);
-    assert.equal(u.searchParams.get('id'), 'gt.2');
+    assert.equal(u.searchParams.get('id'), null);
+    assert.equal(u.searchParams.get('or'), '(observed_at.gt."2026-10-09T00:00:01Z",and(observed_at.eq."2026-10-09T00:00:01Z",id.gt.1))');
     assert.equal(u.searchParams.get('source'), 'eq.scanner');
     assert.equal(u.searchParams.get('reached_level'), 'eq.2');
     assert.equal(u.searchParams.get('observed_at'), 'gte.2026-10-08T00:00:00.000Z');
