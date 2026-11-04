@@ -86,6 +86,13 @@ export function validateInteraction(body: Body): { row: Record<string, unknown> 
   };
 }
 
+// 응답 스키마 v1 (2026-11-05): 오류는 { error: 고정 코드, message, retryable, retry_after_seconds?(Retry-After 헤더와 같은 값), ...부가 }.
+// api/reputation/[target].ts 의 apiError 와 같은 내용(API 파일끼리 import 하지 않는 규칙).
+function apiError(code: string, message: string, extra: Record<string, unknown> = {}, retryAfterSeconds?: number): Record<string, unknown> {
+  return { error: code, message, retryable: retryAfterSeconds !== undefined, ...(retryAfterSeconds !== undefined ? { retry_after_seconds: retryAfterSeconds } : {}), ...extra };
+}
+export const RATE_LIMIT_RETRY_SECONDS = 60;
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -95,7 +102,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (req.method === "GET") {
     const { actor, task_type, limit = "100" } = req.query as Record<string, string>;
-    if (!actor) return res.status(400).json({ error: "actor required" });
+    if (!actor) return res.status(400).json(apiError("invalid_parameter", "actor required", { parameter: "actor" }));
     const n = Math.min(Math.max(Number.parseInt(limit, 10) || 100, 1), 500);
     const supabase = getSupabase();
     let query = supabase
@@ -106,16 +113,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .limit(n);
     if (task_type) query = query.eq("task_type", task_type);
     const { data, error } = await query;
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) {
+      console.error("interactions read failed", error.message); // 내부 오류 문구는 로그에만
+      return res.status(500).json(apiError("internal_error", "Internal server error"));
+    }
     return res.status(200).json({ ok: true, data });
   }
 
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "GET, POST, OPTIONS");
+    return res.status(405).json(apiError("method_not_allowed", "Method not allowed"));
+  }
 
   const body = (req.body ?? {}) as Body;
-  if (typeof body !== "object" || Array.isArray(body)) return res.status(400).json({ error: "JSON object body required" });
+  if (typeof body !== "object" || Array.isArray(body)) return res.status(400).json(apiError("invalid_body", "JSON object body required"));
   const v = validateInteraction(body);
-  if ("error" in v) return res.status(400).json({ error: v.error });
+  if ("error" in v) return res.status(400).json(apiError("invalid_body", v.error));
 
   try {
     const supabase = getSupabase();
@@ -129,16 +142,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .eq(key[0] as string, key[1] as string)
       .gte("created_at", since);
     if (!countError && (count ?? 0) >= RATE_LIMIT_PER_MIN) {
-      res.setHeader("Retry-After", "60");
-      return res.status(429).json({ error: `rate limit: at most ${RATE_LIMIT_PER_MIN} records per minute` });
+      res.setHeader("Retry-After", String(RATE_LIMIT_RETRY_SECONDS));
+      return res.status(429).json(apiError("rate_limited", `rate limit: at most ${RATE_LIMIT_PER_MIN} records per minute`, {}, RATE_LIMIT_RETRY_SECONDS));
     }
 
     const { error } = await supabase.from("interactions").insert(v.row as never);
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) {
+      console.error("interactions insert failed", error.message); // 내부 오류 문구는 로그에만
+      return res.status(500).json(apiError("internal_error", "Internal server error"));
+    }
 
     return res.status(201).json({ ok: true });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json(apiError("internal_error", "Internal server error"));
   }
 }

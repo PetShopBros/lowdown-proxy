@@ -44,15 +44,25 @@ export function withStale(s: StatusSnapshot, now = Date.now()): Record<string, a
   return { ...s.data, snapshot_id: s.data.snapshot_id ?? s.id, stale: !(age >= 0 && age <= STALE_AFTER_MS) };
 }
 
+// 응답 스키마 v1 (2026-11-05): 오류는 { error: 고정 코드, message, retryable, retry_after_seconds?(Retry-After 헤더와 같은 값), ...부가 }.
+// api/reputation/[target].ts 의 apiError 와 같은 내용(API 파일끼리 import 하지 않는 규칙).
+function apiError(code: string, message: string, extra: Record<string, unknown> = {}, retryAfterSeconds?: number): Record<string, unknown> {
+  return { error: code, message, retryable: retryAfterSeconds !== undefined, ...(retryAfterSeconds !== undefined ? { retry_after_seconds: retryAfterSeconds } : {}), ...extra };
+}
+export const UNAVAILABLE_RETRY_SECONDS = 120;
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "GET" && req.method !== "HEAD") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    res.setHeader("Allow", "GET, HEAD, OPTIONS");
+    return res.status(405).json(apiError("method_not_allowed", "Method not allowed"));
+  }
   const s = await latestStatus();
   if (!s) {
     res.setHeader("Cache-Control", "no-store");
-    res.setHeader("Retry-After", "120");
-    return res.status(503).json({ error: "Status is temporarily unavailable. Retry later." });
+    res.setHeader("Retry-After", String(UNAVAILABLE_RETRY_SECONDS));
+    return res.status(503).json(apiError("temporarily_unavailable", "Status is temporarily unavailable. Retry later.", {}, UNAVAILABLE_RETRY_SECONDS));
   }
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", `public, max-age=0, s-maxage=${statusCacheSeconds()}, stale-while-revalidate=300`);

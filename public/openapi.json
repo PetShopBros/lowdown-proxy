@@ -81,6 +81,11 @@
                 "schema": {
                   "type": "object",
                   "properties": {
+                    "schema_version": {
+                      "type": "integer",
+                      "const": 1,
+                      "description": "Response schema version."
+                    },
                     "target": {
                       "type": "string"
                     },
@@ -979,8 +984,56 @@
                           "type": "string"
                         }
                       }
+                    },
+                    "evidence_levels": {
+                      "$ref": "#/components/schemas/EvidenceLevels"
                     }
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_parameter (no target), invalid_menu, unknown_menu, or menu_not_available. Menu errors also carry the menu list.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "method_not_allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal_error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "temporarily_unavailable: Lowdown could not read its records. Not 'no record'; retry later.",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -1184,7 +1237,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Matching servers. Fields: query, sort {key, order, meaning}, total, count, offset, next_offset (when more remain), results[] {name, sort_value, state, latest_check, stale, tool_count, checks_30d, consecutive_days, consecutive_since, tool_set_since, last_definition_change, registry {status, first_recorded, recorded_since_baseline, last_change_30d}, packages {flagged, updated}, observation_basis, lookup, page}, basis, parameters, source {cards_built, retrieved_at, license, cite}.",
+            "description": "Matching servers. Fields: schema_version, query, sort {key, order, meaning}, total, count, offset, next_offset (when more remain), results[] {name, sort_value, state, latest_check, stale, tool_count, checks_30d, consecutive_days, consecutive_since, tool_set_since, last_definition_change, registry {status, first_recorded, recorded_since_baseline, last_change_30d}, packages {flagged, updated}, observation_basis, lookup, page}, basis, parameters, source {cards_built, retrieved_at, license, cite}.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1194,10 +1247,39 @@
             }
           },
           "400": {
-            "description": "Unknown parameter value; the body names the parameter and the allowed values."
+            "description": "invalid_parameter, with parameter, allowed and the parameter list.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "503": {
-            "description": "Lowdown could not read its own records; retry later. Not an empty result."
+            "description": "temporarily_unavailable",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "method_not_allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
@@ -1333,7 +1415,49 @@
             }
           },
           "429": {
-            "description": "More than 120 records per minute for this node_id (or actor)."
+            "description": "rate_limited: more than 120 records per minute for this node_id (or actor).",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "method_not_allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal_error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       },
@@ -1385,6 +1509,26 @@
                       }
                     }
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_parameter (actor)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal_error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -1537,10 +1681,44 @@
             "description": "Stored"
           },
           "400": {
-            "description": "Invalid body; the response includes the format"
+            "description": "invalid_body, with the expected format.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           },
           "429": {
-            "description": "Daily limit reached"
+            "description": "rate_limited: the daily limit is reached. Retry-After counts to the next UTC midnight.",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "temporarily_unavailable",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       },
@@ -1550,6 +1728,130 @@
           "200": {
             "description": "The accepted fields and choices"
           }
+        }
+      }
+    },
+    "/status.json": {
+      "get": {
+        "summary": "Lowdown's own operating status, updated hourly",
+        "description": "The latest hourly snapshot: servers observed, observations, visitors by User-Agent declaration, regular monitors, remote MCP use, highlights, definitions and limitations. /llms.txt and the home page show the same snapshot.",
+        "responses": {
+          "200": {
+            "description": "Snapshot (schema_version, snapshot_id, generated_at, update_interval, stale, operation, visitors, regular_monitors, remote_mcp, directories, highlights, summary_lines, definitions, limitations).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "temporarily_unavailable",
+            "headers": {
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error",
+          "message",
+          "retryable"
+        ],
+        "description": "Every error response (response schema v1). `error` is a fixed code for programs; `message` is a sentence for people and models.",
+        "properties": {
+          "error": {
+            "type": "string",
+            "enum": [
+              "invalid_parameter",
+              "invalid_body",
+              "invalid_menu",
+              "unknown_menu",
+              "menu_not_available",
+              "method_not_allowed",
+              "rate_limited",
+              "internal_error",
+              "temporarily_unavailable"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean",
+            "description": "true only for 429 and 503."
+          },
+          "retry_after_seconds": {
+            "type": "integer",
+            "description": "Present when retryable. Always equal to the Retry-After header."
+          },
+          "parameter": {
+            "type": "string",
+            "description": "For invalid_parameter: the parameter at fault."
+          },
+          "allowed": {
+            "description": "For invalid_parameter on Find: the allowed values."
+          }
+        },
+        "additionalProperties": true
+      },
+      "EvidenceLevels": {
+        "type": "object",
+        "description": "Which kinds of evidence this response contains for this server. A protocol check shows that a server answered initialize and tools/list; it does not show that its tools run successfully.",
+        "properties": {
+          "present": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "registry_declaration",
+                "protocol_check_without_credentials",
+                "package_registry_metadata",
+                "sandbox_protocol_check",
+                "agent_reported_unverified"
+              ]
+            }
+          },
+          "tool_execution": {
+            "type": "object",
+            "properties": {
+              "verified_by_lowdown": {
+                "type": "boolean",
+                "description": "Whether Lowdown itself confirmed that this server's tools run. Lowdown has no such check yet, so this is false for every server."
+              },
+              "agent_reported_tool_calls": {
+                "type": "integer",
+                "description": "Tool calls reported by agents for this server. Reports, not verification."
+              }
+            }
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "headers": {
+      "RetryAfter": {
+        "description": "Seconds to wait before retrying. Equal to retry_after_seconds in the body.",
+        "schema": {
+          "type": "integer"
         }
       }
     }

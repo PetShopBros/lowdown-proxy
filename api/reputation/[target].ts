@@ -16,7 +16,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Link", BULK_DATA_LINK);
 
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET, OPTIONS");
+    return res.status(405).json(apiError("method_not_allowed", "Method not allowed"));
+  }
   // CDN 캐시 (2026-10-30): 같은 주소 반복 조회는 6시간 캐시로 받는다 → 캐시 적중은 reputation_lookups 에 안 남음(첫 조회만 기록).
   // 실사용·검색 봇(Claude-User 등)은 vercel.json rewrite 가 nc=1 을 붙여 보낸다 → 캐시하지 않고 매번 기록.
   // 503(아래)은 no-store 로 덮어써 캐시되지 않는다. 400·500 은 CDN 이 캐시하지 않는 상태 코드.
@@ -26,7 +29,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const rawTarget = (req.query.target === "_slash" && typeof slashT === "string" && slashT.length > 0 ? slashT : req.query.target) as string;
   // 앞뒤 공백·개행만 제거한다. 이름 안의 글자(역슬래시 등)는 고치지 않는다.
   const target = typeof rawTarget === "string" ? rawTarget.trim() : rawTarget;
-  if (!target || target === "_slash") return res.status(400).json({ error: "target required" });
+  if (!target || target === "_slash") return res.status(400).json(apiError("invalid_parameter", "target required", { parameter: "target" }));
   const taskType = (req.query.task_type as string) ?? null;
   // 조회 유입 측정용 태그 (예: ?ref=report). 안전한 문자만 허용.
   const refRaw = req.query.ref;
@@ -59,7 +62,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const logged = await supabase.from("reputation_lookups").insert({ ...lookupRow, ...(card.resultKind ? { result_kind: card.resultKind } : {}), ...(menu ? { menu } : {}) } as never);
         if (logged.error) await supabase.from("reputation_lookups").insert(lookupRow as never);
         res.setHeader("X-Lowdown-Card", card.builtAt);
-        return res.status(200).json(applyMenu(card.body, menu));
+        return res.status(200).json(applyMenu(withEvidence(card.body), menu));
       }
     }
 
@@ -163,7 +166,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (error || !data) {
-      return res.status(200).json(applyMenu({
+      return res.status(200).json(applyMenu(withEvidence({
         target,
         task_type: taskType ?? undefined,
         ...evidenceHead(evidence, scannerLookup, 0, inputNote),
@@ -172,7 +175,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         success_rate: null,
         confidence: "none",
         source: lookupSource(evidence, Date.now()),
-      }, menu));
+      }), menu));
     }
 
     // confidence 계산 (성공률 분모 = rated_interactions 기반. 0.1.17 이전 뷰에는 없어서 interactions 로 대체)
@@ -218,7 +221,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // node_id 없으면 기본 응답
     if (!nodeId) {
-      return res.status(200).json(applyMenu(baseResponse, menu));
+      return res.status(200).json(applyMenu(withEvidence(baseResponse), menu));
     }
 
     // node_id 있으면 상세 데이터 추가
@@ -256,14 +259,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       recentTrends.push({ date, count });
     }
 
-    return res.status(200).json(applyMenu({
+    return res.status(200).json(applyMenu(withEvidence({
       ...baseResponse,
       task_breakdown: taskBreakdown,
       recent_trends: recentTrends,
-    }, menu));
+    }), menu));
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: "Internal server error" });
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(500).json(apiError("internal_error", "Internal server error"));
   }
 }
 
@@ -376,9 +380,70 @@ function buildFailureBreakdown(rows: any[]): Record<string, number> | null {
 export const RETRY_AFTER_SECONDS = 120;
 export const UNAVAILABLE_BODY = {
   error: "temporarily_unavailable",
+  message: "Lowdown could not read its records for this request. Nothing is implied about the target. Retry later.",
+  retryable: true,
   retry_after_seconds: RETRY_AFTER_SECONDS,
-  note: "Lowdown could not read its records for this request. Nothing is implied about the target. Retry later.",
+  note: "Lowdown could not read its records for this request. Nothing is implied about the target. Retry later.", // 예전 필드(호환)
 };
+
+// ── 응답 스키마 v1 (2026-11-05) ─────────────────────────────────
+// 오류: { error: 고정 코드, message: 설명(예전 문장 보존), retryable, retry_after_seconds?(429·503, Retry-After 헤더와 같은 값), ...부가 필드 }
+// 다른 API 파일과 같은 규칙(api/find.ts·interactions.ts·feedback.ts·status.ts·mcp.ts). 파일끼리 import 하지 않아 각자 둔다.
+export const SCHEMA_VERSION = 1;
+export function apiError(code: string, message: string, extra: Record<string, unknown> = {}, retryAfterSeconds?: number): Record<string, unknown> {
+  return {
+    error: code,
+    message,
+    retryable: retryAfterSeconds !== undefined,
+    ...(retryAfterSeconds !== undefined ? { retry_after_seconds: retryAfterSeconds } : {}),
+    ...extra,
+  };
+}
+
+// 근거 수준: 이 응답에 실제로 들어 있는 근거만 나열한다(서버마다 다름). 정의는 llms.txt 의 Evidence levels.
+//   registry_declaration                Registry 에 기록된 선언 (주장, 관측 아님)
+//   protocol_check_without_credentials  인증 없이 initialize·tools/list 에 응답했는지 (도구는 부르지 않음)
+//   package_registry_metadata           npm·PyPI 공개 메타데이터 (deprecated·yanked·404 등)
+//   sandbox_protocol_check              격리 환경에서 선언 패키지를 설치해 stdio 로 initialize·tools/list 확인 (도구는 부르지 않음)
+//   agent_reported_unverified           에이전트·프록시가 보고한 사용 결과 (Lowdown 이 검증하지 않음)
+// tool_execution.verified_by_lowdown: Lowdown 이 이 서버의 도구 실행 성공을 직접 확인했는지. 지금은 그런 경로가 없어 항상 false.
+export const EVIDENCE_LEVEL_ORDER = [
+  "registry_declaration", "protocol_check_without_credentials", "package_registry_metadata", "sandbox_protocol_check", "agent_reported_unverified",
+] as const;
+export const EVIDENCE_NOTE =
+  "A protocol check (initialize and tools/list) shows that a server answered; it does not show that its tools run successfully. " +
+  "Agent reports describe tool use but are not verified by Lowdown. Definitions: https://lowdown-proxy.vercel.app/llms.txt (Evidence levels).";
+
+export function evidenceLevels(b: Body): Record<string, unknown> {
+  const present = new Set<string>();
+  const reg = b.registry as Body | undefined;
+  if (reg && typeof reg === "object" && (reg.listed === true || reg.removed_at)) present.add("registry_declaration");
+  const sc = b.scanner as Body | undefined;
+  if ((b.status && typeof b.status === "object") || (sc && typeof sc === "object" && sc.observed !== false && (sc.latest || sc.last_observed_at))) {
+    present.add("protocol_check_without_credentials");
+  }
+  if (Array.isArray(b.packages) && b.packages.length > 0) present.add("package_registry_metadata");
+  if (Array.isArray(b.sandbox) && b.sandbox.length > 0) present.add("sandbox_protocol_check");
+  const interactions = Number(b.interactions ?? 0);
+  if (Number.isFinite(interactions) && interactions > 0) present.add("agent_reported_unverified");
+  const rated = Number(b.rated_interactions ?? b.interactions ?? 0);
+  return {
+    present: EVIDENCE_LEVEL_ORDER.filter((l) => present.has(l)),
+    tool_execution: { verified_by_lowdown: false, agent_reported_tool_calls: Number.isFinite(rated) && rated > 0 ? rated : 0 },
+    note: EVIDENCE_NOTE,
+  };
+}
+
+/** 성공 응답(전체 모양)에 schema_version·evidence_levels 를 붙인다. 기존 필드는 그대로. 카드 본문에도 매번 다시 계산. */
+export function withEvidence(b: Body): Body {
+  const { schema_version: _v, evidence_levels: _e, ...rest } = b;
+  const out: Body = { schema_version: SCHEMA_VERSION, ...rest, evidence_levels: evidenceLevels(rest) };
+  if (rest.source !== undefined) {
+    delete out.source;
+    out.source = rest.source; // 출처는 맨 끝 유지
+  }
+  return out;
+}
 
 /**
  * 핵심 조회가 오류로 실패했으면 true. 이때는 200 으로 답하지 않는다(빈 답이 사실로 저장되지 않게).
@@ -1705,15 +1770,15 @@ export type MenuParse = { ok: true; menu: string | null } | { ok: false; status:
 export function parseMenu(raw: unknown): MenuParse {
   if (raw === undefined || raw === null || raw === "") return { ok: true, menu: null };
   const v = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof v !== "string" || !/^[a-z][a-z-]{0,39}$/.test(v)) return { ok: false, status: 400, body: { error: "invalid_menu", ...menuList() } };
+  if (typeof v !== "string" || !/^[a-z][a-z-]{0,39}$/.test(v)) return { ok: false, status: 400, body: { ...apiError("invalid_menu", "menu must be a menu name, for example install-check"), ...menuList() } };
   if (v === "full") return { ok: true, menu: null };
   if (DISHES[v] || SETS[v]) return { ok: true, menu: v };
-  if (PLANNED[v]) return { ok: false, status: 400, body: { error: "menu_not_available", menu: v, ...PLANNED[v], ...menuList() } };
-  return { ok: false, status: 400, body: { error: "unknown_menu", ...menuList() } };
+  if (PLANNED[v]) return { ok: false, status: 400, body: { ...apiError("menu_not_available", `The ${v} menu is not available yet.`), menu: v, ...PLANNED[v], ...menuList() } };
+  return { ok: false, status: 400, body: { ...apiError("unknown_menu", `Unknown menu: ${v}. See menu_card for the list.`), ...menuList() } };
 }
 
 type Body = Record<string, any>;
-const COMMON = ["target", "task_type", "resolved_target", "message", "registry_candidates", "scanner_candidates", "npm_candidates"];
+const COMMON = ["schema_version", "target", "task_type", "resolved_target", "message", "evidence_levels", "registry_candidates", "scanner_candidates", "npm_candidates"];
 const AGENT_REPORT_KEYS = [
   "target_type", "interactions", "rated_interactions", "success_rate", "protocol_requests", "rejected_requests", "by_source",
   "success_rate_basis", "avg_latency_ms", "failure_breakdown", "reviews", "avg_rating", "review_conversion_rate", "confidence",

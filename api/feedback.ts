@@ -80,6 +80,18 @@ function header(req: VercelRequest, name: string, max: number): string | null {
   return typeof s === "string" && s.length > 0 ? s.slice(0, max) : null;
 }
 
+// 응답 스키마 v1 (2026-11-05): 오류는 { error: 고정 코드, message, retryable, retry_after_seconds?(Retry-After 헤더와 같은 값), ...부가 }.
+// api/reputation/[target].ts 의 apiError 와 같은 내용(API 파일끼리 import 하지 않는 규칙).
+function apiError(code: string, message: string, extra: Record<string, unknown> = {}, retryAfterSeconds?: number): Record<string, unknown> {
+  return { error: code, message, retryable: retryAfterSeconds !== undefined, ...(retryAfterSeconds !== undefined ? { retry_after_seconds: retryAfterSeconds } : {}), ...extra };
+}
+export const UNAVAILABLE_RETRY_SECONDS = 120;
+/** 하루 한도는 UTC 자정에 풀린다 → 다음 UTC 자정까지 남은 초 */
+export function secondsUntilUtcMidnight(now = Date.now()): number {
+  const d = new Date(now);
+  return Math.max(1, Math.ceil((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1) - now) / 1000));
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -87,35 +99,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Cache-Control", "no-store");
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method === "GET") return res.status(200).json(FEEDBACK_FORMAT);
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "GET, POST, OPTIONS");
+    return res.status(405).json(apiError("method_not_allowed", "Method not allowed"));
+  }
 
   let body: unknown = req.body;
   if (typeof body === "string") {
     try {
       body = JSON.parse(body);
     } catch {
-      return res.status(400).json({ error: "body must be JSON", format: FEEDBACK_FORMAT });
+      return res.status(400).json(apiError("invalid_body", "body must be JSON", { format: FEEDBACK_FORMAT }));
     }
   }
   const parsed = parseFeedback(body);
-  if (!parsed.ok) return res.status(400).json({ error: parsed.error, format: FEEDBACK_FORMAT });
+  if (!parsed.ok) return res.status(400).json(apiError("invalid_body", parsed.error, { format: FEEDBACK_FORMAT }));
 
+  const unavailable = () => {
+    res.setHeader("Retry-After", String(UNAVAILABLE_RETRY_SECONDS));
+    return res.status(503).json(apiError("temporarily_unavailable", "unavailable", {}, UNAVAILABLE_RETRY_SECONDS));
+  };
   const supabase = getSupabase();
-  if (!supabase) return res.status(503).json({ error: "unavailable" });
+  if (!supabase) return unavailable();
   try {
     const since = new Date();
     since.setUTCHours(0, 0, 0, 0);
     const { count, error: countError } = await supabase.from("lowdown_feedback").select("id", { count: "exact", head: true }).gte("created_at", since.toISOString());
-    if (countError) return res.status(503).json({ error: "unavailable" });
+    if (countError) return unavailable();
     if ((count ?? 0) >= FEEDBACK_DAILY_CAP) {
-      res.setHeader("Retry-After", "3600");
-      return res.status(429).json({ error: "daily limit reached" });
+      const wait = secondsUntilUtcMidnight();
+      res.setHeader("Retry-After", String(wait));
+      return res.status(429).json(apiError("rate_limited", "daily limit reached", {}, wait));
     }
     const { error } = await supabase.from("lowdown_feedback").insert({ ...parsed.row, user_agent: header(req, "user-agent", 300) } as never);
-    if (error) return res.status(503).json({ error: "unavailable" });
+    if (error) return unavailable();
     return res.status(201).json({ ok: true });
   } catch (err) {
     console.error(err);
-    return res.status(503).json({ error: "unavailable" });
+    return unavailable();
   }
 }

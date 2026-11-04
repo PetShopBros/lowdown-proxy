@@ -76,11 +76,43 @@ export function lookupUrl(host: string, target: string, menu: string | null): st
   return `https://${host}/api/reputation/${encodeURIComponent(target)}?${q.toString()}`;
 }
 
+/** MCP 도구 오류: isError + REST 와 같은 JSON 본문 1개 */
+export function toolError(body: Record<string, unknown>) {
+  return { isError: true, content: [{ type: "text" as const, text: JSON.stringify(body) }] };
+}
+
+/** 조회 API 의 오류 응답 → 표준 오류. 표준 JSON 이면 그대로(+http_status), 아니면 상태 코드로 만든다. */
+export function upstreamError(status: number, text: string, what: string): Record<string, unknown> {
+  try {
+    const j = JSON.parse(text) as Record<string, unknown>;
+    if (j && typeof j === "object" && !Array.isArray(j) && typeof j.error === "string") {
+      return {
+        ...j,
+        message: typeof j.message === "string" ? j.message : typeof j.note === "string" ? j.note : `Lowdown ${what} answered HTTP ${status}.`,
+        retryable: typeof j.retryable === "boolean" ? j.retryable : status === 429 || status >= 500,
+        http_status: status,
+      };
+    }
+  } catch { /* 표준 JSON 이 아님 */ }
+  if (status === 429) return { error: "rate_limited", message: `Lowdown ${what} answered HTTP 429. Retry later.`, retryable: true, http_status: status };
+  if (status >= 500) {
+    return {
+      error: "temporarily_unavailable",
+      message: status === 503 ? "Lowdown cannot read its records right now. Retry later; this is not 'no record'." : `Lowdown ${what} answered HTTP ${status}. Retry later.`,
+      retryable: true,
+      http_status: status,
+    };
+  }
+  return { error: "invalid_parameter", message: `Lowdown ${what} answered HTTP ${status}: ${text.slice(0, 500)}`, retryable: false, http_status: status };
+}
+
 export function buildServer(ctx: { host: string; ua: string | null; fetchImpl?: typeof fetch }): McpServer {
   const doFetch = ctx.fetchImpl ?? fetch;
   const server = new McpServer({ name: "lowdown", version: VERSION }, { instructions: INSTRUCTIONS });
 
   // 같은 배포의 API 를 부르고 MCP 응답으로 바꾼다 (get_lowdown·find_servers 공통)
+  // 오류(2026-11-05, 응답 스키마 v1): isError 는 그대로, 본문은 REST 와 같은 JSON { error, message, retryable, retry_after_seconds?, http_status? }.
+  //   조회 API 가 표준 오류 JSON 을 주면 그대로 넘기고(http_status 만 더함), 아니면 같은 모양으로 만든다.
   const callApi = async (url: string, what: string) => {
     let r: Response;
     try {
@@ -89,11 +121,10 @@ export function buildServer(ctx: { host: string; ua: string | null; fetchImpl?: 
         signal: AbortSignal.timeout(20_000),
       });
     } catch {
-      return { isError: true, content: [{ type: "text" as const, text: `Lowdown ${what} did not answer. Retry later.` }] };
+      return toolError({ error: "temporarily_unavailable", message: `Lowdown ${what} did not answer. Retry later.`, retryable: true });
     }
     const text = await r.text();
-    if (r.status === 503) return { isError: true, content: [{ type: "text" as const, text: "Lowdown cannot read its records right now (HTTP 503). Retry later; this is not 'no record'." }] };
-    if (!r.ok) return { isError: true, content: [{ type: "text" as const, text: `Lowdown ${what} answered HTTP ${r.status}: ${text.slice(0, 2000)}` }] };
+    if (!r.ok) return toolError(upstreamError(r.status, text, what));
     return { content: [{ type: "text" as const, text }] };
   };
 
@@ -123,7 +154,7 @@ export function buildServer(ctx: { host: string; ua: string | null; fetchImpl?: 
     },
     async ({ target, menu }) => {
       const t = target.trim();
-      if (!TARGET_RE.test(t)) return { isError: true, content: [{ type: "text", text: "target must be printable ASCII without spaces, up to 300 characters." }] };
+      if (!TARGET_RE.test(t)) return toolError({ error: "invalid_parameter", message: "target must be printable ASCII without spaces, up to 300 characters.", retryable: false, parameter: "target" });
       return callApi(lookupUrl(ctx.host, t, menu ?? null), "lookup");
     },
   );

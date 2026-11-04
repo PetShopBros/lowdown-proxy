@@ -6,6 +6,13 @@ import { createClient } from "@supabase/supabase-js";
 // 조회 수(demand) 정렬은 넣지 않는다. 응답에 지시문을 넣지 않는다.
 // 다른 API 함수 파일을 import 하지 않는다(배포 빌드·node --test 확장자 규칙 차이) → 필요한 상수는 여기 따로 둔다.
 
+// 응답 스키마 v1 (2026-11-05): 오류는 { error: 고정 코드, message, retryable, retry_after_seconds?(Retry-After 헤더와 같은 값), ...부가 }.
+// api/reputation/[target].ts 의 apiError 와 같은 내용(API 파일끼리 import 하지 않는 규칙).
+function apiError(code: string, message: string, extra: Record<string, unknown> = {}, retryAfterSeconds?: number): Record<string, unknown> {
+  return { error: code, message, retryable: retryAfterSeconds !== undefined, ...(retryAfterSeconds !== undefined ? { retry_after_seconds: retryAfterSeconds } : {}), ...extra };
+}
+export const SCHEMA_VERSION = 1;
+export const RETRY_AFTER_SECONDS = 60;
 const BASE_URL = "https://lowdown-proxy.vercel.app";
 const BULK_DATA_LINK = '<https://github.com/PetShopBros/lowdown-data>; rel="related"; title="Daily dataset for bulk use (CC BY 4.0)"';
 const DAY_MS = 86_400_000;
@@ -62,7 +69,7 @@ const one = (v: unknown): string | undefined => (Array.isArray(v) ? (typeof v[0]
 
 /** 쿼리 문자열 → 검색 조건. 모르는 값은 400 + 허용 값. */
 export function parseFind(raw: Record<string, unknown>): Parsed {
-  const bad = (param: string, allowed: string) => ({ ok: false as const, body: { error: "invalid_parameter", parameter: param, allowed, parameters: PARAMETERS } });
+  const bad = (param: string, allowed: string) => ({ ok: false as const, body: apiError("invalid_parameter", `Invalid value for ${param}. Allowed: ${allowed}`, { parameter: param, allowed, parameters: PARAMETERS }) });
   const intIn = (name: string, min: number, max: number): number | null | "bad" => {
     const s = one(raw[name]);
     if (s === undefined || s === "") return null;
@@ -232,7 +239,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Link", BULK_DATA_LINK);
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET, OPTIONS");
+    return res.status(405).json(apiError("method_not_allowed", "Method not allowed"));
+  }
   // 캐시 규칙은 조회 API 와 같다: 실사용·검색 봇은 rewrite 가 nc=1 → no-store, 나머지는 6시간.
   res.setHeader("Cache-Control", req.query.nc === "1" ? "no-store" : "public, max-age=0, s-maxage=21600, stale-while-revalidate=86400");
 
@@ -280,6 +290,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     } as never);
 
     return res.status(200).json({
+      schema_version: SCHEMA_VERSION,
       query: canon || "(all)",
       sort: { key: f.sort, order: f.order, meaning: SORTS[f.sort]!.meaning },
       total: count ?? null,
@@ -299,6 +310,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch {
     res.setHeader("Cache-Control", "no-store");
-    return res.status(503).json({ error: "temporarily_unavailable", retry_after_seconds: 60 });
+    res.setHeader("Retry-After", String(RETRY_AFTER_SECONDS));
+    return res.status(503).json(apiError("temporarily_unavailable", "Lowdown could not read its records for this search. Nothing is implied about any server. Retry later.", {}, RETRY_AFTER_SECONDS));
   }
 }
