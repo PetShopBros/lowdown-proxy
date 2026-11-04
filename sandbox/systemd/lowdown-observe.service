@@ -1,0 +1,25 @@
+# Lowdown 샌드박스 행동 관측 — 하루 한 번(타이머). 결과는 비공개 테이블(sandbox_observe_*)에만 쓴다.
+# 기존 실행(lowdown-sandbox.service)이 돌고 있으면 스스로 건너뛴다(sandbox_batches 의 끝나지 않은 최근 묶음).
+[Unit]
+Description=Lowdown sandbox behavior observation (strace runtime)
+Wants=network-online.target
+After=network-online.target docker.service lowdown-egress.service
+Requires=docker.service lowdown-egress.service
+
+[Service]
+Type=oneshot
+User=lowdown
+Group=lowdown
+EnvironmentFile=/etc/lowdown/sandbox.env
+Environment=HOME=/var/lib/lowdown SANDBOX_ROOT=/var/lib/lowdown
+WorkingDirectory=@REPO_DIR@
+ExecStart=/usr/local/bin/node @REPO_DIR@/sandbox/runner.ts --observe
+TimeoutStartSec=3h
+KillSignal=SIGTERM
+TimeoutStopSec=120
+Nice=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/lowdown /var/log/lowdown-strace

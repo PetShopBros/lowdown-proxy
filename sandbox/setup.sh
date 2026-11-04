@@ -43,6 +43,10 @@ if ! command -v runsc >/dev/null; then
   apt-get install -y -q runsc
 fi
 runsc install >/dev/null 2>&1 || true   # docker 런타임 등록(이미 있으면 무시)
+# 행동 관측용 런타임(같은 runsc + strace). 실행 단계 관측(--observe)만 쓴다. 로그는 runner 가 파싱 직후 지운다.
+runsc install --runtime=runsc-observe -- --strace \
+  --strace-syscalls=execve,execveat,connect,socket,sendto,sendmsg,openat,open \
+  --strace-log-size=256 --debug-log=/var/log/lowdown-strace/ --debug-command=boot >/dev/null 2>&1 || true
 systemctl restart docker
 docker info --format '{{json .Runtimes}}' | grep -q '"runsc"' || { echo "docker 에 runsc 런타임이 없습니다"; exit 1; }
 
@@ -69,6 +73,8 @@ if ! id lowdown >/dev/null 2>&1; then
 fi
 usermod -aG docker lowdown
 install -d -o lowdown -g lowdown -m 700 "$SANDBOX_ROOT" "$SANDBOX_ROOT/work" "$SANDBOX_ROOT/npm-cache" "$SANDBOX_ROOT/pip-cache"
+# 관측 로그: runsc(root)가 쓰고 runner(lowdown)가 읽고 지운다
+install -d -o root -g lowdown -m 770 /var/log/lowdown-strace
 install -d -o root -g root -m 755 /etc/lowdown
 if [ ! -f /etc/lowdown/sandbox.env ]; then
   install -o root -g root -m 600 "$REPO_DIR/sandbox/sandbox.env.example" /etc/lowdown/sandbox.env
@@ -89,6 +95,8 @@ docker run --rm --runtime=runsc --network none --user "$SANDBOX_UID:$SANDBOX_UID
 log "8/9 systemd units"
 sed "s#@REPO_DIR@#$REPO_DIR#g" "$REPO_DIR/sandbox/systemd/lowdown-sandbox.service" > /etc/systemd/system/lowdown-sandbox.service
 install -m 644 "$REPO_DIR/sandbox/systemd/lowdown-sandbox.timer" /etc/systemd/system/lowdown-sandbox.timer
+sed "s#@REPO_DIR@#$REPO_DIR#g" "$REPO_DIR/sandbox/systemd/lowdown-observe.service" > /etc/systemd/system/lowdown-observe.service
+install -m 644 "$REPO_DIR/sandbox/systemd/lowdown-observe.timer" /etc/systemd/system/lowdown-observe.timer
 install -m 644 "$REPO_DIR/sandbox/systemd/lowdown-egress.service" /etc/systemd/system/lowdown-egress.service
 systemctl daemon-reload
 systemctl enable --now lowdown-egress.service
@@ -106,6 +114,7 @@ cat <<EOF
   5) 첫 실행(10건):  sudo systemd-run --uid=lowdown --gid=lowdown -p EnvironmentFile=/etc/lowdown/sandbox.env -p WorkingDirectory=$REPO_DIR --wait --pipe \\
                        /usr/local/bin/node $REPO_DIR/sandbox/runner.ts --limit=10
   6) 매일 실행 켜기: sudo systemctl enable --now lowdown-sandbox.timer
+  7) 행동 관측(선택): supabase/2026-11-05_sandbox_observe.sql 실행 → --observe --limit=5 로 한 번 → sudo systemctl enable --now lowdown-observe.timer
 멈추기:            sudo systemctl disable --now lowdown-sandbox.timer
 정시 실행(선택):   sudo bash $REPO_DIR/sandbox/dispatch-setup.sh 가 안내하는 단계 (토큰 → 확인 → 타이머 켜기)
 EOF

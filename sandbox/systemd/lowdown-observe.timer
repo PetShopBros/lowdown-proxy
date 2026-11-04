@@ -1,0 +1,11 @@
+# 매일 12:17 KST (UTC 03:17) — 기존 실행(06:47 KST 시작, 최대 4시간) 뒤
+[Unit]
+Description=Daily Lowdown sandbox behavior observation
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

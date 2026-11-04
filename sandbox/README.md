@@ -116,6 +116,29 @@ Same rules, different install step:
 
 If the Python image is not built on a server, PyPI targets are skipped (`note: pypi skipped: image ... not found`) and npm runs as before. `SANDBOX_PYPI=0` turns PyPI off.
 
+## Behavior observation (`--observe`, private)
+
+A second, separate pass over targets that reached `tools/list` (`ok`) in the regular run. It installs the same way and runs the same start-up (`initialize` + `tools/list`), with one difference: the run container uses the `runsc-observe` runtime, which is the same gVisor runtime with syscall tracing on (`execve, execveat, connect, socket, sendto, sendmsg, openat, open`). Isolation is unchanged: no network, read-only filesystem, no capabilities, uid 10001.
+
+From the trace, `sandbox/observe-lib.ts` records what the server attempted, as facts with their result:
+
+| kind | target | result |
+|---|---|---|
+| `exec` | program path; arguments in `detail` (secret-like values masked, 200 chars) | `ok` |
+| `connect` | `address:port` or `unix:path` | `unreachable`, `not_found`, ... |
+| `dns_attempt` | resolver `address:53` (the queried name is not in the trace) | `unreachable`, ... |
+| `credential_open` | path matching a credential location (`.ssh/`, `.aws/credentials`, `.npmrc`, `.env`, `/proc/*/environ`, ...) | `opened`, `not_found`, `denied` |
+
+Excluded: the harness's own start-up (entrypoint → `timeout` → bin → interpreter, matched by pid and exact arguments, not by name) and glibc address-sorting connects (`Port: 0`, `AF_UNSPEC`). Other file opens are counted, not listed. Environment variables are never parsed or stored.
+
+No verdicts are made. Results go to `sandbox_observe_runs` / `sandbox_observe_events` (RLS on, no policies). The raw trace is read from `/var/log/lowdown-strace` (root:lowdown 770) and deleted right after parsing; leftovers are deleted at the start and end of each pass. The pass skips itself while the regular run is in progress and writes nothing to `sandbox_runs`, `sandbox_state` or `sandbox_batches`.
+
+```bash
+sudo systemd-run --uid=lowdown --gid=lowdown -p EnvironmentFile=/etc/lowdown/sandbox.env -p WorkingDirectory=/opt/lowdown/lowdown-proxy --wait --pipe /usr/local/bin/node /opt/lowdown/lowdown-proxy/sandbox/runner.ts --observe --limit=5
+```
+
+Daily: `lowdown-observe.timer`, 12:17 KST, up to 200 targets (`SANDBOX_OBSERVE_LIMIT`), 2 h budget (`SANDBOX_OBSERVE_BUDGET_MIN`).
+
 ## Publication
 
 Built, switched off. Nothing from the sandbox is public until both of these are done (`supabase/2026-10-26_sandbox_summary.sql`):

@@ -3,6 +3,9 @@
 //   node sandbox/runner.ts               대상 선정 → 설치 → 실행(initialize + tools/list) → 기록
 //   node sandbox/runner.ts --plan        대상 선정만(docker 안 씀, DB 쓰기 없음)
 //   node sandbox/runner.ts --self-test   격리 확인: 컨테이너가 MCP 로 응답하는지, 네트워크가 막혔는지 (DB 안 씀)
+//   node sandbox/runner.ts --observe     행동 관측(비공개): 기존 실행에서 ok 였던 대상의 실행 단계를 strace 런타임(runsc-observe)으로
+//                                        한 번 더 돌려 실행·접속·DNS 시도·인증 정보 경로 열기를 기록 (sandbox/observe-lib.ts)
+//                                        --plan 과 함께 쓰면 대상만 보여준다. 기존 sandbox_runs/state/batches 에는 쓰지 않는다.
 //   --limit=N                            이번 실행의 대상 수 상한
 //   --only=pypi|npm                      한 종류만 돈다(새 종류의 첫 확인용). 예: --only=pypi --limit=10
 // 환경변수(/etc/lowdown/sandbox.env, systemd 가 읽는다):
@@ -11,9 +14,11 @@
 //        SANDBOX_RUNTIME(runsc) SANDBOX_ROOT(/var/lib/lowdown)
 //        SANDBOX_CONCURRENCY(2) SANDBOX_MAX_TARGETS(1500 — 실제 상한은 시간 예산) SANDBOX_TIME_BUDGET_MIN(240)
 //        SANDBOX_MIN_FREE_GB(5) SANDBOX_CACHE_MAX_GB(20)
+//        관측: SANDBOX_OBSERVE_RUNTIME(runsc-observe) SANDBOX_OBSERVE_LOG_DIR(/var/log/lowdown-strace)
+//              SANDBOX_OBSERVE_LIMIT(200) SANDBOX_OBSERVE_BUDGET_MIN(120)
 // 키는 이 프로세스만 쓴다. 컨테이너에는 어떤 환경변수도 넘기지 않는다(HOME=/tmp 만).
 
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statfsSync, statSync } from 'node:fs';
+import { accessSync, chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, statfsSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +35,7 @@ import {
   installArgs,
   nextState,
   parseConsoleScripts,
+  NODE_RUN,
   pickLaunch,
   pipInstallArgs,
   planTargets,
@@ -57,6 +63,21 @@ import {
   type SandboxRunRow,
 } from './sandbox-io.ts';
 import { DEFAULT_PROBE_OPTS, probeStdio, type StdioProbeResult } from './stdio-probe.ts';
+import { getKeyset } from '../scanner/npm-lib.ts';
+import { postBatches } from '../scanner/registry-diff.ts';
+import {
+  logContainerId,
+  mainRunActive,
+  OBSERVE_DEFAULT_LOG_DIR,
+  OBSERVE_DEFAULT_RUNTIME,
+  OBSERVE_MAJOR,
+  OBSERVE_MAX_LOG_BYTES,
+  parseObserveLog,
+  planObserve,
+  withCidfile,
+  type ObserveStateLite,
+  type ObserveSummary,
+} from './observe-lib.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -154,7 +175,21 @@ interface TargetResult {
   install_scripts?: boolean;
   /** 첫 설치가 ETARGET/ENOVERSIONS 여서 --prefer-online 으로 다시 시도했다 */
   install_retry?: 'prefer_online';
+  /** 실행 단계에서 띄운 서버 경로·인자(관측 로그의 하네스 판정용) */
+  run_bin_path?: string;
+  run_args?: string[];
   outcome: Outcome;
+}
+
+/** 관측 실행: 실행 단계만 다른 런타임으로, 컨테이너 ID 를 파일로 받는다. 설치 단계는 그대로. */
+interface RunObserve {
+  runtime: string;
+  cidfile: string;
+}
+
+function runDockerArgs(ctx: DockerCtx, bin: string, hardLimit: number, pkgArgs: readonly string[], lang: typeof NODE_RUN, obs: RunObserve | undefined): string[] {
+  const args = runArgs(obs ? { ...ctx, runtime: obs.runtime } : ctx, bin, hardLimit, pkgArgs, lang);
+  return obs ? withCidfile(args, obs.cidfile) : args;
 }
 
 function readPackageJson(work: string, ident: string): unknown {
@@ -179,7 +214,7 @@ function readSmallFile(path: string, maxBytes: number): string | null {
 }
 
 /** PyPI: wheel 만 설치(패키지 코드 실행 없음) → 자기 console_scripts 로 실행 파일 결정 → 같은 방식으로 initialize + tools/list */
-async function runPypiTarget(env: Env, t: Target, launch: LaunchSpec | null): Promise<TargetResult> {
+async function runPypiTarget(env: Env, t: Target, launch: LaunchSpec | null, obs?: RunObserve): Promise<TargetResult> {
   const work = mkdtempSync(join(env.root, 'work', 'p-'));
   chmodSync(work, 0o700);
   const name = `lds-${randomUUID().slice(0, 12)}`;
@@ -213,16 +248,17 @@ async function runPypiTarget(env: Env, t: Target, launch: LaunchSpec | null): Pr
       return { install_ms: inst.ms, install_error_code: null, bin_count: pick.count, probe: null, outcome: pick.outcome === 'bin_ambiguous' ? 'bin_ambiguous' : 'no_bin' };
     }
     const hardLimit = Math.ceil((DEFAULT_PROBE_OPTS.initTimeoutMs + DEFAULT_PROBE_OPTS.listTimeoutMs) / 1000) + 15;
-    const probe = await probeStdio(['docker', ...runArgs({ ...ctx, name: `${name}-r` }, pick.bin, hardLimit, launch?.args ?? [], PYTHON_RUN)]);
+    const pkgArgs = launch?.args ?? [];
+    const probe = await probeStdio(['docker', ...runDockerArgs({ ...ctx, name: `${name}-r` }, pick.bin, hardLimit, pkgArgs, PYTHON_RUN, obs)]);
     await docker(['rm', '-f', `${name}-r`]);
-    return { install_ms: inst.ms, install_error_code: null, bin_count: pick.count, probe, outcome: probe.outcome };
+    return { install_ms: inst.ms, install_error_code: null, bin_count: pick.count, probe, run_bin_path: `${PYTHON_RUN.binDir}/${pick.bin}`, run_args: [...pkgArgs], outcome: probe.outcome };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
 }
 
-async function runTarget(env: Env, t: Target, launch: LaunchSpec | null): Promise<TargetResult> {
-  if (t.registry_type === 'pypi') return runPypiTarget(env, t, launch);
+async function runTarget(env: Env, t: Target, launch: LaunchSpec | null, obs?: RunObserve): Promise<TargetResult> {
+  if (t.registry_type === 'pypi') return runPypiTarget(env, t, launch, obs);
   const work = mkdtempSync(join(env.root, 'work', 't-'));
   chmodSync(work, 0o700);
   const name = `lds-${randomUUID().slice(0, 12)}`;
@@ -260,9 +296,20 @@ async function runTarget(env: Env, t: Target, launch: LaunchSpec | null): Promis
 
     // 3) 실행: initialize + tools/list
     const hardLimit = Math.ceil((DEFAULT_PROBE_OPTS.initTimeoutMs + DEFAULT_PROBE_OPTS.listTimeoutMs) / 1000) + 15;
-    const probe = await probeStdio(['docker', ...runArgs({ ...ctx, name: `${name}-r` }, pick.bin, hardLimit, launch?.args ?? [])]);
+    const pkgArgs = launch?.args ?? [];
+    const probe = await probeStdio(['docker', ...runDockerArgs({ ...ctx, name: `${name}-r` }, pick.bin, hardLimit, pkgArgs, NODE_RUN, obs)]);
     await docker(['rm', '-f', `${name}-r`]);
-    return { install_ms: inst.ms, install_error_code: null, bin_count: pick.count, probe, install_scripts: scripts, ...extra, outcome: probe.outcome };
+    return {
+      install_ms: inst.ms,
+      install_error_code: null,
+      bin_count: pick.count,
+      probe,
+      install_scripts: scripts,
+      ...extra,
+      run_bin_path: `${NODE_RUN.binDir}/${pick.bin}`,
+      run_args: [...pkgArgs],
+      outcome: probe.outcome,
+    };
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
@@ -322,10 +369,264 @@ async function selfTest(env: Env): Promise<void> {
   console.log('self-test OK');
 }
 
+// ─────────────────────────────────────────────
+// 행동 관측 (--observe) — 비공개 테이블 sandbox_observe_runs / sandbox_observe_events 에만 쓴다
+// ─────────────────────────────────────────────
+
+interface ObserveRunRow {
+  id: string;
+  batch_id: string;
+  observed_at: string;
+  target_key: string;
+  registry_type: string;
+  ident: string;
+  version: string;
+  observe_major: number;
+  runner_version: string;
+  runtime: string;
+  outcome: string;
+  reached_level: number;
+  duration_ms: number | null;
+  log_found: boolean;
+  log_bytes: number | null;
+  log_truncated: boolean;
+  unparsed_lines: number | null;
+  events_dropped: number | null;
+  opens_total: number | null;
+  exec_total: number | null;
+  harness_execs: number | null;
+  connect_total: number | null;
+  dns_attempts: number | null;
+  credential_opens: number | null;
+  note: string | null;
+}
+
+interface ObserveEventRow {
+  run_id: string;
+  kind: string;
+  target: string;
+  detail: string | null;
+  result: string;
+  count: number;
+}
+
+/** 관측 로그 디렉터리의 파일을 모두 지운다(지난 실행이 남긴 것 포함). 원본 로그는 파싱 뒤 남기지 않는다. */
+function clearObserveLogs(dir: string): number {
+  let n = 0;
+  for (const f of readdirSync(dir)) {
+    rmSync(join(dir, f), { force: true, recursive: true });
+    n++;
+  }
+  return n;
+}
+
+/** 컨테이너 ID 가 Args 줄에 있는 로그 파일 → 앞부분 OBSERVE_MAX_LOG_BYTES 만 읽고 즉시 지운다 */
+function takeObserveLog(dir: string, cid: string): { text: string; bytes: number; truncated: boolean } | null {
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith('.txt')) continue;
+    const path = join(dir, f);
+    let fd: number | null = null;
+    try {
+      fd = openSync(path, 'r');
+      const head = Buffer.alloc(16 * 1024);
+      const n = readSync(fd, head, 0, head.length, 0);
+      if (logContainerId(head.subarray(0, n).toString('utf8')) !== cid) continue;
+      const bytes = statSync(path).size;
+      const want = Math.min(bytes, OBSERVE_MAX_LOG_BYTES);
+      const buf = Buffer.alloc(want);
+      let off = 0;
+      while (off < want) {
+        const r = readSync(fd, buf, off, want - off, off);
+        if (r <= 0) break;
+        off += r;
+      }
+      closeSync(fd);
+      fd = null;
+      rmSync(path, { force: true });
+      return { text: buf.subarray(0, off).toString('utf8'), bytes, truncated: bytes > OBSERVE_MAX_LOG_BYTES };
+    } catch {
+      // 다른 실행이 쓰는 중이거나 읽을 수 없는 파일 → 건너뜀
+    } finally {
+      if (fd !== null) closeSync(fd);
+    }
+  }
+  return null;
+}
+
+async function latestSandboxBatch(cfg: SupabaseConfig): Promise<{ started_at: string; finished_at: string | null } | null> {
+  const url = `${cfg.url.replace(/\/+$/, '')}/rest/v1/sandbox_batches?select=started_at,finished_at&order=started_at.desc&limit=1`;
+  const res = await fetch(url, { headers: { apikey: cfg.key, Authorization: `Bearer ${cfg.key}`, Accept: 'application/json' }, signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) throw new Error(`sandbox_batches read failed: HTTP ${res.status}`);
+  const rows = (await res.json()) as Array<{ started_at: string; finished_at: string | null }>;
+  return rows[0] ?? null;
+}
+
+async function observeMain(env: Env, args: string[]): Promise<void> {
+  const planOnly = args.includes('--plan');
+  const limitArg = args.find((a) => a.startsWith('--limit='));
+  const limit = limitArg ? Math.max(0, Number(limitArg.slice(8)) || 0) : intEnv('SANDBOX_OBSERVE_LIMIT', 200);
+  const obsRuntime = process.env.SANDBOX_OBSERVE_RUNTIME?.trim() || OBSERVE_DEFAULT_RUNTIME;
+  const logDir = process.env.SANDBOX_OBSERVE_LOG_DIR?.trim() || OBSERVE_DEFAULT_LOG_DIR;
+  const budgetMs = intEnv('SANDBOX_OBSERVE_BUDGET_MIN', 120) * 60_000;
+  const url = process.env.LOWDOWN_SUPABASE_URL?.trim();
+  const key = (process.env.LOWDOWN_SANDBOX_KEY || process.env.LOWDOWN_SCANNER_KEY)?.trim();
+  if (!url || !key) fail('LOWDOWN_SUPABASE_URL / LOWDOWN_SANDBOX_KEY 가 없습니다.');
+  const cfg: SupabaseConfig = { url, key };
+  const started = Date.now();
+
+  // 기존 실행과 겹치지 않는다(기존 실행은 시작할 때 lowdown.sandbox 컨테이너를 모두 지운다)
+  if (!planOnly && mainRunActive(await latestSandboxBatch(cfg))) {
+    console.log('observe: sandbox run in progress, skipping');
+    return;
+  }
+
+  let pyEnabled = process.env.SANDBOX_PYPI?.trim() !== '0';
+  if (pyEnabled && !planOnly) {
+    const img = await docker(['image', 'inspect', '-f', '{{.Id}}', env.imagePy]);
+    pyEnabled = img.code === 0 && img.stdout.trim() !== '';
+  }
+  const [state, observedRows, launches] = await Promise.all([
+    fetchSandboxState(cfg),
+    getKeyset<{ id: string; target_key: string }>(cfg, 'sandbox_observe_runs', 'id,target_key', 'id', [['observe_major', `eq.${OBSERVE_MAJOR}`], ['outcome', 'neq.runner_error']], {}),
+    fetchLaunchSpecs(),
+  ]);
+  const observed = new Set(observedRows.map((r) => r.target_key));
+  const picked = planObserve(state as ObserveStateLite[], observed, limit, { pypi: pyEnabled });
+  console.log(`observe plan: ${picked.length} targets (ok in sandbox_state ${state.filter((r) => r.last_outcome === 'ok').length}, already observed ${observed.size}, pypi ${pyEnabled ? 'on' : 'off'})`);
+  const targets: Target[] = picked.map((r) => ({ key: r.target_key, registry_type: r.registry_type, ident: r.ident, version: r.version, sources: [], fresh_at: r.last_run_at }));
+  const launchOf = (t: Target) => pickLaunch(t.registry_type === 'pypi' ? launches.pypiSpecs.get(normalizePypiName(t.ident)) : launches.specs.get(t.ident), t.version);
+  if (planOnly) {
+    for (const t of targets.slice(0, 20)) console.log(`  ${t.key} args=${JSON.stringify(launchOf(t)?.args ?? null)}`);
+    return;
+  }
+
+  await preflight(env);
+  const info = await docker(['info', '--format', '{{json .Runtimes}}']);
+  if (!info.stdout.includes(`"${obsRuntime}"`)) fail(`docker 런타임 ${obsRuntime} 이 없습니다. setup.sh 를 확인하세요.`);
+  try {
+    accessSync(logDir, fsConstants.R_OK | fsConstants.W_OK | fsConstants.X_OK);
+  } catch {
+    fail(`관측 로그 폴더 ${logDir} 를 읽고 지울 수 없습니다 (root:lowdown 770 인지 확인).`);
+  }
+  await cleanupLeftovers(env);
+  const stale = clearObserveLogs(logDir);
+  if (stale > 0) console.log(`observe: removed ${stale} leftover log file(s)`);
+
+  let stopping = false;
+  process.on('SIGTERM', () => {
+    stopping = true;
+  });
+  process.on('SIGINT', () => {
+    stopping = true;
+  });
+
+  const batchId = randomUUID();
+  let runs: ObserveRunRow[] = [];
+  let events: ObserveEventRow[] = [];
+  const flush = async () => {
+    if (runs.length === 0) return;
+    const r = runs;
+    const e = events;
+    runs = [];
+    events = [];
+    await postBatches(cfg, 'sandbox_observe_runs', r, 'return=minimal', { batchSize: 200 });
+    if (e.length > 0) await postBatches(cfg, 'sandbox_observe_events', e, 'return=minimal', { batchSize: 500 });
+  };
+
+  const totals = { attempted: 0, observed: 0, no_log: 0, with_exec: 0, with_connect: 0, with_dns: 0, with_credential: 0 };
+  const deadline = started + budgetMs;
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      if (stopping || Date.now() > deadline) return;
+      const t = targets[next++];
+      if (!t) return;
+      if (freeGb(env.root) < env.minFreeGb) {
+        stopping = true;
+        return;
+      }
+      const cidfile = join(env.root, 'work', `cid-${randomUUID()}`);
+      let res: TargetResult;
+      try {
+        res = await runTarget(env, t, launchOf(t), { runtime: obsRuntime, cidfile });
+      } catch {
+        res = { install_ms: null, install_error_code: null, bin_count: null, probe: null, outcome: 'runner_error' };
+      }
+      let summary: ObserveSummary | null = null;
+      let log: { bytes: number; truncated: boolean } | null = null;
+      let note: string | null = null;
+      if (res.probe) {
+        const cid = existsSync(cidfile) ? readFileSync(cidfile, 'utf8').trim() : '';
+        let got = cid ? takeObserveLog(logDir, cid) : null;
+        if (cid && !got) {
+          await new Promise((r) => setTimeout(r, 1000)); // runsc 가 로그를 닫기 전이면 한 번 더
+          got = takeObserveLog(logDir, cid);
+        }
+        if (got) {
+          log = { bytes: got.bytes, truncated: got.truncated };
+          try {
+            summary = parseObserveLog(got.text, res.run_bin_path ?? '', res.run_args ?? []);
+          } catch {
+            note = 'parse_failed';
+          }
+        } else note = cid ? 'log_not_found' : 'no_cidfile';
+      }
+      rmSync(cidfile, { force: true });
+      const id = randomUUID();
+      const p = res.probe;
+      runs.push({
+        id,
+        batch_id: batchId,
+        observed_at: new Date().toISOString(),
+        target_key: t.key,
+        registry_type: t.registry_type,
+        ident: t.ident,
+        version: t.version,
+        observe_major: OBSERVE_MAJOR,
+        runner_version: SANDBOX_RUNNER_VERSION,
+        runtime: obsRuntime,
+        outcome: res.outcome,
+        reached_level: p?.reached_level ?? 0,
+        duration_ms: p?.duration_ms ?? null,
+        log_found: log !== null,
+        log_bytes: log?.bytes ?? null,
+        log_truncated: log?.truncated ?? false,
+        unparsed_lines: summary?.unparsed_lines ?? null,
+        events_dropped: summary?.events_dropped ?? null,
+        opens_total: summary?.opens_total ?? null,
+        exec_total: summary?.exec_total ?? null,
+        harness_execs: summary?.harness_execs ?? null,
+        connect_total: summary?.connect_total ?? null,
+        dns_attempts: summary?.dns_attempts ?? null,
+        credential_opens: summary?.credential_opens ?? null,
+        note,
+      });
+      for (const e of summary?.events ?? []) events.push({ run_id: id, kind: e.kind, target: e.target, detail: e.detail, result: e.result, count: e.count });
+      totals.attempted++;
+      if (summary) {
+        totals.observed++;
+        if (summary.exec_total > 0) totals.with_exec++;
+        if (summary.connect_total > 0) totals.with_connect++;
+        if (summary.dns_attempts > 0) totals.with_dns++;
+        if (summary.credential_opens > 0) totals.with_credential++;
+      } else if (res.probe) totals.no_log++;
+      if (runs.length >= FLUSH_EVERY) await flush();
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: env.concurrency }, worker));
+    await flush();
+  } finally {
+    clearObserveLogs(logDir); // 못 가져간 로그도 남기지 않는다
+  }
+  console.log(`observe done: ${JSON.stringify(totals)}, sec ${Math.round((Date.now() - started) / 1000)}${stopping ? ', stopped early' : ''}`);
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const env = readEnv();
   if (args.includes('--self-test')) return selfTest(env);
+  if (args.includes('--observe')) return observeMain(env, args);
 
   const planOnly = args.includes('--plan');
   const onlyArg = args.find((a) => a.startsWith('--only='))?.slice('--only='.length);
