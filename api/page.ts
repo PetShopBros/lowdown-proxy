@@ -370,9 +370,77 @@ export function renderSitemap(rows: ListRow[]): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n<url><loc>${SITE}/servers</loc></url>\n${urls.join("\n")}\n</urlset>\n`;
 }
 
-async function listRows(supabase: any): Promise<ListRow[] | null> {
+// ── sitemap 분할 (2026-11-05) ──────────────────────────────
+// /sitemap.xml 은 sitemap index. 하위: /sitemaps/pages.xml(고정 페이지) + /sitemaps/servers-N.xml(서버 5,000개씩, 자동으로 늘어남).
+// 배경: 목록을 MAX_LIST(10,000)로 잘라 sitemap 을 만들어 12,127개 중 약 2,100개 서버 페이지가 빠졌다(GPTBot 서버 상세 수집이 정확히 10,000에서 멈춤).
+// 포함: target_status_summary 의 서버(관측 기록이 있어 페이지가 열림) 중 이름 형식이 맞고, Registry 에서 deleted 가 아닌 것. target_id 순.
+// lastmod: 최신 일일 점검 날짜(latest_day)가 있을 때만(그날 페이지 내용이 갱신됨). 없으면 넣지 않는다.
+export const SITEMAP_PART_SIZE = 5_000; // 규격 상한 50,000 보다 작게
+const MAX_SITEMAP_ROWS = 500_000;
+export const STATIC_PAGES = ["/", "/servers", "/privacy", "/terms"] as const;
+export type SitemapEntry = { loc: string; lastmod: string | null };
+
+/** 목록 → 중복 없는 서버 URL (target_id 순). deleted 와 이름 형식 밖은 뺀다. */
+export function sitemapEntries(rows: ListRow[], deleted: ReadonlySet<string> = new Set()): SitemapEntry[] {
+  const seen = new Set<string>();
+  const out: SitemapEntry[] = [];
+  for (const r of [...rows].sort((a, b) => (a.target_id < b.target_id ? -1 : a.target_id > b.target_id ? 1 : 0))) {
+    if (deleted.has(r.target_id)) continue;
+    const n = nameOf(r.target_id);
+    if (!n) continue;
+    const loc = `${SITE}${pagePath(n)}`;
+    if (seen.has(loc)) continue;
+    seen.add(loc);
+    out.push({ loc, lastmod: day(r.latest_day) });
+  }
+  return out;
+}
+
+export function sitemapParts(entries: SitemapEntry[], size = SITEMAP_PART_SIZE): SitemapEntry[][] {
+  const parts: SitemapEntry[][] = [];
+  for (let i = 0; i < entries.length; i += size) parts.push(entries.slice(i, i + size));
+  return parts;
+}
+
+const maxDay = (es: SitemapEntry[]): string | null => es.reduce<string | null>((m, e) => (e.lastmod && (!m || e.lastmod > m) ? e.lastmod : m), null);
+
+export function renderSitemapIndex(parts: SitemapEntry[][]): string {
+  const items = [`<sitemap><loc>${SITE}/sitemaps/pages.xml</loc></sitemap>`].concat(
+    parts.map((p, i) => {
+      const lm = maxDay(p);
+      return `<sitemap><loc>${SITE}/sitemaps/servers-${i + 1}.xml</loc>${lm ? `<lastmod>${lm}</lastmod>` : ""}</sitemap>`;
+    }),
+  );
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${items.join("\n")}\n</sitemapindex>\n`;
+}
+
+export function renderUrlset(entries: SitemapEntry[]): string {
+  const urls = entries.map((e) => `<url><loc>${esc(e.loc)}</loc>${e.lastmod ? `<lastmod>${e.lastmod}</lastmod>` : ""}</url>`);
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join("\n")}\n</urlset>\n`;
+}
+
+/** /sitemaps/{file} → 'pages' | 서버 묶음 번호(1부터) | null */
+export function sitemapFile(file: unknown): "pages" | number | null {
+  if (file === "pages.xml") return "pages";
+  const m = typeof file === "string" ? /^servers-([1-9]\d{0,3})\.xml$/.exec(file) : null;
+  return m ? Number(m[1]) : null;
+}
+
+async function deletedTargets(supabase: any): Promise<Set<string> | null> {
+  const out = new Set<string>();
+  for (let from = 0; from < MAX_SITEMAP_ROWS; from += 1000) {
+    const r = await supabase.from("server_cards").select("target_id").eq("registry_status", "deleted").order("target_id", { ascending: true }).range(from, from + 999);
+    if (r.error) return null;
+    const rows = (r.data ?? []) as Array<{ target_id: string }>;
+    for (const x of rows) out.add(x.target_id);
+    if (rows.length < 1000) break;
+  }
+  return out;
+}
+
+async function listRows(supabase: any, max = MAX_LIST): Promise<ListRow[] | null> {
   const out: ListRow[] = [];
-  for (let from = 0; from < MAX_LIST; from += 1000) {
+  for (let from = 0; from < max; from += 1000) {
     const r = await supabase.from("target_status_summary").select("target_id,latest_day,latest_state").order("target_id", { ascending: true }).range(from, from + 999);
     if (r.error) return null;
     const rows = (r.data ?? []) as ListRow[];
@@ -430,19 +498,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } else if (kind === "privacy") {
     path = "/privacy";
     body = renderPrivacy();
-  } else if (kind === "index" || kind === "home" || kind === "sitemap") {
+  } else if (kind === "sitemap" || kind === "sitemap-part") {
+    if (!supabase) return unavailable();
+    const which = kind === "sitemap" ? null : sitemapFile(req.query.file);
+    if (kind === "sitemap-part" && which === null) return res.status(404).send("Not found");
+    type = "application/xml; charset=utf-8";
+    if (which === "pages") {
+      path = "/sitemaps/pages.xml";
+      body = renderUrlset(STATIC_PAGES.map((p) => ({ loc: `${SITE}${p}`, lastmod: null })));
+    } else {
+      const [rows, deleted] = await Promise.all([listRows(supabase, MAX_SITEMAP_ROWS), deletedTargets(supabase)]);
+      if (!rows || !deleted) return unavailable();
+      const parts = sitemapParts(sitemapEntries(rows, deleted));
+      if (which === null) {
+        path = "/sitemap.xml";
+        body = renderSitemapIndex(parts);
+      } else {
+        const part = parts[which - 1];
+        if (!part) return res.status(404).send("Not found");
+        path = `/sitemaps/servers-${which}.xml`;
+        body = renderUrlset(part);
+      }
+    }
+  } else if (kind === "index" || kind === "home") {
     if (!supabase) return unavailable();
     const statusP = kind === "home" ? latestStatus() : Promise.resolve(null);
     const rows = await listRows(supabase);
     if (!rows) return unavailable();
     // 첫 주소로 들어온 방문은 utm_source(예: chatgpt.com)까지 남긴다 — AI 답변에서 클릭해 온 방문을 셀 수 있게
     const utm = typeof req.query.utm_source === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(req.query.utm_source) ? req.query.utm_source : null;
-    path = kind === "index" ? "/servers" : kind === "home" ? `/${utm ? `?utm_source=${utm}` : ""}` : "/sitemap.xml";
-    if (kind === "index" || kind === "home") body = renderIndex(rows, { home: kind === "home", statusHtml: renderStatus(await statusP) });
-    else {
-      body = renderSitemap(rows);
-      type = "application/xml; charset=utf-8";
-    }
+    path = kind === "index" ? "/servers" : `/${utm ? `?utm_source=${utm}` : ""}`;
+    body = renderIndex(rows, { home: kind === "home", statusHtml: renderStatus(await statusP) });
   } else {
     return res.status(404).send("Not found");
   }

@@ -84,6 +84,15 @@
       "destination": "/api/page?kind=server&ns=:ns&name=:name"
     },
     {
+      "source": "/sitemaps/:file",
+      "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
+      "destination": "/api/page?kind=sitemap-part&file=:file&nc=1"
+    },
+    {
+      "source": "/sitemaps/:file",
+      "destination": "/api/page?kind=sitemap-part&file=:file"
+    },
+    {
       "source": "/sitemap.xml",
       "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
       "destination": "/api/page?kind=sitemap&nc=1"

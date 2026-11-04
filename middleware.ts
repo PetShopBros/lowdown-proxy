@@ -13,6 +13,7 @@ export const config = {
     "/servers",
     "/servers/:path*",
     "/sitemap.xml",
+    "/sitemaps/:path*",
     "/llms.txt",
     "/openapi.json",
     "/menu.json",
