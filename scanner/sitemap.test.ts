@@ -54,7 +54,7 @@ describe('sitemap 분할', () => {
 
   test('고정 페이지와 파일 이름 해석', () => {
     const xml = page.renderUrlset(page.STATIC_PAGES.map((p: string) => ({ loc: `${SITE}${p}`, lastmod: null })));
-    assert.deepEqual([...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]), [`${SITE}/`, `${SITE}/servers`, `${SITE}/privacy`, `${SITE}/terms`]);
+    assert.deepEqual([...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]), [`${SITE}/`, `${SITE}/servers`, `${SITE}/agents`, `${SITE}/privacy`, `${SITE}/terms`]);
     assert.equal(page.sitemapFile('pages.xml'), 'pages');
     assert.equal(page.sitemapFile('servers-3.xml'), 3);
     for (const bad of ['servers-0.xml', 'servers-01.xml', 'servers-x.xml', '../servers-1.xml', 'servers-1.xml.gz', undefined]) assert.equal(page.sitemapFile(bad), null);

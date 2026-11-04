@@ -5,6 +5,18 @@
       "destination": "/api/mcp"
     },
     {
+      "source": "/agents.json",
+      "destination": "/api/agents"
+    },
+    {
+      "source": "/agents",
+      "destination": "/api/page?kind=agents"
+    },
+    {
+      "source": "/agents/:akind/:slug",
+      "destination": "/api/page?kind=agent&akind=:akind&slug=:slug"
+    },
+    {
       "source": "/status.json",
       "destination": "/api/status"
     },

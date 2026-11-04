@@ -71,7 +71,12 @@ main{max-width:760px;margin:0 auto;padding:24px 16px 48px}
 h1{font-size:1.5rem;line-height:1.3;word-break:break-word;margin:.2em 0 .4em}h2{font-size:1.1rem;margin:1.8em 0 .4em}
 a{color:var(--link)}.lead{font-size:1.05rem}.muted{color:var(--muted);font-size:.9rem}
 ul{padding-left:1.2em}li{margin:.2em 0}code{font-size:.9em;word-break:break-all}
-footer{margin-top:2.5em;border-top:1px solid var(--line);padding-top:1em}`;
+footer{margin-top:2.5em;border-top:1px solid var(--line);padding-top:1em}
+.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:.9rem}
+th,td{text-align:left;padding:.35em .45em;border-bottom:1px solid var(--line);vertical-align:top}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.tiles{display:flex;flex-wrap:wrap;gap:12px;margin:1em 0}
+.tile{border:1px solid var(--line);border-radius:8px;padding:.6em .9em;min-width:9em}.tile b{display:block;font-size:1.4rem}
+.bar{display:inline-block;height:.7em;background:var(--link);opacity:.55;vertical-align:middle}`;
 
 function shell(o: { title: string; description: string; canonical: string; noindex: boolean; body: string }): string {
   return `<!doctype html>
@@ -320,8 +325,171 @@ export function renderStatus(s: StatusSnapshot | null, now = Date.now()): string
       : "") +
     `<p class="muted">Snapshot ${esc(d.snapshot_id ?? s.id)}, generated ${esc(d.generated_at ?? s.generated_at)}` +
     (stale ? " (more than 2 hours old; the hourly update may be delayed)" : "") +
-    `. Names come from User-Agent declarations, not verified identities. <a href="${SITE}/status.json">status.json</a> has the full data and definitions.</p>`
+    `. Names come from User-Agent declarations, not verified identities. <a href="${SITE}/status.json">status.json</a> has the full data and definitions. Visitors by name: <a href="${SITE}/agents">Agent Observatory</a>.</p>`
   );
+}
+
+
+// ── Agent Observatory (2026-11-05) ─────────────────────────────
+// /agents, /agents/{kind}/{slug}: 매시 54분 스냅샷(agent_snapshots, supabase/2026-11-05_agents.sql)을 그대로 보여준다.
+// api/agents.ts 의 latestAgents·agentsCacheSeconds 와 같은 내용(API 파일끼리 import 하지 않는 규칙). 바꿀 때 둘 다.
+// 이름은 User-Agent 선언에서 뽑은 것. 점수·순위·판정 없음. 사람이 실행한 AI 요청·범용 라이브러리·이름 없는 요청·제외 요청은 합계만.
+const AGENTS_REFRESH_MINUTE = 59;
+export function agentsCacheSeconds(now = Date.now()): number {
+  const d = new Date(now);
+  const next = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), AGENTS_REFRESH_MINUTE, 0));
+  if (next.getTime() <= now) next.setUTCHours(next.getUTCHours() + 1);
+  return Math.min(3600, Math.max(60, Math.ceil((next.getTime() - now) / 1000)));
+}
+export type AgentSnapshot = { id: number; generated_at: string; data: Record<string, any> };
+async function latestAgents(): Promise<AgentSnapshot | null> {
+  const base = process.env.LOWDOWN_SUPABASE_URL;
+  const key = process.env.LOWDOWN_SUPABASE_KEY;
+  if (!base || !key) return null;
+  try {
+    const r = await fetch(`${base}/rest/v1/agent_snapshots?select=id,generated_at,data&order=hour_bucket.desc&limit=1`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}`, accept: "application/json" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!r.ok) return null;
+    const row = ((await r.json()) as AgentSnapshot[])[0];
+    return row && typeof row.data === "object" && row.data !== null ? row : null;
+  } catch {
+    return null;
+  }
+}
+
+export const AGENT_KINDS = ["prober", "crawler", "other"] as const;
+const SLUG_RE = /^[a-z0-9._-]{1,100}$/;
+const KIND_LABEL: Record<string, string> = { prober: "declares a check tool", crawler: "declares a crawler", other: "name only" };
+const PATH_LABEL: Record<string, string> = {
+  mcp: "/mcp", lookup_api: "lookup API", find_api: "find API", server_pages: "server pages", discovery_files: "discovery files",
+  well_known: "/.well-known", home: "home", other: "other",
+};
+const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+const fmt = (v: unknown): string => n(v).toLocaleString("en-US");
+const dayOf = (v: unknown): string => (typeof v === "string" ? v.slice(0, 10) : "");
+
+function pathMixText(pm: unknown): string {
+  if (!pm || typeof pm !== "object") return "";
+  return Object.entries(pm as Record<string, unknown>)
+    .filter(([, v]) => n(v) > 0)
+    .sort((a, b) => n(b[1]) - n(a[1]))
+    .map(([k, v]) => `${esc(PATH_LABEL[k] ?? k)} ${esc(fmt(v))}`)
+    .join(" · ");
+}
+function mcpText(m: any): string {
+  const st = (k: string) => `${fmt(m?.[k]?.attempts)}/${fmt(m?.[k]?.ok)}`;
+  return `${st("initialize")} · ${st("tools_list")} · ${st("tools_call")}`;
+}
+const intervalText = (a: any): string =>
+  typeof a.median_interval_minutes === "number" ? `about every ${esc(Math.round(a.median_interval_minutes))} min` : "unknown";
+
+function agentsHeader(d: Record<string, any>): string {
+  return (
+    `<p class="lead">User-Agent declarations and observed request activity of systems that visited Lowdown in the last 30 days. ` +
+    `A name is not a verified identity and not a count of independent operators. No score, rank or verdict.</p>`
+  );
+}
+function snapshotLine(s: AgentSnapshot, now: number): string {
+  const d = s.data;
+  const age = now - Date.parse(s.generated_at);
+  const stale = !(age >= 0 && age <= 2 * 3_600_000);
+  return (
+    `<p class="muted">Updated hourly. Snapshot ${esc(d.snapshot_id ?? s.id)}, generated ${esc(d.generated_at ?? s.generated_at)}` +
+    (stale ? " (more than 2 hours old; the hourly update may be delayed)" : "") +
+    `. Window ${esc(dayOf(d.window?.from))} to ${esc(dayOf(d.window?.to))} (UTC). ` +
+    `MCP messages recorded since ${esc(dayOf(d.mcp_recorded_since) || "n/a")}; earlier periods have no record, not zero calls. ` +
+    `Definitions and limits: <a href="${SITE}/agents.json">agents.json</a>.</p>`
+  );
+}
+
+/** /agents 목록 */
+export function renderAgents(s: AgentSnapshot, now = Date.now()): string {
+  const d = s.data;
+  const agents: any[] = Array.isArray(d.agents) ? d.agents : [];
+  const t = d.totals ?? {};
+  const ag = d.aggregates ?? {};
+  const rows = agents
+    .filter((a) => AGENT_KINDS.includes(a?.declared_kind) && typeof a?.slug === "string" && SLUG_RE.test(a.slug))
+    .map((a) =>
+      `<tr><td><a href="/agents/${esc(a.declared_kind)}/${esc(encodeURIComponent(a.slug))}">${esc(a.name)}</a>${a.regular ? ` <span class="muted">regular</span>` : ""}</td>` +
+      `<td>${esc(KIND_LABEL[a.declared_kind] ?? "")}</td>` +
+      `<td class="num">${esc(fmt(a.days_seen))}</td><td class="num">${esc(fmt(a.visits))}</td><td class="num">${esc(fmt(a.requests))}</td>` +
+      `<td>${intervalText(a)}</td><td>${esc(dayOf(a.last_seen))}</td>` +
+      `<td class="muted">${pathMixText(a.path_mix)}</td><td class="num">${mcpText(a.mcp)}</td></tr>`,
+    );
+  return shell({
+    title: "Agent Observatory: systems that visit Lowdown",
+    description: `User-Agent declarations and request activity of ${agents.length} named systems that visited Lowdown in the last 30 days. Not verified identities; no scores.`,
+    canonical: `${SITE}/agents`,
+    noindex: false,
+    body:
+      `<h1>Agent Observatory</h1>` + agentsHeader(d) +
+      `<div class="tiles">` +
+      `<div class="tile"><b>${esc(fmt(t.names))}</b>names seen</div>` +
+      `<div class="tile"><b>${esc(fmt(t.regular_names))}</b>regular (3+ days)</div>` +
+      `<div class="tile"><b>${esc(fmt(t.by_kind?.prober))}</b>declare a check tool</div>` +
+      `<div class="tile"><b>${esc(fmt(t.by_kind?.crawler))}</b>declare a crawler</div>` +
+      `<div class="tile"><b>${esc(fmt(t.tools_call_ok))}</b>successful MCP tools/call</div>` +
+      `</div>` +
+      snapshotLine(s, now) +
+      `<div class="scroll"><table><thead><tr><th>Name (declared)</th><th>Kind (declared)</th><th class="num">Days</th><th class="num">Visits</th><th class="num">Requests</th>` +
+      `<th>Interval</th><th>Last seen</th><th>Paths</th><th class="num">MCP init · list · call<br><span class="muted">attempts/ok</span></th></tr></thead>` +
+      `<tbody>${rows.join("")}</tbody></table></div>` +
+      `<h2>Counted only in totals</h2><ul>` +
+      `<li>AI assistants acting for a person (for example Claude-User): ${esc(fmt(ag.ai_user?.requests))} requests. Not listed by name.</li>` +
+      `<li>Generic HTTP library names (for example node, python-httpx): ${esc(fmt(ag.http_libraries?.requests))} requests. A library name does not identify an agent.</li>` +
+      `<li>No name in the User-Agent (including browser-style strings): ${esc(fmt(ag.unnamed?.requests))} requests.</li>` +
+      `<li>Names removed on request: ${esc(fmt(ag.opted_out?.names))} names, ${esc(fmt(ag.opted_out?.requests))} requests. The names are not published.</li></ul>` +
+      `<h2>Order and removal</h2>` +
+      `<p>Order is days seen, then requests, then name. It is not a ranking. Which servers a visitor looked up is not shown. ` +
+      `To remove a name from this list, open an issue at <a href="https://github.com/PetShopBros/lowdown-proxy/issues">GitHub</a> or write to <a href="mailto:atom.art2meta@gmail.com">atom.art2meta@gmail.com</a>. Removed names stay in the totals; records are kept.</p>` +
+      `<footer class="muted"><a href="${SITE}/">Lowdown</a> · <a href="${SITE}/status.json">status.json</a> · <a href="${SITE}/agents.json">agents.json</a> · <a href="${SITE}/privacy">privacy</a></footer>`,
+  });
+}
+
+/** /agents/{kind}/{slug} 상세. 없으면 null(404). */
+export function renderAgent(s: AgentSnapshot, kind: string, slug: string, now = Date.now()): string | null {
+  if (!(AGENT_KINDS as readonly string[]).includes(kind) || !SLUG_RE.test(slug)) return null;
+  const agents: any[] = Array.isArray(s.data.agents) ? s.data.agents : [];
+  const a = agents.find((x) => x?.declared_kind === kind && x?.slug === slug);
+  if (!a) return null;
+  const daily: any[] = Array.isArray(a.daily) ? a.daily : [];
+  const max = Math.max(1, ...daily.map((x) => n(x?.requests)));
+  const urls: string[] = (Array.isArray(a.declared_urls) ? a.declared_urls : []).filter((u: unknown) => typeof u === "string" && /^https?:\/\//.test(u));
+  const clients: string[] = (Array.isArray(a.declared_client_names) ? a.declared_client_names : []).filter((c: unknown) => typeof c === "string");
+  const m = a.mcp ?? {};
+  const stage = (k: string, label: string) => `<tr><td>${label}</td><td class="num">${esc(fmt(m[k]?.attempts))}</td><td class="num">${esc(fmt(m[k]?.ok))}</td></tr>`;
+  return shell({
+    title: `${String(a.name ?? slug).slice(0, 80)}: observed visits to Lowdown`,
+    description: `User-Agent declaration and observed request activity for the name ${String(a.name ?? slug).slice(0, 80)} in the last 30 days. Not a verified identity; no score.`,
+    canonical: `${SITE}/agents/${kind}/${encodeURIComponent(slug)}`,
+    noindex: false,
+    body:
+      `<p class="muted"><a href="/agents">Agent Observatory</a></p>` +
+      `<h1>${esc(a.name)}</h1>` +
+      `<p class="lead">${esc(KIND_LABEL[kind] ?? "")} (User-Agent declaration). A name is not a verified identity; the same name may be used by different operators.</p>` +
+      `<ul>` +
+      `<li>Declared User-Agent: <code>${esc(a.declared_user_agent)}</code>${n(a.user_agent_variants) > 1 ? ` <span class="muted">(${esc(fmt(a.user_agent_variants))} different User-Agent strings under this name)</span>` : ""}</li>` +
+      (urls.length ? `<li>Addresses written in the User-Agent (self-description, not proof of identity; Lowdown does not open them): ${urls.map((u) => `<code>${esc(u)}</code>`).join(", ")}</li>` : "") +
+      (clients.length ? `<li>clientInfo names sent in MCP initialize: ${clients.map((c) => `<code>${esc(c)}</code>`).join(", ")}</li>` : "") +
+      `<li>First seen ${esc(dayOf(a.first_seen))}, last seen ${esc(dayOf(a.last_seen))} (UTC)</li>` +
+      `<li>Last 30 days: ${esc(fmt(a.days_seen))} days, ${esc(fmt(a.visits))} visits, ${esc(fmt(a.requests))} requests; interval ${intervalText(a)}${a.regular ? "; regular visitor" : ""}</li>` +
+      `<li>Paths: ${pathMixText(a.path_mix) || "none"}</li>` +
+      `</ul>` +
+      `<h2>Remote MCP</h2>` +
+      `<table><thead><tr><th>Stage</th><th class="num">Attempts</th><th class="num">OK</th></tr></thead><tbody>` +
+      stage("initialize", "initialize") + stage("tools_list", "tools/list") + stage("tools_call", "tools/call") +
+      `</tbody></table>` +
+      `<p class="muted">OK means Lowdown returned a result without an error; it does not mean the visitor achieved its goal.</p>` +
+      `<h2>Requests per day (UTC)</h2>` +
+      `<table><tbody>${daily
+        .map((x) => `<tr><td>${esc(dayOf(x?.day))}</td><td class="num">${esc(fmt(x?.requests))}</td><td style="width:60%"><span class="bar" style="width:${Math.max(1, Math.round((n(x?.requests) / max) * 100))}%"></span></td></tr>`)
+        .join("")}</tbody></table>` +
+      snapshotLine(s, now) +
+      `<footer class="muted"><a href="/agents">All names</a> · <a href="${SITE}/agents.json">agents.json</a> · To remove this name from the list: <a href="https://github.com/PetShopBros/lowdown-proxy/issues">GitHub</a> or <a href="mailto:atom.art2meta@gmail.com">atom.art2meta@gmail.com</a></footer>`,
+  });
 }
 
 export interface ListRow {
@@ -377,7 +545,7 @@ export function renderSitemap(rows: ListRow[]): string {
 // lastmod: 최신 일일 점검 날짜(latest_day)가 있을 때만(그날 페이지 내용이 갱신됨). 없으면 넣지 않는다.
 export const SITEMAP_PART_SIZE = 5_000; // 규격 상한 50,000 보다 작게
 const MAX_SITEMAP_ROWS = 500_000;
-export const STATIC_PAGES = ["/", "/servers", "/privacy", "/terms"] as const;
+export const STATIC_PAGES = ["/", "/servers", "/agents", "/privacy", "/terms"] as const;
 export type SitemapEntry = { loc: string; lastmod: string | null };
 
 /** 목록 → 중복 없는 서버 URL (target_id 순). deleted 와 이름 형식 밖은 뺀다. */
@@ -498,6 +666,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } else if (kind === "privacy") {
     path = "/privacy";
     body = renderPrivacy();
+  } else if (kind === "agents" || kind === "agent") {
+    const snap = await latestAgents();
+    if (!snap) return unavailable();
+    if (kind === "agents") {
+      path = "/agents";
+      body = renderAgents(snap);
+    } else {
+      const ak = typeof req.query.akind === "string" ? req.query.akind : "";
+      const slug = typeof req.query.slug === "string" ? req.query.slug : "";
+      const html = renderAgent(snap, ak, slug);
+      if (!html) return res.status(404).send("Not found");
+      path = `/agents/${ak}/${slug}`;
+      body = html;
+    }
   } else if (kind === "sitemap" || kind === "sitemap-part") {
     if (!supabase) return unavailable();
     const which = kind === "sitemap" ? null : sitemapFile(req.query.file);
@@ -548,7 +730,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // CDN 캐시 (2026-10-30): 수집기 반복 방문은 6시간 캐시로 받는다 → 캐시 적중은 함수·방문 기록에 안 잡힘(첫 방문만 기록).
   // 실사용·검색 봇(Claude-User 등)은 vercel.json rewrite 가 nc=1 을 붙여 보낸다 → 캐시하지 않고 매번 기록.
   // 홈은 상황판이 들어 있어 다음 매시 57분까지만 캐시한다(status.json·llms.txt 와 같은 시각에 바뀜, 2026-11-05).
-  const sMaxAge = kind === "home" ? `s-maxage=${statusCacheSeconds()}, stale-while-revalidate=300` : "s-maxage=21600, stale-while-revalidate=86400";
+  // /agents 는 스냅샷(매시 54분) 뒤 59분까지(agents.json 과 같은 시각).
+  const sMaxAge = kind === "home" ? `s-maxage=${statusCacheSeconds()}, stale-while-revalidate=300`
+    : kind === "agents" || kind === "agent" ? `s-maxage=${agentsCacheSeconds()}, stale-while-revalidate=300`
+    : "s-maxage=21600, stale-while-revalidate=86400";
   res.setHeader("Cache-Control", req.query.nc === "1" ? "no-store" : `public, max-age=0, ${sMaxAge}`);
   return res.status(status).send(req.method === "HEAD" ? "" : body);
 }
