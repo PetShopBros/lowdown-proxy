@@ -116,3 +116,135 @@ describe('원격 MCP', () => {
     assert.equal(r.status, 405);
   });
 });
+
+// ── 메시지별 기록 (mcp_calls, 2026-11-05) ─────────────────────
+// 원칙: 관측은 응답을 바꾸지 않는다. 기록 켬/끔·기록 실패와 상관없이 상태·헤더·본문이 같아야 한다.
+describe('원격 MCP 메시지별 기록', () => {
+  const rows: any[] = [];
+  let failRows = false;
+  const prev = { url: process.env.LOWDOWN_SUPABASE_URL, key: process.env.LOWDOWN_SUPABASE_KEY };
+  let inner: typeof fetch;
+  before(() => {
+    inner = globalThis.fetch;
+    globalThis.fetch = (async (u: any, init?: any) => {
+      const url = String(u instanceof Request ? u.url : u);
+      if (url === 'https://supabase.test/rest/v1/mcp_calls') {
+        if (failRows) throw new Error('db down');
+        rows.push(...JSON.parse(init.body));
+        return new Response(null, { status: 201 });
+      }
+      return inner(u, init);
+    }) as typeof fetch;
+  });
+  after(() => {
+    globalThis.fetch = inner;
+    if (prev.url === undefined) delete process.env.LOWDOWN_SUPABASE_URL; else process.env.LOWDOWN_SUPABASE_URL = prev.url;
+    if (prev.key === undefined) delete process.env.LOWDOWN_SUPABASE_KEY; else process.env.LOWDOWN_SUPABASE_KEY = prev.key;
+  });
+  const on = () => { process.env.LOWDOWN_SUPABASE_URL = 'https://supabase.test'; process.env.LOWDOWN_SUPABASE_KEY = 'k'; };
+  const off = () => { delete process.env.LOWDOWN_SUPABASE_URL; delete process.env.LOWDOWN_SUPABASE_KEY; };
+  const settle = async (n: number) => { for (let i = 0; i < 50 && rows.length < n; i++) await new Promise((r) => setTimeout(r, 10)); };
+  const post = async (body: unknown, extra: Record<string, string> = {}) => {
+    const r = await realFetch(base, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'user-agent': 'probe-test/1', ...extra },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    });
+    const headers = Object.fromEntries([...r.headers].filter(([k]) => k !== 'date'));
+    return { status: r.status, headers, text: await r.text() };
+  };
+  const init = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'probe-client', version: '9.1' } } };
+
+  test('initialize · 알림 · tools/list · tools/call 을 메시지별로 기록 (인자 값은 저장하지 않음)', async () => {
+    on(); rows.length = 0;
+    const client = new Client({ name: 'probe-client', version: '9.1' });
+    await client.connect(new StreamableHTTPClientTransport(new URL(base), { requestInit: { headers: { 'user-agent': 'Claude-User/1.0', 'x-agent-id': 'eip155:8453:0xabc/7' } } }));
+    await client.listTools();
+    await client.callTool({ name: 'get_lowdown', arguments: { target: 'mcp:a.b/c', menu: 'install-check' } });
+    await client.callTool({ name: 'get_lowdown', arguments: { target: 'mcp:down/x' } });
+    await client.callTool({ name: 'find_servers', arguments: { does: 'secret words', limit: 3 } });
+    await client.close();
+    await settle(6);
+    const by = (m: string) => rows.filter((r) => r.rpc_method === m);
+    const i = by('initialize')[0];
+    assert.equal(i.declared_client_name, 'probe-client');
+    assert.equal(i.declared_client_version, '9.1');
+    assert.equal(i.outcome, 'ok');
+    assert.equal(i.declared_agent_id, 'eip155:8453:0xabc/7');
+    assert.equal(i.user_agent, 'Claude-User/1.0');
+    assert.ok(i.protocol_version);
+    const n = by('notifications/initialized')[0];
+    assert.equal(n.is_notification, true);
+    assert.equal(n.outcome, 'no_response');
+    assert.equal(by('tools/list')[0].outcome, 'ok');
+    const calls = by('tools/call');
+    assert.deepEqual(calls.map((c) => [c.tool_name, c.menu, c.outcome]), [
+      ['get_lowdown', 'install-check', 'ok'],
+      ['get_lowdown', null, 'tool_error'],
+      ['find_servers', null, 'ok'],
+    ]);
+    // 후속 요청에는 clientInfo 가 없다 → 다른 요청을 같은 클라이언트로 추정해 채우지 않는다
+    assert.equal(by('tools/list')[0].declared_client_name, null);
+    // SDK 클라이언트는 initialize 뒤 GET /mcp(서버 스트림)를 한 번 열어 본다 → 405, http_error 로 남는다
+    const gets = rows.filter((r) => r.http_method === 'GET');
+    assert.ok(gets.every((g) => g.outcome === 'http_error' && g.error_code === 405 && g.rpc_method === null));
+    for (const r of rows.filter((x) => x.http_method === 'POST')) {
+      assert.equal(typeof r.request_id, 'string');
+      assert.equal(r.http_method, 'POST');
+      assert.equal(r.batch_size, 1);
+      assert.equal(typeof r.duration_ms, 'number');
+    }
+    const all = JSON.stringify(rows);
+    assert.doesNotMatch(all, /a\.b\/c|down\/x|secret words/); // 도구 인자·검색어 미저장
+    assert.doesNotMatch(all, /127\.0\.0\.1/); // IP 미저장
+  });
+
+  test('배치: 메시지마다 1줄, batch_size 는 전체 수, request_id 같음, 결과는 각각 판정', async () => {
+    on(); rows.length = 0;
+    const r = await post([init, { jsonrpc: '2.0', method: 'notifications/initialized' }, { jsonrpc: '2.0', id: 2, method: 'tools/list' }, { jsonrpc: '2.0', id: 3, method: 'nope/unknown' }]);
+    await settle(4);
+    assert.equal(rows.length, 4);
+    assert.ok(rows.every((x) => x.batch_size === 4 && x.request_id === rows[0].request_id));
+    assert.deepEqual(rows.map((x) => x.msg_index), [0, 1, 2, 3]);
+    const res = rows.map((x) => x.outcome);
+    // 서버가 배치를 받으면 메시지별 결과, 거절하면 요청 전체 오류로 같은 판정이 붙는다(어느 쪽이든 응답은 서버 그대로)
+    if (r.status === 200) {
+      assert.deepEqual(res, ['ok', 'no_response', 'ok', 'rpc_error']);
+      assert.equal(rows[3].error_code, -32601);
+    } else {
+      assert.ok(res.every((o, i) => (i === 1 ? o === 'http_error' : o === 'rpc_error' || o === 'http_error')), JSON.stringify(rows));
+    }
+  });
+
+  test('GET 405 → http_error, 깨진 JSON → rpc_error(-32700)', async () => {
+    on(); rows.length = 0;
+    const g = await realFetch(base, { method: 'GET', headers: { accept: 'text/event-stream', 'user-agent': 'node' } });
+    assert.equal(g.status, 405);
+    await settle(1);
+    assert.equal(rows[0].http_method, 'GET');
+    assert.equal(rows[0].outcome, 'http_error');
+    assert.equal(rows[0].error_code, 405);
+    assert.equal(rows[0].rpc_method, null);
+    assert.equal(rows[0].batch_size, 0);
+    rows.length = 0;
+    const b = await post('{jsonrpc:2.0,id:1,method:tools/list}');
+    assert.equal(b.status, 400);
+    await settle(1);
+    assert.equal(rows[0].outcome, 'rpc_error');
+    assert.equal(rows[0].error_code, -32700);
+  });
+
+  test('기록 켬·끔·기록 실패에도 상태·헤더·본문이 같다', async () => {
+    const cases: unknown[] = [init, { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_lowdown', arguments: { target: 'mcp:a.b/c' } } },
+      { jsonrpc: '2.0', method: 'notifications/initialized' }, '{broken'];
+    for (const c of cases) {
+      off(); const a = await post(c);
+      on(); failRows = false; const b = await post(c);
+      failRows = true; const d = await post(c);
+      failRows = false;
+      assert.deepEqual(b, a, `기록 켬 ≠ 끔: ${JSON.stringify(c)}`);
+      assert.deepEqual(d, a, `기록 실패 ≠ 끔: ${JSON.stringify(c)}`);
+    }
+  });
+});

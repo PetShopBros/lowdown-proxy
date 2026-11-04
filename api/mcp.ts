@@ -1,4 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { randomUUID } from "node:crypto";
+import { waitUntil } from "@vercel/functions";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
@@ -11,6 +13,10 @@ import { z } from "zod";
 // 조회는 같은 배포의 조회 API 를 부른다(판정 로직을 다시 만들지 않음). ref=mcp 로 원격 MCP 경유를 따로 센다.
 //   nc=1 → CDN 캐시를 건너뛰어 모든 원격 조회가 reputation_lookups 에 남는다(실사용 측정). 서버 카드가 있으면 카드 1행으로 답한다.
 //   middleware.ts 는 ref=mcp 안쪽 호출을 세지 않는다(바깥 /mcp 요청 1건만 edge_hits 에).
+// 메시지별 기록(2026-11-05, supabase/2026-11-05_mcp_calls.sql): JSON-RPC 메시지 1개 = mcp_calls 1줄.
+//   initialize·tools/list·tools/call 을 구분하고, 응답(res.end 로 나가는 본문)을 읽어 메시지별 결과를 붙인다.
+//   관측은 응답을 바꾸지 않는다: 상태·헤더·본문은 그대로 나가고, 기록은 응답 뒤 waitUntil 로 쓴다. 기록이 실패해도 응답은 같다.
+//   저장하지 않는 것: IP, 도구 인자 값, 검색어. clientInfo·x-agent-id 는 자기 선언(declared_*)으로만 둔다.
 
 export const SITE = "https://lowdown-proxy.vercel.app";
 const VERSION = "1.0.0";
@@ -154,12 +160,179 @@ export function buildServer(ctx: { host: string; ua: string | null; fetchImpl?: 
   return server;
 }
 
+// ── 메시지별 기록 (mcp_calls) ──────────────────────────────
+const KNOWN_TOOLS = new Set(["get_lowdown", "find_servers"]);
+const MENU_SET = new Set<string>(MENUS);
+const MAX_CAPTURE = 2 * 1024 * 1024; // 응답 본문을 이만큼까지만 읽는다(넘으면 결과 unknown, 응답은 그대로 나감)
+
+export type MsgInfo = {
+  idKey: string | null; // 요청 id(JSON 문자열). 알림·형식 밖이면 null
+  isNotification: boolean;
+  method: string | null;
+  tool: string | null;
+  menu: string | null;
+  clientName: string | null;
+  clientVersion: string | null;
+  protocol: string | null;
+};
+export type Outcome = "ok" | "tool_error" | "rpc_error" | "http_error" | "no_response" | "unknown";
+export type CallRow = {
+  request_id: string; http_method: string; http_status: number | null; batch_size: number; msg_index: number | null;
+  rpc_method: string | null; is_notification: boolean; tool_name: string | null; menu: string | null;
+  declared_client_name: string | null; declared_client_version: string | null; protocol_version: string | null;
+  declared_agent_id: string | null; outcome: Outcome; error_code: number | null; duration_ms: number | null; user_agent: string | null;
+};
+
+const s = (v: unknown, max: number): string | null => (typeof v === "string" && v.length > 0 ? v.slice(0, max) : null);
+const isObj = (v: unknown): v is Record<string, any> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+// 요청 본문 → 메시지 목록. 인자 값은 읽지 않는다(도구 이름·정해진 메뉴 값·initialize 의 clientInfo 만).
+export function describeMessages(body: unknown, headerProtocol: string | null): MsgInfo[] {
+  const list = Array.isArray(body) ? body : body === undefined || body === null ? [] : [body];
+  return list.map((m): MsgInfo => {
+    const o = isObj(m) ? m : {};
+    const method = s(o.method, 100);
+    const hasId = "id" in o && o.id !== undefined;
+    const params = isObj(o.params) ? o.params : {};
+    let tool: string | null = null;
+    let menu: string | null = null;
+    if (method === "tools/call") {
+      const name = s(params.name, 100);
+      tool = name && KNOWN_TOOLS.has(name) ? name : "unknown";
+      const a = isObj(params.arguments) ? params.arguments : {};
+      if (tool === "get_lowdown" && typeof a.menu === "string" && MENU_SET.has(a.menu)) menu = a.menu;
+    }
+    const ci = method === "initialize" && isObj(params.clientInfo) ? params.clientInfo : {};
+    return {
+      idKey: hasId ? JSON.stringify(o.id) : null,
+      isNotification: method !== null && !hasId,
+      method,
+      tool,
+      menu,
+      clientName: s(ci.name, 100),
+      clientVersion: s(ci.version, 50),
+      protocol: (method === "initialize" ? s(params.protocolVersion, 20) : null) ?? headerProtocol,
+    };
+  });
+}
+
+// 응답 본문 → 메시지별 결과. 배치의 각 메시지를 id 로 따로 판정한다.
+export function judge(msgs: MsgInfo[], httpStatus: number, text: string | null): Array<{ outcome: Outcome; code: number | null }> {
+  let parsed: unknown;
+  if (text) { try { parsed = JSON.parse(text); } catch { parsed = undefined; } }
+  const responses = Array.isArray(parsed) ? parsed : parsed === undefined ? [] : [parsed];
+  const byId = new Map<string, Record<string, any>>();
+  let orphan: Record<string, any> | null = null; // id 가 null 인 오류(요청 전체 거절: 깨진 JSON·잘못된 요청)
+  for (const r of responses) {
+    if (!isObj(r)) continue;
+    if (r.id === null || r.id === undefined) orphan = orphan ?? r;
+    else byId.set(JSON.stringify(r.id), r);
+  }
+  const httpErr = { outcome: "http_error" as Outcome, code: httpStatus };
+  return msgs.map((m) => {
+    if (m.isNotification) return httpStatus >= 400 ? httpErr : { outcome: "no_response", code: null };
+    const r = m.idKey !== null ? byId.get(m.idKey) : undefined;
+    if (r) {
+      if (isObj(r.error)) return { outcome: "rpc_error", code: typeof r.error.code === "number" ? r.error.code : null };
+      if (m.method === "tools/call" && isObj(r.result) && r.result.isError === true) return { outcome: "tool_error", code: null };
+      return { outcome: "ok", code: null };
+    }
+    if (orphan && isObj(orphan.error)) return { outcome: "rpc_error", code: typeof orphan.error.code === "number" ? orphan.error.code : null };
+    if (httpStatus >= 400) return httpErr;
+    return { outcome: "unknown", code: null };
+  });
+}
+
+// res.write·res.end 로 나가는 본문을 복사만 한다(인자·반환값·순서는 원래대로). 끝나면 onDone 1회.
+function tapResponse(res: VercelResponse, onDone: (status: number, text: string | null) => void): void {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let overflow = false;
+  let done = false;
+  const collect = (chunk: unknown, enc: unknown) => {
+    if (overflow || chunk === undefined || chunk === null || typeof chunk === "function") return;
+    const b = typeof chunk === "string" ? Buffer.from(chunk, typeof enc === "string" ? (enc as BufferEncoding) : "utf8")
+      : chunk instanceof Uint8Array ? Buffer.from(chunk) : null;
+    if (!b) return;
+    size += b.length;
+    if (size > MAX_CAPTURE) { overflow = true; chunks.length = 0; return; }
+    chunks.push(b);
+  };
+  const origWrite = res.write;
+  const origEnd = res.end;
+  (res as any).write = function (this: unknown, chunk: unknown, ...rest: unknown[]) {
+    try { collect(chunk, rest[0]); } catch { /* 기록 실패는 응답에 영향 없음 */ }
+    return (origWrite as any).call(this, chunk, ...rest);
+  };
+  (res as any).end = function (this: unknown, chunk?: unknown, ...rest: unknown[]) {
+    try { collect(chunk, rest[0]); } catch { /* 무시 */ }
+    const ret = (origEnd as any).call(this, chunk, ...rest);
+    if (!done) {
+      done = true;
+      try { onDone(res.statusCode, overflow ? null : Buffer.concat(chunks).toString("utf8")); } catch { /* 무시 */ }
+    }
+    return ret;
+  };
+}
+
+function sendRows(rows: CallRow[]): void {
+  const base = process.env.LOWDOWN_SUPABASE_URL;
+  const key = process.env.LOWDOWN_SUPABASE_KEY;
+  if (!base || !key || rows.length === 0) return;
+  const p = fetch(`${base}/rest/v1/mcp_calls`, {
+    method: "POST",
+    headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify(rows),
+    signal: AbortSignal.timeout(3000),
+  })
+    .then((r) => { if (!r.ok) console.error("mcp_calls insert failed", r.status); })
+    .catch((err) => console.error("mcp_calls insert failed", err));
+  try { waitUntil(p); } catch { /* 런타임 밖(테스트 등): 이미 시작한 요청이 그대로 진행 */ }
+}
+
+// 요청 1건의 관측 준비. 본문을 알게 되면 setMessages, 응답이 끝나면 기록한다. 여기서 나는 오류는 응답에 영향을 주지 않는다.
+function observe(req: VercelRequest, res: VercelResponse) {
+  const started = Date.now();
+  const requestId = randomUUID();
+  let msgs: MsgInfo[] = [];
+  const ua = header(req, "user-agent", 300);
+  const agentId = header(req, "x-agent-id", 200);
+  const headerProtocol = header(req, "mcp-protocol-version", 20);
+  try {
+    tapResponse(res, (status, text) => {
+      const duration = Date.now() - started;
+      const base = { request_id: requestId, http_method: s(req.method, 10) ?? "?", http_status: status, batch_size: msgs.length,
+        declared_agent_id: agentId, duration_ms: duration, user_agent: ua };
+      let rows: CallRow[];
+      if (msgs.length === 0) {
+        // POST 가 아닌 요청(GET 405 등)은 HTTP 단계 거절 → http_error. POST 인데 메시지가 없으면(깨진 JSON 등) 응답의 JSON-RPC 오류를 따른다.
+        const j = req.method !== "POST" ? { outcome: "http_error" as Outcome, code: status }
+          : judge([{ idKey: null, isNotification: false, method: null, tool: null, menu: null, clientName: null, clientVersion: null, protocol: null }], status, text)[0]!;
+        rows = [{ ...base, msg_index: null, rpc_method: null, is_notification: false, tool_name: null, menu: null,
+          declared_client_name: null, declared_client_version: null, protocol_version: headerProtocol, outcome: j.outcome, error_code: j.code }];
+      } else {
+        const results = judge(msgs, status, text);
+        rows = msgs.map((m, i) => ({ ...base, msg_index: i, rpc_method: m.method, is_notification: m.isNotification, tool_name: m.tool, menu: m.menu,
+          declared_client_name: m.clientName, declared_client_version: m.clientVersion, protocol_version: m.protocol,
+          outcome: results[i]!.outcome, error_code: results[i]!.code }));
+      }
+      sendRows(rows);
+    });
+  } catch { /* 관측 준비 실패: 기록 없이 응답만 */ }
+  return {
+    setMessages(body: unknown) {
+      try { msgs = describeMessages(body, headerProtocol); } catch { msgs = []; }
+    },
+  };
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "content-type, accept, mcp-protocol-version, mcp-session-id, authorization");
   res.setHeader("Cache-Control", "no-store");
   if (req.method === "OPTIONS") return res.status(204).end();
+  const obs = observe(req, res);
   // 세션 없는 서버: 서버가 먼저 보내는 스트림(GET)·세션 종료(DELETE)는 쓰지 않는다
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST, OPTIONS");
@@ -174,6 +347,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch {
     return res.status(400).json({ jsonrpc: "2.0", error: { code: -32700, message: "Parse error: the request body is not valid JSON." }, id: null });
   }
+  obs.setMessages(body);
   const host = header(req, "host", 200) ?? "lowdown-proxy.vercel.app";
   const server = buildServer({ host, ua: header(req, "user-agent", 300) });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
