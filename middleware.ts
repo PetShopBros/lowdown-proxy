@@ -20,6 +20,7 @@ export const config = {
     "/api/reputation/:path*",
     "/api/find",
     "/mcp",
+    "/.well-known/:path*", // 2026-11-05: 에이전트 명함(agent-card.json·mcp/server-card.json 등) 요청. 파일이 없어 404 여도 요청은 남는다
     "/privacy",
     "/terms",
   ],
