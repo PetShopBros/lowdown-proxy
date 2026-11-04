@@ -5,6 +5,10 @@
       "destination": "/api/mcp"
     },
     {
+      "source": "/status.json",
+      "destination": "/api/status"
+    },
+    {
       "source": "/.well-known/glama.json",
       "destination": "/public/.well-known/glama.json"
     },

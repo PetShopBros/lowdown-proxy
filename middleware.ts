@@ -16,6 +16,7 @@ export const config = {
     "/llms.txt",
     "/openapi.json",
     "/menu.json",
+    "/status.json",
     "/robots.txt",
     "/api/reputation/:path*",
     "/api/find",

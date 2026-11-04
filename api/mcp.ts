@@ -50,6 +50,7 @@ export const INSTRUCTIONS =
   `or one part: ${MENU_DISHES.join(", ")}; omit for everything. ` +
   "When no name is known yet, use find_servers to list servers by what they do (does, e.g. 'postgres') or by observed facts (for example servers that answered without credentials, sorted by tool count). " +
   "Full menu card: https://lowdown-proxy.vercel.app/menu.json. " +
+  "Lowdown's own operating status, updated hourly: https://lowdown-proxy.vercel.app/status.json. " + // 주소만(숫자는 넣지 않음, 2026-11-05)
   "Facts are observations, not scores; absence of data says nothing about a server.";
 
 export type FindArgs = {

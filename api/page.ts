@@ -272,6 +272,58 @@ export function renderTerms(): string {
   });
 }
 
+// ── 상황판 (2026-11-05): 홈 상단에 최신 스냅샷 요약 ──
+// api/status.ts 의 latestStatus·statusCacheSeconds 와 같은 내용(API 파일끼리 import 하지 않는 규칙). 바꿀 때 status.ts·discovery.ts 도 같이.
+const STATUS_REFRESH_MINUTE = 57;
+const STALE_AFTER_MS = 2 * 3_600_000;
+export function statusCacheSeconds(now = Date.now()): number {
+  const d = new Date(now);
+  const next = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), STATUS_REFRESH_MINUTE, 0));
+  if (next.getTime() <= now) next.setUTCHours(next.getUTCHours() + 1);
+  return Math.min(3600, Math.max(60, Math.ceil((next.getTime() - now) / 1000)));
+}
+export type StatusSnapshot = { id: number; generated_at: string; data: Record<string, any> };
+async function latestStatus(): Promise<StatusSnapshot | null> {
+  const base = process.env.LOWDOWN_SUPABASE_URL;
+  const key = process.env.LOWDOWN_SUPABASE_KEY;
+  if (!base || !key) return null;
+  try {
+    const r = await fetch(`${base}/rest/v1/status_snapshots?select=id,generated_at,data&order=hour_bucket.desc&limit=1`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}`, accept: "application/json" },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!r.ok) return null;
+    const row = ((await r.json()) as StatusSnapshot[])[0];
+    return row && typeof row.data === "object" && row.data !== null ? row : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 홈 상단 상황판 HTML. 문장은 스냅샷의 summary_lines·highlights 그대로(세 위치가 같은 문장). 없으면 빈 문자열. */
+export function renderStatus(s: StatusSnapshot | null, now = Date.now()): string {
+  if (!s) return "";
+  const d = s.data;
+  const age = now - Date.parse(s.generated_at);
+  const stale = !(age >= 0 && age <= STALE_AFTER_MS);
+  const lines = (Array.isArray(d.summary_lines) ? d.summary_lines : []).filter((x: unknown) => typeof x === "string");
+  const hl = (Array.isArray(d.highlights) ? d.highlights : []).filter((h: any) => typeof h?.text === "string");
+  const monitors = (Array.isArray(d.regular_monitors) ? d.regular_monitors : []).slice(0, 10);
+  return (
+    `<h2>Status <span class="muted">(updated hourly)</span></h2>` +
+    (hl.length ? `<p><strong>Highlights, last 7 days</strong></p><ul>${hl.map((h: any) => `<li>${esc(h.text)}</li>`).join("")}</ul>` : "") +
+    `<ul>${lines.map((l: string) => `<li>${esc(l)}</li>`).join("")}</ul>` +
+    (monitors.length
+      ? `<p class="muted">Regular visitors (declared check tools): ${monitors
+          .map((m: any) => `${esc(m.name)}${typeof m.median_interval_minutes === "number" ? ` (about every ${esc(Math.round(m.median_interval_minutes))} min)` : ""}`)
+          .join(", ")}</p>`
+      : "") +
+    `<p class="muted">Snapshot ${esc(d.snapshot_id ?? s.id)}, generated ${esc(d.generated_at ?? s.generated_at)}` +
+    (stale ? " (more than 2 hours old; the hourly update may be delayed)" : "") +
+    `. Names come from User-Agent declarations, not verified identities. <a href="${SITE}/status.json">status.json</a> has the full data and definitions.</p>`
+  );
+}
+
 export interface ListRow {
   target_id: string;
   latest_day: string | null;
@@ -285,7 +337,7 @@ export function nameOf(targetId: unknown): string | null {
   return NAME_RE.test(n) ? n : null;
 }
 
-export function renderIndex(rows: ListRow[], opts: { home?: boolean } = {}): string {
+export function renderIndex(rows: ListRow[], opts: { home?: boolean; statusHtml?: string } = {}): string {
   const items = rows
     .map((r) => ({ n: nameOf(r.target_id), r }))
     .filter((x): x is { n: string; r: ListRow } => x.n !== null)
@@ -301,6 +353,7 @@ export function renderIndex(rows: ListRow[], opts: { home?: boolean } = {}): str
         ? `<h1>Lowdown</h1><p class="lead">Lowdown records, once a day, what MCP Registry servers actually do: whether they answer initialize and tools/list, whether they require authentication, and when their tool definitions change. Recorded facts with dates, not scores.</p>` +
           `<p>Look up one server: <code>GET ${SITE}/api/reputation/mcp:{namespace}/{name}</code> · <a href="${SITE}/llms.txt">llms.txt</a> · <a href="${SITE}/openapi.json">OpenAPI</a> · <a href="https://github.com/PetShopBros/lowdown-data">daily dataset (CC BY 4.0)</a> · <a href="https://github.com/PetShopBros/lowdown-proxy">source</a></p>` +
           BULK_LINE +
+          (opts.statusHtml ?? "") +
           `<h2>Observed servers</h2>`
         : `<h1>MCP servers observed by Lowdown</h1>` + BULK_LINE) +
       `<p class="lead">${esc(items.length)} MCP Registry servers with a recorded daily check. Each page states whether the server answered initialize and tools/list, whether it required authentication, and how its tool definitions changed, with dates.</p>` +
@@ -379,12 +432,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     body = renderPrivacy();
   } else if (kind === "index" || kind === "home" || kind === "sitemap") {
     if (!supabase) return unavailable();
+    const statusP = kind === "home" ? latestStatus() : Promise.resolve(null);
     const rows = await listRows(supabase);
     if (!rows) return unavailable();
     // 첫 주소로 들어온 방문은 utm_source(예: chatgpt.com)까지 남긴다 — AI 답변에서 클릭해 온 방문을 셀 수 있게
     const utm = typeof req.query.utm_source === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(req.query.utm_source) ? req.query.utm_source : null;
     path = kind === "index" ? "/servers" : kind === "home" ? `/${utm ? `?utm_source=${utm}` : ""}` : "/sitemap.xml";
-    if (kind === "index" || kind === "home") body = renderIndex(rows, { home: kind === "home" });
+    if (kind === "index" || kind === "home") body = renderIndex(rows, { home: kind === "home", statusHtml: renderStatus(await statusP) });
     else {
       body = renderSitemap(rows);
       type = "application/xml; charset=utf-8";
@@ -407,6 +461,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Link", BULK_DATA_LINK);
   // CDN 캐시 (2026-10-30): 수집기 반복 방문은 6시간 캐시로 받는다 → 캐시 적중은 함수·방문 기록에 안 잡힘(첫 방문만 기록).
   // 실사용·검색 봇(Claude-User 등)은 vercel.json rewrite 가 nc=1 을 붙여 보낸다 → 캐시하지 않고 매번 기록.
-  res.setHeader("Cache-Control", req.query.nc === "1" ? "no-store" : "public, max-age=0, s-maxage=21600, stale-while-revalidate=86400");
+  // 홈은 상황판이 들어 있어 다음 매시 57분까지만 캐시한다(status.json·llms.txt 와 같은 시각에 바뀜, 2026-11-05).
+  const sMaxAge = kind === "home" ? `s-maxage=${statusCacheSeconds()}, stale-while-revalidate=300` : "s-maxage=21600, stale-while-revalidate=86400";
+  res.setHeader("Cache-Control", req.query.nc === "1" ? "no-store" : `public, max-age=0, ${sMaxAge}`);
   return res.status(status).send(req.method === "HEAD" ? "" : body);
 }
