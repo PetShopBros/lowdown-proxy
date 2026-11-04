@@ -98,6 +98,15 @@ describe('서버 기록 페이지', () => {
     assert.match(html, /<title>Lowdown privacy policy<\/title>/);
     assert.match(html, /IP addresses\. Lowdown does not store them/);
     assert.match(html, /vercel\.app\/mcp/);
+    // 2026-11-05: 원격 MCP 메시지별 기록·공개 집계를 실제 기록과 맞춘다
+    assert.match(html, /Effective 2026-11-05/);
+    assert.match(html, /x-agent-id/);
+    assert.match(html, /Tool argument values are not stored/);
+    assert.match(html, /Find conditions/);
+    assert.match(html, /\/status\.json/);
+    assert.match(html, /\/agents/);
+    assert.match(html, /counted only in totals/);
+    assert.match(html, /Lookup targets, Find conditions and IP addresses are never published/);
   });
 
   test('이용약관: 무료·보증 없음·CC BY 4.0·연락처', async () => {
