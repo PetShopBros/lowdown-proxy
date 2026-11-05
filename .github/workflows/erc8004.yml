@@ -4,9 +4,9 @@ name: erc8004
 # 선언된 서비스(MCP 엔드포인트·A2A 카드)를 이름표·연결선으로 잇는다. 체인은 읽기만 한다(거래·가스 없음).
 # 본 관찰(scanner.yml)과 따로 돈다. 실패해도 관찰에는 영향이 없다. DB: supabase/2026-11-05_erc8004.sql
 
+# 정기 실행은 서버(sandbox/systemd/lowdown-erc8004.timer)에서 한다: Actions 공유 IP 는 공개 RPC 가 429·Cloudflare 로 막는다(2026-11-05).
+# 여기는 수동 실행(dry-run 확인 등)만 남긴다.
 on:
-  schedule:
-    - cron: '23 3 * * *' # 매일 12:23 KST (UTC 03:23). 정각·다른 작업 시각 피함
   workflow_dispatch:
     inputs:
       dry_run:

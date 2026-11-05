@@ -1,0 +1,22 @@
+# Lowdown ERC-8004 등록 수집(scanner/erc8004.ts) — 하루 한 번(타이머). 체인은 읽기만 한다.
+# 서버에서 도는 이유: GitHub Actions 공유 IP 는 공개 RPC(Blockscout)가 429·Cloudflare 로 막는다(2026-11-05 확인). 서버 고정 IP 는 통과.
+# 키는 샌드박스와 같은 EnvironmentFile(LOWDOWN_SUPABASE_URL, LOWDOWN_SANDBOX_KEY). 첫 따라잡기가 길어 시간 예산을 넉넉히 준다.
+[Unit]
+Description=Lowdown ERC-8004 registration collector
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=lowdown
+Group=lowdown
+EnvironmentFile=/etc/lowdown/sandbox.env
+Environment=HOME=/var/lib/lowdown ERC8004_LOG_BUDGET_MIN=100 ERC8004_TIME_BUDGET_MIN=150
+WorkingDirectory=@REPO_DIR@
+ExecStart=/usr/local/bin/node @REPO_DIR@/scanner/erc8004.ts
+TimeoutStartSec=3h
+Nice=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

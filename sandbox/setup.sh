@@ -97,6 +97,8 @@ sed "s#@REPO_DIR@#$REPO_DIR#g" "$REPO_DIR/sandbox/systemd/lowdown-sandbox.servic
 install -m 644 "$REPO_DIR/sandbox/systemd/lowdown-sandbox.timer" /etc/systemd/system/lowdown-sandbox.timer
 sed "s#@REPO_DIR@#$REPO_DIR#g" "$REPO_DIR/sandbox/systemd/lowdown-observe.service" > /etc/systemd/system/lowdown-observe.service
 install -m 644 "$REPO_DIR/sandbox/systemd/lowdown-observe.timer" /etc/systemd/system/lowdown-observe.timer
+sed "s#@REPO_DIR@#$REPO_DIR#g" "$REPO_DIR/sandbox/systemd/lowdown-erc8004.service" > /etc/systemd/system/lowdown-erc8004.service
+install -m 644 "$REPO_DIR/sandbox/systemd/lowdown-erc8004.timer" /etc/systemd/system/lowdown-erc8004.timer
 install -m 644 "$REPO_DIR/sandbox/systemd/lowdown-egress.service" /etc/systemd/system/lowdown-egress.service
 systemctl daemon-reload
 systemctl enable --now lowdown-egress.service

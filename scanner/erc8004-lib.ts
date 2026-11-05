@@ -20,10 +20,13 @@ export interface ChainConf {
   maxRange: number; // getLogs 한 번의 최대 블록 수(시작값, 오류 시 반으로 줄인다)
 }
 
-// Blockscout 인스턴스 JSON-RPC: 키 없이 과거 로그를 읽을 수 있다(2026-11-05, publicnode 는 과거 구간에 토큰 요구).
-//   eth_getLogs 는 한 번에 최대 1000건 → 1000건이 오면 잘렸을 수 있으므로 범위를 줄여 다시 읽는다(readLogs).
+// 기본 RPC (2026-11-05 Lightsail 서버에서 확인, 모두 키 없음):
+//   ethereum: eth.blockscout.com — 과거 구간 getLogs 가능, 한 번에 최대 1000건(1000건이면 범위를 줄여 다시 읽음)
+//   base: base.drpc.org — 과거 구간 가능, 무료 요금제는 범위가 작다(오류 문구로 알아서 줄인다)
+//   안 된 곳: publicnode(과거 구간 토큰 요구), base.blockscout·llamarpc(Cloudflare 확인 화면), mainnet.base.org(429),
+//             1rpc(50블록), meowrpc·developer-access(getLogs 미지원). GitHub Actions IP 는 blockscout 가 429 → 서버에서 돈다.
 export const CHAINS: readonly ChainConf[] = [
-  { chainId: 8453, name: 'base', rpc: 'https://base.blockscout.com/api/eth-rpc', confirmations: 30, maxRange: 10_000, startBlock: 40_000_000n },
+  { chainId: 8453, name: 'base', rpc: 'https://base.drpc.org', confirmations: 30, maxRange: 10_000, startBlock: 40_000_000n },
   { chainId: 1, name: 'ethereum', rpc: 'https://eth.blockscout.com/api/eth-rpc', confirmations: 12, maxRange: 10_000, startBlock: 24_300_000n },
 ];
 export const MAX_LOGS_PER_CALL = 1000;
@@ -141,7 +144,8 @@ export async function readLogs(
   opts: { maxRange: number; deadline: number; maxCalls: number; now?: () => number; onChunk: (logs: RpcLog[], upTo: bigint) => Promise<void> },
 ): Promise<{ readTo: bigint; calls: number; complete: boolean }> {
   const now = opts.now ?? Date.now;
-  let range = BigInt(Math.max(1, opts.maxRange));
+  let cap = BigInt(Math.max(1, opts.maxRange)); // 범위 오류가 난 크기보다 작게 배운 상한(이번 실행 동안 유지)
+  let range = cap;
   let cur = from;
   let calls = 0;
   let readTo = from - 1n;
@@ -156,6 +160,7 @@ export async function readLogs(
       const msg = e instanceof Error ? e.message : String(e);
       if (range > 1n && (RANGE_ERR.test(msg) || (e instanceof RpcError && (e.status === 413 || e.status >= 500)))) {  // makeRpc 재시도 뒤에도 실패한 5xx 포함
         range = range / 2n > 0n ? range / 2n : 1n;
+        if (RANGE_ERR.test(msg) && range < cap) cap = range; // 범위 제한이면 다시 넓히지 않는다(1000건 상한은 구간마다 달라 배우지 않음)
         continue;
       }
       throw e;
@@ -167,7 +172,7 @@ export async function readLogs(
     await opts.onChunk(Array.isArray(logs) ? logs.filter((l) => !l.removed) : [], end);
     readTo = end;
     cur = end + 1n;
-    if (range < BigInt(opts.maxRange)) range = range * 2n > BigInt(opts.maxRange) ? BigInt(opts.maxRange) : range * 2n; // 다시 넓힌다
+    if (range < cap) range = range * 2n > cap ? cap : range * 2n; // 배운 상한까지만 다시 넓힌다
   }
   return { readTo, calls, complete: true };
 }

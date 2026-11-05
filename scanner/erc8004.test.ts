@@ -144,6 +144,20 @@ describe('체인 읽기', () => {
     assert.ok(asked.some(([a, b]) => b - a + 1 <= 2500));
   });
 
+  test('범위 제한을 배우면 다시 넓히지 않는다', async () => {
+    let calls = 0;
+    const rpc = async (_m: string, p: any[]) => {
+      calls++;
+      const a = Number(BigInt(p[0].fromBlock));
+      const b = Number(BigInt(p[0].toBlock));
+      if (b - a + 1 > 1000) throw new RpcError('ranges over 10000 blocks are not supported on free plan', 400, 35);
+      return [];
+    };
+    const r = await readLogs(rpc, REG, 1n, 20_000n, { maxRange: 10_000, deadline: Infinity, maxCalls: 1000, onChunk: async () => {} });
+    assert.equal(r.complete, true);
+    assert.ok(calls <= 40, `calls ${calls}`); // 실패 4번(10000→5000→2500→1250→625) + 625씩 32번. 배우지 않으면 성공마다 넓혀 실패가 반복된다
+  });
+
   test('1000건이 오면 잘렸을 수 있어 범위를 줄여 다시 읽는다', async () => {
     const at = Array.from({ length: 1500 }, (_, i) => 1000 + i); // 블록 1000~2499 에 1건씩
     const rpc = async (_m: string, p: any[]) => {

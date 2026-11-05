@@ -1,0 +1,11 @@
+# 매일 14:23 KST (UTC 05:23) — 행동 관측(12:17 KST) 뒤, 정각 피함
+[Unit]
+Description=Daily Lowdown ERC-8004 registration collector
+
+[Timer]
+OnCalendar=*-*-* 05:23:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

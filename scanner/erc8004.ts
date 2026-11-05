@@ -1,5 +1,5 @@
 // ERC-8004 등록 수집 — 사용: node scanner/erc8004.ts [--dry-run] [--chains=base,ethereum] [--fetch-limit=N]
-// 필수 환경변수: LOWDOWN_SUPABASE_URL, LOWDOWN_SCANNER_KEY
+// 필수 환경변수: LOWDOWN_SUPABASE_URL, LOWDOWN_SCANNER_KEY (서버에서는 LOWDOWN_SANDBOX_KEY 도 받는다)
 // 선택: ERC8004_RPC_BASE, ERC8004_RPC_ETHEREUM (기본 Blockscout 인스턴스), ERC8004_RPC_INTERVAL_MS(기본 400, 호출 간격), ERC8004_FETCH_LIMIT(기본 5000), ERC8004_TIME_BUDGET_MIN(기본 30),
 //       ERC8004_LOG_BUDGET_MIN(기본 18, 이벤트 읽기에 쓰는 시간), ERC8004_MAX_LOG_CALLS(기본 4000), ERC8004_CONCURRENCY(기본 8)
 // 순서: 체인마다 이벤트 읽기(이어서) → 에이전트 상태 계산 → 가져올 차례인 등록 파일 가져오기 → 이름표·연결선.
@@ -110,8 +110,8 @@ async function main(): Promise<void> {
   const chainsArg = args.find((a) => a.startsWith('--chains='))?.slice(9).split(',').filter(Boolean);
   const fetchLimitArg = Number(args.find((a) => a.startsWith('--fetch-limit='))?.slice(14));
   const url = process.env.LOWDOWN_SUPABASE_URL?.trim();
-  const key = process.env.LOWDOWN_SCANNER_KEY?.trim();
-  if (!url || !key) fail('LOWDOWN_SUPABASE_URL / LOWDOWN_SCANNER_KEY 가 없습니다.');
+  const key = (process.env.LOWDOWN_SCANNER_KEY || process.env.LOWDOWN_SANDBOX_KEY)?.trim();
+  if (!url || !key) fail('LOWDOWN_SUPABASE_URL / LOWDOWN_SCANNER_KEY(또는 LOWDOWN_SANDBOX_KEY) 가 없습니다.');
   const cfg = { url, key };
   const started = Date.now();
   const total = started + intEnv('ERC8004_TIME_BUDGET_MIN', 30) * 60_000;
