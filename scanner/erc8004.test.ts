@@ -120,6 +120,25 @@ describe('등록 파일', () => {
   });
 });
 
+describe('RPC 고르기', () => {
+  test('직접 주소 > Blockscout 키 > 기본', async () => {
+    const { rpcFor, CHAINS } = await import('./erc8004-lib.ts');
+    const base = CHAINS.find((c) => c.name === 'base')!;
+    assert.deepEqual(rpcFor(base, {}), { url: 'https://base.drpc.org', headers: {}, via: 'default' });
+    const k = rpcFor(base, { BLOCKSCOUT_API_KEY: ' proapi_x ' });
+    assert.deepEqual(k, { url: 'https://api.blockscout.com/8453/json-rpc', headers: { authorization: 'Bearer proapi_x' }, via: 'blockscout_api' });
+    assert.equal(rpcFor(base, { BLOCKSCOUT_API_KEY: 'k', ERC8004_RPC_BASE: 'https://x.example' }).url, 'https://x.example');
+  });
+
+  test('헤더가 요청에 붙는다', async () => {
+    const { makeRpc } = await import('./erc8004-lib.ts');
+    let auth: string | null = null;
+    const f = (async (_u: any, init: any) => { auth = new Headers(init.headers).get('authorization'); return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x1' })); }) as unknown as typeof fetch;
+    await makeRpc('https://x', f, 1000, async () => {}, 0, Date.now, () => {}, { authorization: 'Bearer k' })('eth_blockNumber', []);
+    assert.equal(auth, 'Bearer k');
+  });
+});
+
 describe('체인 읽기', () => {
   test('배포 블록 이분 탐색', async () => {
     const rpc = async (_m: string, p: unknown[]) => (BigInt(p[1] as string) >= 12345n ? '0x6080' : '0x');

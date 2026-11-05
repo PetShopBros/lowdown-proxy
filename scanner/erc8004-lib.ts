@@ -34,6 +34,19 @@ export const CHAINS: readonly ChainConf[] = [
 ];
 export const MAX_LOGS_PER_CALL = 1000;
 
+/**
+ * 체인별 RPC 주소·헤더. 우선순위: ERC8004_RPC_<체인>(주소 직접) → BLOCKSCOUT_API_KEY 가 있으면 Blockscout API → 기본(drpc).
+ * Blockscout API: https://api.blockscout.com/{chainId}/json-rpc, 헤더 authorization: Bearer <키> (docs.blockscout.com, 2026-11-05).
+ * 키는 로그·오류 문구에 쓰지 않는다(주소에 넣지 않고 헤더로만).
+ */
+export function rpcFor(chain: ChainConf, env: Record<string, string | undefined>): { url: string; headers: Record<string, string>; via: string } {
+  const direct = env[`ERC8004_RPC_${chain.name.toUpperCase()}`]?.trim();
+  if (direct) return { url: direct, headers: {}, via: 'env' };
+  const key = env.BLOCKSCOUT_API_KEY?.trim();
+  if (key) return { url: `https://api.blockscout.com/${chain.chainId}/json-rpc`, headers: { authorization: `Bearer ${key}` }, via: 'blockscout_api' };
+  return { url: chain.rpc, headers: {}, via: 'default' };
+}
+
 export const MAX_URI_CHARS = 65_536;
 export const MAX_FILE_BYTES = 256 * 1024;
 export const IPFS_GATEWAY = 'https://ipfs.io/ipfs/';
@@ -62,6 +75,7 @@ export function makeRpc(
   minIntervalMs = 0,
   now: () => number = Date.now,
   onRetry: (e: unknown, attempt: number) => void = () => {},
+  extraHeaders: Record<string, string> = {},
 ): RpcCall {
   let id = 0;
   let last = 0;
@@ -72,7 +86,7 @@ export function makeRpc(
     last = now();
     const res = await fetchImpl(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'user-agent': 'lowdown-scanner-erc8004 (+https://github.com/PetShopBros/lowdown-proxy)' },
+      headers: { 'content-type': 'application/json', 'user-agent': 'lowdown-scanner-erc8004 (+https://github.com/PetShopBros/lowdown-proxy)', ...extraHeaders },
       body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }),
       signal: AbortSignal.timeout(timeoutMs),
     });

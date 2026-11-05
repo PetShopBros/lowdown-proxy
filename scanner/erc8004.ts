@@ -1,6 +1,6 @@
 // ERC-8004 등록 수집 — 사용: node scanner/erc8004.ts [--dry-run] [--chains=ethereum,base] [--fetch-limit=N]
 // 필수 환경변수: LOWDOWN_SUPABASE_URL, LOWDOWN_SCANNER_KEY (서버에서는 LOWDOWN_SANDBOX_KEY 도 받는다)
-// 선택: ERC8004_RPC_BASE, ERC8004_RPC_ETHEREUM (기본 Blockscout 인스턴스), ERC8004_RPC_INTERVAL_MS(기본 400, 호출 간격), ERC8004_FETCH_LIMIT(기본 5000), ERC8004_TIME_BUDGET_MIN(기본 30),
+// 선택: BLOCKSCOUT_API_KEY(있으면 두 체인 모두 api.blockscout.com), ERC8004_RPC_BASE, ERC8004_RPC_ETHEREUM(주소 직접, 가장 우선; 기본 drpc), ERC8004_RPC_INTERVAL_MS(기본 400, 호출 간격), ERC8004_FETCH_LIMIT(기본 5000), ERC8004_TIME_BUDGET_MIN(기본 30),
 //       ERC8004_LOG_BUDGET_MIN(기본 18, 이벤트 읽기에 쓰는 시간), ERC8004_MAX_LOG_CALLS(기본 20000, 체인당), ERC8004_CONCURRENCY(기본 8)
 // 순서: 체인마다 이벤트 읽기(이어서) → 가져올 차례인 등록 파일 가져오기. 상태 계산·연결선은 DB 예약 작업(lowdown_erc8004_process, 10분마다).
 // 체인은 읽기만 한다. 본 관찰(scan.ts)과 따로 돈다.
@@ -21,6 +21,7 @@ import {
   parseLog,
   pool,
   readLogs,
+  rpcFor,
 } from './erc8004-lib.ts';
 
 
@@ -42,13 +43,13 @@ async function dbGet<T>(cfg: SupabaseConfig, path: string): Promise<T[]> {
 type Cursor = { chain_id: number; registry: string; first_block: number | null; last_block: number };
 
 async function readChain(cfg: SupabaseConfig, chain: ChainConf, dryRun: boolean, deadline: number, maxCalls: number) {
-  const rpcUrl = process.env[`ERC8004_RPC_${chain.name.toUpperCase()}`]?.trim() || chain.rpc;
+  const rpcConf = rpcFor(chain, process.env);
   let retries = 0;
   let lastRetry = '';
-  const rpc = makeRpc(rpcUrl, fetch, 30_000, undefined, intEnv('ERC8004_RPC_INTERVAL_MS', 400), Date.now, (e) => {
+  const rpc = makeRpc(rpcConf.url, fetch, 30_000, undefined, intEnv('ERC8004_RPC_INTERVAL_MS', 400), Date.now, (e) => {
     retries++;
     lastRetry = e instanceof Error ? e.message.slice(0, 80) : String(e);
-  });
+  }, rpcConf.headers);
   const head = BigInt((await rpc('eth_blockNumber', [])) as string);
   const safe = head - BigInt(chain.confirmations);
   const [cur] = await dbGet<Cursor>(cfg, `erc8004_cursor?chain_id=eq.${chain.chainId}&select=chain_id,registry,first_block,last_block`);
@@ -62,7 +63,7 @@ async function readChain(cfg: SupabaseConfig, chain: ChainConf, dryRun: boolean,
     }
   }
   const from = cur ? BigInt(cur.last_block) + 1n : (first ?? chain.startBlock);
-  console.log(`${chain.name}: head ${head}, read ${from}..${safe}${first !== null && !cur ? ` (registry code from ${first})` : ''}`);
+  console.log(`${chain.name}: rpc ${rpcConf.via} (${new URL(rpcConf.url).host}), head ${head}, read ${from}..${safe}${first !== null && !cur ? ` (registry code from ${first})` : ''}`);
   if (from > safe) return { chain: chain.name, events: 0, calls: 0, complete: true };
 
   let pending: EventRow[] = [];
