@@ -350,7 +350,7 @@ function parseBody(text: string, via: FileResult['fetch_via'], status: number | 
 }
 
 /** 본문을 상한까지만 읽는다 */
-async function readCapped(res: Response, cap: number): Promise<string | null> {
+export async function readCapped(res: Response, cap: number): Promise<string | null> {
   if (!res.body) return await res.text();
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];

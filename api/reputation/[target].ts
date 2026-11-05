@@ -1198,7 +1198,115 @@ async function buildEvidence(supabase: any, target: string, lookup: ScannerLooku
       // 날짜별 기록 실패 → 기존 scanner 요약만
     }
   }
+  // 카드(자기 선언)는 Registry 선언 대 관측 블록 안에 붙인다. 실패하면 붙이지 않는다(보조 조회).
+  const dvo = (ev.scannerExtra as any)?.declared_vs_observed;
+  if (dvo && typeof ev.name === "string") {
+    const cards = await readCards(supabase, ev.name);
+    if (cards) dvo.cards = cards;
+  }
   return ev;
+}
+
+// ── 카드 (자기 선언, supabase/2026-11-06_card_discovery.sql · scanner/card-discovery.ts) ─────────────
+// 서버·호스트가 스스로 내건 카드에 적힌 이름·주소. 확인 결과(카드 없음 / 확인 실패)를 나눠 싣고, 선언을 검증으로 쓰지 않는다.
+const CARD_BASIS =
+  "Self-declared by the server or its host, checked weekly per host without credentials. A card naming an endpoint or a name " +
+  "does not show that the endpoint works or that the name is verified; compare with the Scanner observations above. " +
+  "not_found means no card at that path; timeout, network, auth_required, http_error, html_fallback, invalid_json and wrong_shape mean the check did not find a usable card.";
+const CARD_SHARED_NOTE = "Shared host: domain-level cards here are declared by the host, not by this server.";
+
+async function readCards(supabase: any, name: string): Promise<Body | null> {
+  try {
+    const ep = await supabase.from("card_endpoint_checks").select("endpoint,origin,checked_at,result").contains("registry_names", [name]).order("endpoint", { ascending: true }).limit(10);
+    if (ep.error) return null;
+    const epRows = (ep.data ?? []) as any[];
+    const origins = [...new Set(epRows.map((r) => r.origin).filter((o) => typeof o === "string"))];
+    let hostRows: any[] = [];
+    if (origins.length) {
+      const h = await supabase.from("card_host_checks").select("origin,shared,checked_at,results").in("origin", origins);
+      if (h.error) return null;
+      hostRows = h.data ?? [];
+    }
+    return shapeCards(name, epRows, hostRows);
+  } catch {
+    return null;
+  }
+}
+
+const cardDay = (v: unknown) => isoDay(v);
+const strOrNull = (v: unknown, max = 200) => (typeof v === "string" && v ? v.slice(0, max) : null);
+const strList = (v: unknown, max = 10) => (Array.isArray(v) ? v.filter((x) => typeof x === "string").slice(0, max) : []);
+
+function cardCore(r: any): Body {
+  const out: Body = { outcome: strOrNull(r?.outcome, 40) ?? "unknown", url: strOrNull(r?.url, 2000) };
+  if (Number.isInteger(r?.http_status) && r.outcome !== "found") out.http_status = r.http_status;
+  if (Array.isArray(r?.tried)) out.tried = r.tried.slice(0, 3).map((t: any) => ({ url: strOrNull(t?.url, 2000), outcome: strOrNull(t?.outcome, 40) }));
+  const ff = cardDay(r?.first_found_at);
+  const lc = cardDay(r?.last_changed_at);
+  if (ff) out.first_found = ff;
+  if (lc) out.last_changed = lc;
+  return out;
+}
+
+function mcpCardFacts(r: any, name: string, endpoints: string[]): Body {
+  const out = cardCore(r);
+  if (r?.outcome !== "found") return out;
+  const claimed = strOrNull(r.claimed_name);
+  const declared = strList(r.declared_endpoints);
+  out.claimed_name = claimed;
+  out.name_matches_registry = claimed === null ? null : claimed.toLowerCase() === name.toLowerCase();
+  out.declared_endpoints = declared;
+  out.endpoints_match_registry = declared.length === 0 ? null : endpoints.some((e) => declared.includes(e));
+  const tr = strList(r.transports, 5);
+  if (tr.length) out.transports = tr;
+  const pv = strList(r.supported_protocol_versions);
+  if (pv.length) out.supported_protocol_versions = pv;
+  return out;
+}
+
+/** 확인 표의 행 → 응답 블록 (새 계산 없이 모양만) */
+export function shapeCards(name: string, epRows: any[], hostRows: any[]): Body {
+  if (epRows.length === 0) {
+    return { checked: false, note: "Not checked yet. Lowdown checks the cards of each remote host once a week.", basis: CARD_BASIS };
+  }
+  const endpoints = epRows.map((r) => String(r.endpoint));
+  const remotes = epRows.map((r) => ({
+    endpoint: String(r.endpoint),
+    checked_on: cardDay(r.checked_at),
+    server_card: mcpCardFacts(r.result, name, [String(r.endpoint)]),
+  }));
+  const hosts = hostRows
+    .slice()
+    .sort((a, b) => String(a.origin).localeCompare(String(b.origin)))
+    .map((h) => {
+      const res = (h.results ?? {}) as Record<string, any>;
+      const onHost = endpoints.filter((e) => e === h.origin || e.startsWith(`${h.origin}/`));
+      const cat = res.ai_catalog;
+      const a2a = res.a2a_agent_card;
+      const aiCatalog = cardCore(cat);
+      if (cat?.outcome === "found") {
+        aiCatalog.entries = Number.isInteger(cat.entries) ? cat.entries : null;
+        aiCatalog.mcp_cards = Array.isArray(cat.mcp_cards) ? cat.mcp_cards.length : 0;
+      }
+      const a2aOut = cardCore(a2a);
+      if (a2a?.outcome === "found") {
+        a2aOut.legacy_path = a2a.legacy_path === true;
+        a2aOut.claimed_name = strOrNull(a2a.claimed_name);
+        a2aOut.protocol_version = strOrNull(a2a.protocol_version, 20);
+        a2aOut.interfaces = (Array.isArray(a2a.interfaces) ? a2a.interfaces : []).slice(0, 5).map((i: any) => ({ url: strOrNull(i?.url, 2000), binding: strOrNull(i?.binding, 40) }));
+      }
+      const out: Body = {
+        origin: String(h.origin),
+        shared: h.shared === true,
+        checked_on: cardDay(h.checked_at),
+        ai_catalog: aiCatalog,
+        a2a_agent_card: a2aOut,
+        mcp_well_known: mcpCardFacts(res.mcp_well_known, name, onHost),
+      };
+      if (out.shared) out.note = CARD_SHARED_NOTE;
+      return out;
+    });
+  return { checked: true, basis: CARD_BASIS, remotes, hosts };
 }
 
 // ── 연결 상태 요약 (target_status_summary, supabase/2026-10-27_target_status_summary.sql) ─────
@@ -1772,7 +1880,7 @@ export const DISHES: Record<string, MenuItem> = {
   status: { question: "Does this MCP server answer right now, and does it require authentication?", contains: "status, scanner.latest (latest probe: reach level, HTTP status, latency — one location, once a day)" },
   packages: { question: "Are the npm or PyPI packages it declares deprecated, yanked, archived, or gone (404)?", contains: "packages, packages_note" },
   tools: { question: "Did its tool definitions change, when, and with or without a server version change?", contains: "scanner.definition_changes" },
-  "declared-vs-observed": { question: "Does what the MCP Registry declares (version, hosts) match what is observed?", contains: "scanner.declared_vs_observed" },
+  "declared-vs-observed": { question: "Does what the MCP Registry and the server's own cards declare (version, hosts, endpoints, name) match what is observed?", contains: "scanner.declared_vs_observed" },
   "content-flags": { question: "Did a tool definition change add a URL or invisible characters?", contains: "content_flags (from scanner.definition_changes events with new_flags)" },
   "tool-list": { question: "Which tools does it expose, without connecting to it?", contains: "scanner.tools" },
   registry: { question: "What does the official MCP Registry declare, and what changed there in 30 days?", contains: "registry" },

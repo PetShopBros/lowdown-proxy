@@ -527,7 +527,9 @@ describe('증거 블록 — Registry 선언 + Scanner 날짜별 기록', () => {
     assert.match(r.body.message, new RegExp(`tool definitions last changed on ${dayAgo(1)} after 3 days without change`));
     assert.deepEqual(sc.tools.names, ['get_weather', 'list_items']); // 형식에 맞지 않는 이름은 빠짐
     assert.equal(sc.tools.count, 2);
-    assert.deepEqual(sc.declared_vs_observed, { declared_version: '1.2.0', observed_server_version: '1.2.3', declared_hosts: ['solo.acme.dev'], observed_hosts: ['solo.acme.dev'] });
+    const { cards, ...dvo } = sc.declared_vs_observed;
+    assert.deepEqual(dvo, { declared_version: '1.2.0', observed_server_version: '1.2.3', declared_hosts: ['solo.acme.dev'], observed_hosts: ['solo.acme.dev'] });
+    assert.equal(cards.checked, false); // 카드 확인 행이 아직 없으면 "확인 전"으로 (표가 없거나 읽기 실패면 cards 자체를 붙이지 않는다)
     assert.match(sc.method.requests, /No tool calls/);
     assert.match(sc.note, /Not included in success_rate/);
   });
