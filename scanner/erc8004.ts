@@ -1,7 +1,7 @@
 // ERC-8004 등록 수집 — 사용: node scanner/erc8004.ts [--dry-run] [--chains=base,ethereum] [--fetch-limit=N]
 // 필수 환경변수: LOWDOWN_SUPABASE_URL, LOWDOWN_SCANNER_KEY (서버에서는 LOWDOWN_SANDBOX_KEY 도 받는다)
 // 선택: ERC8004_RPC_BASE, ERC8004_RPC_ETHEREUM (기본 Blockscout 인스턴스), ERC8004_RPC_INTERVAL_MS(기본 400, 호출 간격), ERC8004_FETCH_LIMIT(기본 5000), ERC8004_TIME_BUDGET_MIN(기본 30),
-//       ERC8004_LOG_BUDGET_MIN(기본 18, 이벤트 읽기에 쓰는 시간), ERC8004_MAX_LOG_CALLS(기본 4000), ERC8004_CONCURRENCY(기본 8)
+//       ERC8004_LOG_BUDGET_MIN(기본 18, 이벤트 읽기에 쓰는 시간), ERC8004_MAX_LOG_CALLS(기본 20000, 체인당), ERC8004_CONCURRENCY(기본 8)
 // 순서: 체인마다 이벤트 읽기(이어서) → 에이전트 상태 계산 → 가져올 차례인 등록 파일 가져오기 → 이름표·연결선.
 // 체인은 읽기만 한다. 본 관찰(scan.ts)과 따로 돈다.
 
@@ -131,9 +131,12 @@ async function main(): Promise<void> {
 
   // 1) 이벤트 (체인 하나가 실패해도 다른 체인은 계속)
   let chainErrors = 0;
-  for (const c of chains) {
+  // 체인마다 남은 이벤트 읽기 시간을 똑같이 나눈다(앞 체인이 일찍 끝나면 남은 시간은 뒤 체인으로).
+  //   한 체인의 따라잡기가 길어도 다른 체인이 매일 조금씩은 읽힌다.
+  for (const [i, c] of chains.entries()) {
+    const share = Date.now() + Math.max(0, logDeadline - Date.now()) / (chains.length - i);
     try {
-      await readChain(cfg, c, dryRun, logDeadline, intEnv('ERC8004_MAX_LOG_CALLS', 4000));
+      await readChain(cfg, c, dryRun, share, intEnv('ERC8004_MAX_LOG_CALLS', 20000));
     } catch (e) {
       chainErrors++;
       console.log(`::warning::${c.name}: ${e instanceof Error ? e.message : e}`);
