@@ -1,6 +1,6 @@
 // 명함(카드) 확인 — 사용: node scanner/card-discovery.ts [--dry-run] [--force] [--slice=0..6] [--limit=N]
 // 필수 환경변수: LOWDOWN_SUPABASE_URL, LOWDOWN_SCANNER_KEY
-// 선택: CARD_CONCURRENCY(기본 16), CARD_TIME_BUDGET_MIN(기본 40), CARD_TIMEOUT_MS(기본 8000), CARD_QUIET_TIMEOUT_MS(기본 3000), CARD_HOST_GAP_MS(기본 250)
+// 선택: CARD_CONCURRENCY(기본 32), CARD_TIME_BUDGET_MIN(기본 40), CARD_TIMEOUT_MS(기본 8000), CARD_QUIET_TIMEOUT_MS(기본 3000), CARD_HOST_GAP_MS(기본 250)
 //
 // 하루에 호스트(origin) 7분의 1씩 → 호스트마다 주 1회. 같은 호스트에는 요청을 차례로, 간격을 두고 보낸다.
 // 쓰는 곳: card_endpoint_checks·card_host_checks(사실), card_check_changes(바뀐 때만), card_bodies(찾은 원문, sha256당 1번),
@@ -13,6 +13,7 @@ import { supabaseHeaders, type SupabaseConfig } from './lib.ts';
 import { postBatches } from './registry-diff.ts';
 import { pool } from './erc8004-lib.ts';
 import {
+  HOST_FAIL_STREAK,
   HOST_PATHS,
   SHARED_HOST_MIN,
   baseResult,
@@ -106,6 +107,18 @@ export interface OriginOutcome {
   bodies: Array<{ sha256: string; kind: CardKind; bytes: number; body: string }>;
   declarations: Declaration[];
   requests: number;
+  /** 이 호스트의 확인을 다 했나(시간 상한에 걸리면 false — 다음 실행이 남은 주소부터) */
+  complete: boolean;
+}
+
+export interface CheckOptions {
+  /** 이 시각이 지나면 남은 주소는 확인하지 않는다 */
+  deadline?: number;
+  now?: () => number;
+  /** 오늘 이미 호스트 카드를 확인함 → 호스트 카드는 다시 요청하지 않는다(out.host 는 빈 객체) */
+  hostDone?: boolean;
+  /** 오늘 이미 확인한 주소 */
+  doneEndpoints?: ReadonlySet<string>;
 }
 
 type Fetcher = (url: string, kind: CardKind) => Promise<Fetched>;
@@ -119,8 +132,11 @@ export async function checkOrigin(
   nowIso: string,
   runId: string,
   gap: () => Promise<void> = async () => {},
+  opts: CheckOptions = {},
 ): Promise<OriginOutcome> {
-  const out: OriginOutcome = { host: {}, endpoints: [], changes: [], bodies: [], declarations: [], requests: 0 };
+  const out: OriginOutcome = { host: {}, endpoints: [], changes: [], bodies: [], declarations: [], requests: 0, complete: true };
+  const now = opts.now ?? Date.now;
+  const deadline = opts.deadline ?? Infinity;
   const get = async (url: string, kind: CardKind) => {
     if (out.requests > 0) await gap();
     out.requests++;
@@ -153,75 +169,92 @@ export async function checkOrigin(
   const triedList = (t: Fetched[]) => (t.length > 1 ? t.map((x) => ({ url: x.url, outcome: x.outcome, http_status: x.http_status })) : undefined);
   const prevResults = (prevHost?.results ?? {}) as Record<string, any>;
   const results: Record<string, CheckResult> = {};
-
-  // 1) AI Catalog
-  {
-    const f = await get(w.origin + HOST_PATHS.ai_catalog[0], 'ai_catalog');
-    let cur = baseResult('ai_catalog', f);
-    if (f.outcome === 'found') {
-      const facts = parseAiCatalog(JSON.parse(f.text!));
-      if (!facts) cur = { ...cur, outcome: 'wrong_shape', sha256: null };
-      else {
-        keepBody('ai_catalog', f);
-        const cards: Array<Record<string, unknown>> = [];
-        for (const inline of facts.mcp_card_inline) {
-          cards.push({ source: 'inline', claimed_name: inline.claimed_name, declared_endpoints: normList(inline.endpoints.map((e) => e.url)) });
-          out.declarations.push({ card_url: f.url, kind: 'mcp_server_card', origin: w.origin, claimed_name: inline.claimed_name, endpoints: inline.endpoints, interfaces: [], sha256: f.sha256, observed_at: nowIso });
-        }
-        for (const u of facts.mcp_card_urls.slice(0, 3)) {
-          const c = await get(u, 'mcp_server_card');
-          const parsed = c.outcome === 'found' ? parseServerCard(JSON.parse(c.text!)) : null;
-          const outcome = c.outcome === 'found' && !parsed ? 'wrong_shape' : c.outcome;
-          cards.push({ source: 'url', url: u, outcome, claimed_name: parsed?.claimed_name ?? null, declared_endpoints: parsed ? normList(parsed.endpoints.map((e) => e.url)) : [] });
-          if (parsed) {
-            keepBody('mcp_server_card', c);
-            out.declarations.push({ card_url: u, kind: 'mcp_server_card', origin: w.origin, claimed_name: parsed.claimed_name, endpoints: parsed.endpoints, interfaces: [], sha256: c.sha256, observed_at: nowIso });
+  if (!opts.hostDone) {
+    // 1) AI Catalog
+    {
+      const f = await get(w.origin + HOST_PATHS.ai_catalog[0], 'ai_catalog');
+      let cur = baseResult('ai_catalog', f);
+      if (f.outcome === 'found') {
+        const facts = parseAiCatalog(JSON.parse(f.text!));
+        if (!facts) cur = { ...cur, outcome: 'wrong_shape', sha256: null };
+        else {
+          keepBody('ai_catalog', f);
+          const cards: Array<Record<string, unknown>> = [];
+          for (const inline of facts.mcp_card_inline) {
+            cards.push({ source: 'inline', claimed_name: inline.claimed_name, declared_endpoints: normList(inline.endpoints.map((e) => e.url)) });
+            out.declarations.push({ card_url: f.url, kind: 'mcp_server_card', origin: w.origin, claimed_name: inline.claimed_name, endpoints: inline.endpoints, interfaces: [], sha256: f.sha256, observed_at: nowIso });
           }
+          for (const u of facts.mcp_card_urls.slice(0, 3)) {
+            const c = await get(u, 'mcp_server_card');
+            const parsed = c.outcome === 'found' ? parseServerCard(JSON.parse(c.text!)) : null;
+            const outcome = c.outcome === 'found' && !parsed ? 'wrong_shape' : c.outcome;
+            cards.push({ source: 'url', url: u, outcome, claimed_name: parsed?.claimed_name ?? null, declared_endpoints: parsed ? normList(parsed.endpoints.map((e) => e.url)) : [] });
+            if (parsed) {
+              keepBody('mcp_server_card', c);
+              out.declarations.push({ card_url: u, kind: 'mcp_server_card', origin: w.origin, claimed_name: parsed.claimed_name, endpoints: parsed.endpoints, interfaces: [], sha256: c.sha256, observed_at: nowIso });
+            }
+          }
+          // 목록 자체는 카드가 아니라 선언으로 넣지 않는다(목록이 가리키는·담은 MCP 카드만 위에서 넣었다)
+          cur = { ...cur, entries: facts.entries, entry_types: facts.entry_types, mcp_cards: cards };
         }
-        // 목록 자체는 카드가 아니라 선언으로 넣지 않는다(목록이 가리키는·담은 MCP 카드만 위에서 넣었다)
-        cur = { ...cur, entries: facts.entries, entry_types: facts.entry_types, mcp_cards: cards };
       }
+      results.ai_catalog = record('ai_catalog', prevResults.ai_catalog, cur);
     }
-    results.ai_catalog = record('ai_catalog', prevResults.ai_catalog, cur);
-  }
 
-  // 2) A2A Agent Card (현재 경로 → 404 면 옛 경로)
-  {
-    const { f, tried } = await firstOf(HOST_PATHS.a2a_agent_card, 'a2a_agent_card');
-    let cur: CheckResult = { ...baseResult('a2a_agent_card', f), tried: triedList(tried) };
-    if (f.outcome === 'found') {
-      const facts = parseA2aCard(JSON.parse(f.text!));
-      if (!facts) cur = { ...cur, outcome: 'wrong_shape', sha256: null };
-      else {
-        keepBody('a2a_agent_card', f);
-        cur = { ...cur, legacy_path: f.url.endsWith('/agent.json'), claimed_name: facts.claimed_name, protocol_version: facts.protocol_version, interfaces: facts.interfaces.slice(0, 5) };
-        out.declarations.push({ card_url: f.url, kind: 'a2a_agent_card', origin: w.origin, claimed_name: facts.claimed_name, endpoints: [], interfaces: facts.interfaces, sha256: f.sha256, observed_at: nowIso });
+    // 2) A2A Agent Card (현재 경로 → 404 면 옛 경로)
+    {
+      const { f, tried } = await firstOf(HOST_PATHS.a2a_agent_card, 'a2a_agent_card');
+      let cur: CheckResult = { ...baseResult('a2a_agent_card', f), tried: triedList(tried) };
+      if (f.outcome === 'found') {
+        const facts = parseA2aCard(JSON.parse(f.text!));
+        if (!facts) cur = { ...cur, outcome: 'wrong_shape', sha256: null };
+        else {
+          keepBody('a2a_agent_card', f);
+          cur = { ...cur, legacy_path: f.url.endsWith('/agent.json'), claimed_name: facts.claimed_name, protocol_version: facts.protocol_version, interfaces: facts.interfaces.slice(0, 5) };
+          out.declarations.push({ card_url: f.url, kind: 'a2a_agent_card', origin: w.origin, claimed_name: facts.claimed_name, endpoints: [], interfaces: facts.interfaces, sha256: f.sha256, observed_at: nowIso });
+        }
       }
+      results.a2a_agent_card = record('a2a_agent_card', prevResults.a2a_agent_card, cur);
     }
-    results.a2a_agent_card = record('a2a_agent_card', prevResults.a2a_agent_card, cur);
-  }
 
-  // 3) .well-known 의 MCP Server Card (규격 밖·비권장 경로지만 실제로 쓰임)
-  {
-    const { f, tried } = await firstOf(HOST_PATHS.mcp_well_known, 'mcp_server_card');
-    let cur: CheckResult = { ...baseResult('mcp_server_card', f), tried: triedList(tried) };
-    if (f.outcome === 'found') {
-      const facts = parseServerCard(JSON.parse(f.text!));
-      if (!facts) cur = { ...cur, outcome: 'wrong_shape', sha256: null };
-      else {
-        keepBody('mcp_server_card', f);
-        cur = { ...cur, claimed_name: facts.claimed_name, name_format_ok: facts.name_format_ok, declared_endpoints: normList(facts.endpoints.map((e) => e.url)), transports: [...new Set(facts.endpoints.map((e) => e.type).filter(Boolean))] };
-        out.declarations.push({ card_url: f.url, kind: 'mcp_server_card', origin: w.origin, claimed_name: facts.claimed_name, endpoints: facts.endpoints, interfaces: [], sha256: f.sha256, observed_at: nowIso });
+    // 3) .well-known 의 MCP Server Card (규격 밖·비권장 경로지만 실제로 쓰임)
+    {
+      const { f, tried } = await firstOf(HOST_PATHS.mcp_well_known, 'mcp_server_card');
+      let cur: CheckResult = { ...baseResult('mcp_server_card', f), tried: triedList(tried) };
+      if (f.outcome === 'found') {
+        const facts = parseServerCard(JSON.parse(f.text!));
+        if (!facts) cur = { ...cur, outcome: 'wrong_shape', sha256: null };
+        else {
+          keepBody('mcp_server_card', f);
+          cur = { ...cur, claimed_name: facts.claimed_name, name_format_ok: facts.name_format_ok, declared_endpoints: normList(facts.endpoints.map((e) => e.url)), transports: [...new Set(facts.endpoints.map((e) => e.type).filter(Boolean))] };
+          out.declarations.push({ card_url: f.url, kind: 'mcp_server_card', origin: w.origin, claimed_name: facts.claimed_name, endpoints: facts.endpoints, interfaces: [], sha256: f.sha256, observed_at: nowIso });
+        }
       }
+      results.mcp_well_known = record('mcp_well_known', prevResults.mcp_well_known, cur);
     }
-    results.mcp_well_known = record('mcp_well_known', prevResults.mcp_well_known, cur);
-  }
 
-  out.host = { origin: w.origin, host: w.host, slice: w.slice, shared: w.shared, endpoints: w.endpoints.length, checked_at: nowIso, results, run_id: runId };
+    out.host = { origin: w.origin, host: w.host, slice: w.slice, shared: w.shared, endpoints: w.endpoints.length, checked_at: nowIso, results, run_id: runId };
+  }
 
   // 4) 주소마다 <MCP 주소>/server-card
+  //   시간 상한이 지나면 멈춘다(남은 주소는 다음 실행). 연속 timeout·network 가 HOST_FAIL_STREAK 번이면 나머지는 요청하지 않고
+  //   skipped_after_timeouts 로 남긴다(카드 없음이 아니라 확인 못 함). 이때는 변경 기록을 남기지 않고 이전 날짜를 잇는다.
+  let failStreak = 0;
   for (const t of w.endpoints) {
+    if (opts.doneEndpoints?.has(t.endpoint)) continue;
+    if (now() > deadline) {
+      out.complete = false;
+      break;
+    }
+    const prevEp = prevEndpoints.get(t.endpoint)?.result;
+    if (failStreak >= HOST_FAIL_STREAK) {
+      const skipped: CheckResult = { kind: 'mcp_server_card', url: endpointCardUrl(t.endpoint), outcome: 'skipped_after_timeouts', http_status: null, content_type: null, bytes: null, sha256: null,
+        first_found_at: prevEp?.first_found_at ?? null, last_changed_at: prevEp?.last_changed_at ?? null };
+      out.endpoints.push({ endpoint: t.endpoint, origin: w.origin, slice: w.slice, registry_names: t.registry_names, checked_at: nowIso, result: skipped, run_id: runId });
+      continue;
+    }
     const f = await get(endpointCardUrl(t.endpoint), 'mcp_server_card');
+    failStreak = f.outcome === 'timeout' || f.outcome === 'network' ? failStreak + 1 : 0;
     let cur = baseResult('mcp_server_card', f);
     if (f.outcome === 'found') {
       const facts = parseServerCard(JSON.parse(f.text!));
@@ -240,7 +273,7 @@ export async function checkOrigin(
         out.declarations.push({ card_url: f.url, kind: 'mcp_server_card', origin: w.origin, claimed_name: facts.claimed_name, endpoints: facts.endpoints, interfaces: [], sha256: f.sha256, observed_at: nowIso });
       }
     }
-    const result = record(t.endpoint, prevEndpoints.get(t.endpoint)?.result, cur);
+    const result = record(t.endpoint, prevEp, cur);
     out.endpoints.push({ endpoint: t.endpoint, origin: w.origin, slice: w.slice, registry_names: t.registry_names, checked_at: nowIso, result, run_id: runId });
   }
   return out;
@@ -298,67 +331,95 @@ async function main(): Promise<void> {
   const targets = await readTargets(cfg);
   const all = groupTargets(targets);
   const prevHosts = await readPrev<Record<string, any>>(cfg, 'card_host_checks', 'origin', 'origin,checked_at,results', slice);
-  const prevEndpoints = await readPrev<Record<string, any>>(cfg, 'card_endpoint_checks', 'endpoint', 'endpoint,result', slice);
-  // 오늘 이미 확인한 호스트는 건너뛴다(예비 실행이 이어서 할 때 중복 요청을 막는다)
-  let work = all.filter((w) => w.slice === slice && !(prevHosts.get(w.origin)?.checked_at >= todayStart && !force));
-  // 주소가 많은 호스트(같은 호스트에는 차례로 보내 오래 걸림)를 먼저 시작해 끝이 늘어지지 않게 한다
-  work.sort((a, b) => b.endpoints.length - a.endpoints.length || a.origin.localeCompare(b.origin));
-  if (Number.isInteger(limitArg) && limitArg > 0) work = work.slice(0, limitArg);
-  const totalEndpoints = work.reduce((n, w) => n + w.endpoints.length, 0);
-  console.log(`card discovery run ${runId}: day ${day}, slice ${slice}, targets ${targets.length}, origins ${all.length} (this slice ${work.length}, endpoints ${totalEndpoints}, shared ${work.filter((w) => w.shared).length}), dry_run=${dryRun}`);
+  const prevEndpoints = await readPrev<Record<string, any>>(cfg, 'card_endpoint_checks', 'endpoint', 'endpoint,result,checked_at', slice);
+  // 오늘 이미 확인한 것은 다시 요청하지 않는다(예비 실행·시간 상한 뒤 다음 실행이 남은 것부터 이어서 한다)
+  const today = (v: unknown) => !force && typeof v === 'string' && v >= todayStart;
+  const plan = all
+    .filter((w) => w.slice === slice)
+    .map((w) => {
+      const hostDone = today(prevHosts.get(w.origin)?.checked_at);
+      const doneEndpoints = new Set(w.endpoints.filter((t) => today(prevEndpoints.get(t.endpoint)?.checked_at)).map((t) => t.endpoint));
+      return { w, hostDone, doneEndpoints, left: w.endpoints.length - doneEndpoints.size };
+    })
+    .filter((p) => !p.hostDone || p.left > 0);
+  // 남은 주소가 많은 호스트(같은 호스트에는 차례로 보내 오래 걸림)를 먼저 시작해 끝이 늘어지지 않게 한다
+  plan.sort((a, b) => b.left - a.left || a.w.origin.localeCompare(b.w.origin));
+  const work = Number.isInteger(limitArg) && limitArg > 0 ? plan.slice(0, limitArg) : plan;
+  const totalEndpoints = work.reduce((n, p) => n + p.left, 0);
+  console.log(`card discovery run ${runId}: day ${day}, slice ${slice}, targets ${targets.length}, origins ${all.length} (this slice ${work.length}, endpoints left ${totalEndpoints}, shared ${work.filter((p) => p.w.shared).length}, resumed ${work.filter((p) => p.hostDone || p.doneEndpoints.size > 0).length}), dry_run=${dryRun}`);
 
   if (!dryRun) await postBatches(cfg, 'card_runs?on_conflict=day', [{ day, slice, run_id: runId, started_at: new Date(started).toISOString(), finished_at: null, stats: {} }], 'resolution=merge-duplicates,return=minimal', {});
 
-  const timeout = intEnv('CARD_TIMEOUT_MS', 8000);
-  const quietTimeout = intEnv('CARD_QUIET_TIMEOUT_MS', 3000);
-  const gapMs = intEnv('CARD_HOST_GAP_MS', 250);
-    const outcomes = await pool(work, intEnv('CARD_CONCURRENCY', 32), deadline - 3 * 60_000, async (w) => {
-    const nowIso = new Date().toISOString();
-    const fetcher: Fetcher = (u, kind) => fetchCard(u, kind, w.quiet ? quietTimeout : timeout);
-    return checkOrigin(w, prevHosts.get(w.origin) ?? null, prevEndpoints, fetcher, nowIso, runId, () => sleep(gapMs));
-  });
-
-  const hosts = outcomes.map((o) => o.host);
-  const endpoints = outcomes.flatMap((o) => o.endpoints);
-  const changes = outcomes.flatMap((o) => o.changes);
-  const bodies = [...new Map(outcomes.flatMap((o) => o.bodies).map((b) => [b.sha256, b])).values()];
-  const declarations = outcomes.flatMap((o) => o.declarations);
-  const requests = outcomes.reduce((n, o) => n + o.requests, 0);
-  const tally = (rows: Array<{ outcome?: unknown }>) => {
-    const m: Record<string, number> = {};
-    for (const r of rows) m[String(r.outcome)] = (m[String(r.outcome)] ?? 0) + 1;
-    return m;
-  };
+  // ── 중간 저장: 호스트 100곳 또는 주소 1,000개마다. 작업이 강제로 끝나도 그때까지 확인한 것은 남는다 ──
   const stats = {
-    origins: hosts.length,
-    origins_planned: work.length,
-    endpoints: endpoints.length,
-    requests,
-    changes: changes.length,
-    bodies: bodies.length,
-    declarations: declarations.length,
-    endpoint_server_card: tally(endpoints.map((e) => e.result as CheckResult)),
-    ai_catalog: tally(hosts.map((h) => (h.results as any).ai_catalog)),
-    a2a_agent_card: tally(hosts.map((h) => (h.results as any).a2a_agent_card)),
-    mcp_well_known: tally(hosts.map((h) => (h.results as any).mcp_well_known)),
-    seconds: Math.round((Date.now() - started) / 1000),
+    origins: 0, origins_complete: 0, origins_planned: work.length, endpoints: 0, requests: 0, changes: 0, bodies: 0, declarations: 0, saves: 0,
+    endpoint_server_card: {} as Record<string, number>, ai_catalog: {} as Record<string, number>, a2a_agent_card: {} as Record<string, number>, mcp_well_known: {} as Record<string, number>,
+    seconds: 0,
   };
-  console.log(JSON.stringify(stats));
-
-  if (!dryRun) {
-    // 원문 → 변경 → 선언 → 사실(호스트·주소) → 실행 끝 표시. 중간에 끊기면 다음 실행이 오늘 안 된 호스트부터 이어서 한다.
+  const bump = (m: Record<string, number>, k: unknown) => { if (k !== undefined) m[String(k)] = (m[String(k)] ?? 0) + 1; };
+  let buffer: OriginOutcome[] = [];
+  let saving: Promise<void> = Promise.resolve();
+  const write = async (batch: OriginOutcome[]) => {
+    const hosts = batch.map((o) => o.host).filter((h) => Object.keys(h).length > 0);
+    const endpoints = batch.flatMap((o) => o.endpoints);
+    const changes = batch.flatMap((o) => o.changes);
+    const bodies = [...new Map(batch.flatMap((o) => o.bodies).map((b) => [b.sha256, b])).values()];
+    const declarations = batch.flatMap((o) => o.declarations);
+    // 원문 → 변경 → 선언 → 사실(호스트·주소). 사실이 마지막이라, 끊겨도 "확인함"으로 표시된 것은 앞의 기록이 이미 있다.
     if (bodies.length) await postBatches(cfg, 'card_bodies?on_conflict=sha256', bodies, 'resolution=ignore-duplicates,return=minimal', { batchSize: 100 });
     if (changes.length) await postBatches(cfg, 'card_check_changes', changes, 'return=minimal', { batchSize: 1000 });
     if (declarations.length) await postBatches(cfg, 'card_declarations', declarations, 'return=minimal', { batchSize: 500 });
     if (hosts.length) await postBatches(cfg, 'card_host_checks?on_conflict=origin', hosts, 'resolution=merge-duplicates,return=minimal', { batchSize: 500 });
     if (endpoints.length) await postBatches(cfg, 'card_endpoint_checks?on_conflict=endpoint', endpoints, 'resolution=merge-duplicates,return=minimal', { batchSize: 500 });
-    const complete = hosts.length === work.length;
+    stats.saves++;
+  };
+  const flush = (force = false) => {
+    const pendingEndpoints = buffer.reduce((n, o) => n + o.endpoints.length, 0);
+    if (!force && buffer.length < 100 && pendingEndpoints < 1000) return saving;
+    const batch = buffer;
+    buffer = [];
+    if (!dryRun && batch.length) saving = saving.then(() => write(batch));
+    return saving;
+  };
+
+  const timeout = intEnv('CARD_TIMEOUT_MS', 8000);
+  const quietTimeout = intEnv('CARD_QUIET_TIMEOUT_MS', 3000);
+  const gapMs = intEnv('CARD_HOST_GAP_MS', 250);
+  const stopAt = deadline - 3 * 60_000; // 새 호스트 시작·호스트 안 다음 주소 모두 이 시각까지
+  await pool(work, intEnv('CARD_CONCURRENCY', 32), stopAt, async (p) => {
+    const nowIso = new Date().toISOString();
+    const fetcher: Fetcher = (u, kind) => fetchCard(u, kind, p.w.quiet ? quietTimeout : timeout);
+    const o = await checkOrigin(p.w, prevHosts.get(p.w.origin) ?? null, prevEndpoints, fetcher, nowIso, runId, () => sleep(gapMs),
+      { deadline: stopAt, hostDone: p.hostDone, doneEndpoints: p.doneEndpoints });
+    stats.origins++;
+    if (o.complete) stats.origins_complete++;
+    stats.endpoints += o.endpoints.length;
+    stats.requests += o.requests;
+    stats.changes += o.changes.length;
+    stats.bodies += o.bodies.length;
+    stats.declarations += o.declarations.length;
+    for (const e of o.endpoints) bump(stats.endpoint_server_card, (e.result as CheckResult).outcome);
+    const r = (o.host as any).results;
+    if (r) {
+      bump(stats.ai_catalog, r.ai_catalog?.outcome);
+      bump(stats.a2a_agent_card, r.a2a_agent_card?.outcome);
+      bump(stats.mcp_well_known, r.mcp_well_known?.outcome);
+    }
+    buffer.push(o);
+    await flush();
+  });
+  await flush(true);
+  stats.seconds = Math.round((Date.now() - started) / 1000);
+  console.log(JSON.stringify(stats));
+
+  if (!dryRun) {
+    const complete = stats.origins_complete === work.length;
     await dbPatch(cfg, `card_runs?day=eq.${day}`, { finished_at: complete ? new Date().toISOString() : null, stats: { ...stats, complete } });
-    if (!complete) console.log(`::warning::time budget reached: ${hosts.length}/${work.length} origins checked; the next run today continues`);
+    if (!complete) console.log(`::warning::time budget reached: ${stats.origins_complete}/${work.length} origins complete; the next run today continues from what is left`);
   }
   console.log(`card discovery done in ${stats.seconds}s${dryRun ? ' (dry-run, nothing written)' : ''}`);
   const out = process.env.GITHUB_OUTPUT;
-  if (out) appendFileSync(out, `card_origins=${hosts.length}\ncard_declarations=${declarations.length}\n`);
+  if (out) appendFileSync(out, `card_origins=${stats.origins}\ncard_declarations=${stats.declarations}\n`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('card-discovery.ts')) main().catch((e: unknown) => fail(e instanceof Error ? e.message : 'card discovery failed'));

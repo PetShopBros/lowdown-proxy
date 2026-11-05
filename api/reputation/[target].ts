@@ -1212,7 +1212,7 @@ async function buildEvidence(supabase: any, target: string, lookup: ScannerLooku
 const CARD_BASIS =
   "Self-declared by the server or its host, checked weekly per host without credentials. A card naming an endpoint or a name " +
   "does not show that the endpoint works or that the name is verified; compare with the Scanner observations above. " +
-  "not_found means no card at that path; timeout, network, auth_required, http_error, html_fallback, invalid_json and wrong_shape mean the check did not find a usable card.";
+  "not_found means no card at that path; timeout, network, auth_required, http_error, html_fallback, invalid_json and wrong_shape mean the check did not find a usable card; skipped_after_timeouts means this address was not requested this week after repeated timeouts on the same host.";
 const CARD_SHARED_NOTE = "Shared host: domain-level cards here are declared by the host, not by this server.";
 
 async function readCards(supabase: any, name: string): Promise<Body | null> {

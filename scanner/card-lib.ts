@@ -18,6 +18,8 @@ import { USER_AGENT } from './lib.ts';
 export const CARD_MAX_BYTES = 64 * 1024;
 export const SHARED_HOST_MIN = 5;
 export const SLICES = 7;
+/** 같은 호스트에서 주소 확인이 이만큼 연속으로 timeout·network 이면 나머지 주소는 이번 주 건너뛴다 */
+export const HOST_FAIL_STREAK = 5;
 const DAY_MS = 86_400_000;
 
 export type CardKind = 'mcp_server_card' | 'ai_catalog' | 'a2a_agent_card';
@@ -32,7 +34,8 @@ export type CardOutcome =
   | 'too_large'
   | 'html_fallback'   // 2xx 인데 HTML(어떤 경로에든 홈페이지를 돌려주는 사이트)
   | 'invalid_json'
-  | 'wrong_shape';    // JSON 이지만 이 종류의 카드 모양이 아님
+  | 'wrong_shape'     // JSON 이지만 이 종류의 카드 모양이 아님
+  | 'skipped_after_timeouts'; // 같은 호스트에서 연속 시간 초과·연결 실패 뒤 이번 주는 요청하지 않음(확인 못 함, 카드 없음 아님)
 
 export interface Fetched {
   url: string;

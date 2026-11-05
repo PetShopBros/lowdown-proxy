@@ -220,3 +220,39 @@ describe('조회 응답의 cards 블록', async () => {
     assert.equal(h.a2a_agent_card.tried.length, 2);
   });
 });
+
+describe('시간 상한·연속 실패·이어서 하기', () => {
+  const many: OriginWork = {
+    origin: 'https://hub.example', host: 'hub.example', slice: 1, shared: true, quiet: false,
+    endpoints: Array.from({ length: 12 }, (_, i) => ({ endpoint_id: i + 1, endpoint: `https://hub.example/s${i}/mcp`, registry_names: [`io.hub/s${i}`], quiet: false })),
+  };
+  const nf = async (u: string) => miss(u);
+
+  test('시간 상한이 지나면 남은 주소는 확인하지 않고 complete=false', async () => {
+    let t = 0;
+    const o = await checkOrigin(many, null, new Map(), async (u) => { t += 10; return miss(u); }, 'now', 'r', async () => {}, { deadline: 80, now: () => t });
+    assert.equal(o.complete, false);
+    assert.ok(o.endpoints.length > 0 && o.endpoints.length < 12);
+  });
+
+  test('연속 timeout 5번이면 나머지는 요청 없이 skipped_after_timeouts, 변경 기록 없음', async () => {
+    let calls = 0;
+    const slow = async (u: string) => { calls++; return u.endsWith('/server-card') && !u.includes('/.well-known/') ? miss(u, 'timeout', null) : miss(u); };
+    const o = await checkOrigin(many, null, new Map(), slow, 'now', 'r');
+    const outcomes = o.endpoints.map((e) => (e.result as any).outcome);
+    assert.deepEqual(outcomes.slice(0, 5), Array(5).fill('timeout'));
+    assert.deepEqual(outcomes.slice(5), Array(7).fill('skipped_after_timeouts'));
+    assert.equal(calls, 5 + 5); // 호스트 카드 5번(경로 후보 포함) + 주소 5번
+    assert.equal(o.changes.length, 0);
+    assert.equal(o.complete, true);
+  });
+
+  test('오늘 이미 한 호스트 카드·주소는 다시 요청하지 않는다', async () => {
+    const calls: string[] = [];
+    const done = new Set(many.endpoints.slice(0, 10).map((e) => e.endpoint));
+    const o = await checkOrigin(many, null, new Map(), async (u) => { calls.push(u); return nf(u); }, 'now', 'r', async () => {}, { hostDone: true, doneEndpoints: done });
+    assert.deepEqual(o.host, {});
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((u) => u.endsWith('/server-card') && !u.includes('/.well-known/')));
+  });
+});
