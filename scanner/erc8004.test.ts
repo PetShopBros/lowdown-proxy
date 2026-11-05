@@ -158,6 +158,22 @@ describe('체인 읽기', () => {
     assert.ok(calls <= 40, `calls ${calls}`); // 실패 4번(10000→5000→2500→1250→625) + 625씩 32번. 배우지 않으면 성공마다 넓혀 실패가 반복된다
   });
 
+  test('한도가 100~499 사이면 그 사이에서 실제 한도를 찾는다(drpc 무료)', async () => {
+    let calls = 0;
+    const sizes: number[] = [];
+    const rpc = async (_m: string, p: any[]) => {
+      calls++;
+      const n = Number(BigInt(p[0].toBlock)) - Number(BigInt(p[0].fromBlock)) + 1;
+      sizes.push(n);
+      if (n > 350) throw new RpcError('ranges over 10000 blocks are not supported on free plan', 400, 35);
+      return [];
+    };
+    const r = await readLogs(rpc, REG, 1n, 100_000n, { maxRange: 10_000, deadline: Infinity, maxCalls: 2000, onChunk: async () => {} });
+    assert.equal(r.complete, true);
+    assert.equal(sizes.filter((n) => n === 350).length >= 270, true, `350 블록 구간 ${sizes.filter((n) => n === 350).length}`);
+    assert.ok(calls < 100_000 / 350 + 30, `calls ${calls}`);
+  });
+
   test('1000건이 오면 잘렸을 수 있어 범위를 줄여 다시 읽는다', async () => {
     const at = Array.from({ length: 1500 }, (_, i) => 1000 + i); // 블록 1000~2499 에 1건씩
     const rpc = async (_m: string, p: any[]) => {

@@ -20,14 +20,15 @@ export interface ChainConf {
   maxRange: number; // getLogs 한 번의 최대 블록 수(시작값, 오류 시 반으로 줄인다)
 }
 
-// 기본 RPC (2026-11-05 Lightsail 서버에서 확인, 모두 키 없음):
-//   ethereum: eth.blockscout.com — 과거 구간 getLogs 가능, 한 번에 최대 1000건(1000건이면 범위를 줄여 다시 읽음)
-//   base: base.drpc.org — 과거 구간 가능, 무료 요금제는 범위가 작다(오류 문구로 알아서 줄인다)
+// 기본 RPC (2026-11-05 Lightsail 서버에서 확인, 키 없음): base.drpc.org · eth.drpc.org
+//   과거 구간 getLogs 가능. 무료 요금제는 한 번에 100블록은 되고 500블록은 안 된다(오류 문구의 10000 은 실제 한도가 아님)
+//   → readLogs 가 성공한 크기와 실패한 크기 사이를 좁혀 실제 한도를 찾는다.
+//   eth.blockscout.com 은 몇 번 호출 뒤 이 서버 IP 도 429("Increase limits") — 키를 받으면 ERC8004_RPC_* 로 바꾼다.
 //   안 된 곳: publicnode(과거 구간 토큰 요구), base.blockscout·llamarpc(Cloudflare 확인 화면), mainnet.base.org(429),
 //             1rpc(50블록), meowrpc·developer-access(getLogs 미지원). GitHub Actions IP 는 blockscout 가 429 → 서버에서 돈다.
 export const CHAINS: readonly ChainConf[] = [
   { chainId: 8453, name: 'base', rpc: 'https://base.drpc.org', confirmations: 30, maxRange: 10_000, startBlock: 40_000_000n },
-  { chainId: 1, name: 'ethereum', rpc: 'https://eth.blockscout.com/api/eth-rpc', confirmations: 12, maxRange: 10_000, startBlock: 24_300_000n },
+  { chainId: 1, name: 'ethereum', rpc: 'https://eth.drpc.org', confirmations: 12, maxRange: 10_000, startBlock: 24_300_000n },
 ];
 export const MAX_LOGS_PER_CALL = 1000;
 
@@ -144,8 +145,13 @@ export async function readLogs(
   opts: { maxRange: number; deadline: number; maxCalls: number; now?: () => number; onChunk: (logs: RpcLog[], upTo: bigint) => Promise<void> },
 ): Promise<{ readTo: bigint; calls: number; complete: boolean }> {
   const now = opts.now ?? Date.now;
-  let cap = BigInt(Math.max(1, opts.maxRange)); // 범위 오류가 난 크기보다 작게 배운 상한(이번 실행 동안 유지)
-  let range = cap;
+  // 범위 한도 찾기: ok = 범위 제한 없이 성공한 가장 큰 크기, bad = 범위 오류가 난 가장 작은 크기. 다음 크기는 둘 사이 가운데.
+  //   1000건 상한(잘림)·5xx 로 줄인 것은 한도로 배우지 않는다(구간마다 다르다).
+  const max = BigInt(Math.max(1, opts.maxRange));
+  let ok = 0n;
+  let bad = max + 1n;
+  const next = () => (ok === 0n ? (bad > max ? max : bad / 2n > 0n ? bad / 2n : 1n) : bad - ok > 1n ? (ok + bad) / 2n : ok);
+  let range = max;
   let cur = from;
   let calls = 0;
   let readTo = from - 1n;
@@ -158,9 +164,14 @@ export async function readLogs(
       logs = (await rpc('eth_getLogs', [{ address, fromBlock: toHex(cur), toBlock: toHex(end), topics: [[TOPIC_REGISTERED, TOPIC_URI_UPDATED, TOPIC_TRANSFER]] }])) as RpcLog[];
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (range > 1n && (RANGE_ERR.test(msg) || (e instanceof RpcError && (e.status === 413 || e.status >= 500)))) {  // makeRpc 재시도 뒤에도 실패한 5xx 포함
-        range = range / 2n > 0n ? range / 2n : 1n;
-        if (RANGE_ERR.test(msg) && range < cap) cap = range; // 범위 제한이면 다시 넓히지 않는다(1000건 상한은 구간마다 달라 배우지 않음)
+      if (range > 1n && RANGE_ERR.test(msg)) {
+        if (range < bad) bad = range;
+        range = next();
+        if (range >= bad) range = bad - 1n > 0n ? bad - 1n : 1n;
+        continue;
+      }
+      if (range > 1n && e instanceof RpcError && (e.status === 413 || e.status >= 500)) { // makeRpc 재시도 뒤에도 실패한 5xx
+        range = range / 2n;
         continue;
       }
       throw e;
@@ -170,9 +181,10 @@ export async function readLogs(
       continue;
     }
     await opts.onChunk(Array.isArray(logs) ? logs.filter((l) => !l.removed) : [], end);
+    if (end - cur + 1n === range && range > ok) ok = range; // 마지막 짧은 구간은 한도 학습에 쓰지 않음
     readTo = end;
     cur = end + 1n;
-    if (range < cap) range = range * 2n > cap ? cap : range * 2n; // 배운 상한까지만 다시 넓힌다
+    range = next();
   }
   return { readTo, calls, complete: true };
 }

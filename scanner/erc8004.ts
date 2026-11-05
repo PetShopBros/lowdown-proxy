@@ -16,6 +16,7 @@ import {
   type ChainConf,
   type EventRow,
   fetchRegistrationFile,
+  findDeployBlock,
   makeRpc,
   parseLog,
   pool,
@@ -56,9 +57,17 @@ async function readChain(cfg: SupabaseConfig, chain: ChainConf, dryRun: boolean,
   const head = BigInt((await rpc('eth_blockNumber', [])) as string);
   const safe = head - BigInt(chain.confirmations);
   const [cur] = await dbGet<Cursor>(cfg, `erc8004_cursor?chain_id=eq.${chain.chainId}&select=chain_id,registry,first_block,last_block`);
-  const first: bigint | null = cur?.first_block != null ? BigInt(cur.first_block) : null;
-  const from = cur ? BigInt(cur.last_block) + 1n : chain.startBlock;
-  console.log(`${chain.name}: head ${head}, read ${from}..${safe}`);
+  let first: bigint | null = cur?.first_block != null ? BigInt(cur.first_block) : null;
+  if (!cur) {
+    // 처음: 레지스트리 코드가 생긴 블록을 찾는다(eth_getCode 약 25번). 안 되면 고정 시작 블록(빈 구간이 길 뿐).
+    try {
+      first = await findDeployBlock(rpc, IDENTITY_REGISTRY, safe);
+    } catch (e) {
+      console.log(`${chain.name}: deploy block search failed (${e instanceof Error ? e.message : e}); starting at ${chain.startBlock}`);
+    }
+  }
+  const from = cur ? BigInt(cur.last_block) + 1n : (first ?? chain.startBlock);
+  console.log(`${chain.name}: head ${head}, read ${from}..${safe}${first !== null && !cur ? ` (registry code from ${first})` : ''}`);
   if (from > safe) return { chain: chain.name, events: 0, calls: 0, complete: true, applied: 0 };
 
   let pending: EventRow[] = [];
