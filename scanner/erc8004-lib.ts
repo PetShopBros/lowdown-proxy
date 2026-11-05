@@ -223,6 +223,20 @@ export function decodeAbiString(data: string): string | null {
   return Buffer.from(h.slice(start, start + len * 2), 'hex').toString('utf8');
 }
 
+// Postgres text·jsonb 는 NUL(U+0000)을 담지 못한다(22P05). 체인의 문자열은 아무 바이트나 될 수 있어
+// NUL 을 U+FFFD(대체 문자)로 바꿔 저장한다. 바꾼 사실은 남는다(대체 문자가 보임). 해시는 원본 기준.
+export const stripNul = (s: string) => (s.includes('\u0000') ? s.replace(/\u0000/g, '\uFFFD') : s);
+export function stripNulDeep(v: unknown): unknown {
+  if (typeof v === 'string') return stripNul(v);
+  if (Array.isArray(v)) return v.map(stripNulDeep);
+  if (v && typeof v === 'object') {
+    const o: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v)) o[stripNul(k)] = stripNulDeep(x);
+    return o;
+  }
+  return v;
+}
+
 const topicAddress = (t: string | undefined) => (t && t.length >= 42 ? ('0x' + t.slice(-40)).toLowerCase() : null);
 
 export interface EventRow {
@@ -249,8 +263,9 @@ export function parseLog(chainId: number, l: RpcLog): EventRow | null {
     log_index: Number(hexToBigInt(l.logIndex)),
   };
   const uriOf = () => {
-    const s = decodeAbiString(l.data);
-    if (s === null) return { uri: null, uri_truncated: false };
+    const raw = decodeAbiString(l.data);
+    if (raw === null) return { uri: null, uri_truncated: false };
+    const s = stripNul(raw);
     return s.length > MAX_URI_CHARS ? { uri: s.slice(0, MAX_URI_CHARS), uri_truncated: true } : { uri: s, uri_truncated: false };
   };
   if ((t0 === TOPIC_REGISTERED || t0 === TOPIC_URI_UPDATED) && l.topics.length >= 3) {
@@ -330,6 +345,7 @@ function parseBody(text: string, via: FileResult['fetch_via'], status: number | 
     return empty('invalid_json', { bytes, sha256, fetch_via: via, http_status: status });
   }
   if (!body || typeof body !== 'object' || Array.isArray(body)) return empty('not_object', { bytes, sha256, fetch_via: via, http_status: status });
+  body = stripNulDeep(body); // jsonb 는 \u0000 을 받지 않는다
   return { outcome: 'ok', http_status: status, bytes, sha256, body, services: extractServices(body), fetch_via: via };
 }
 

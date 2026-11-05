@@ -48,6 +48,16 @@ describe('로그 해석', () => {
     assert.equal(parseLog(1, log(['0xdead'], '0x')), null);
   });
 
+  test('NUL 문자는 대체 문자로 (Postgres 22P05)', async () => {
+    const r = parseLog(1, log([TOPIC_REGISTERED, '0x' + word(9), addrTopic(OWNER)], abiString('ipfs://a\u0000b')))!;
+    assert.equal(r.uri, 'ipfs://a\uFFFDb');
+    const f = (async () => new Response(JSON.stringify({ name: 'x\u0000', services: [{ name: 'MCP', endpoint: 'https://m\u0000.x' }] }), { status: 200 })) as unknown as typeof fetch;
+    const res = await fetchRegistrationFile('https://n.example/a', false, f);
+    assert.equal(res.outcome, 'ok');
+    assert.ok(!JSON.stringify(res.body).includes('\\u0000'));
+    assert.equal((res.body as any).name, 'x\uFFFD');
+  });
+
   test('64KB 넘는 URI 는 잘라서 표시', () => {
     const r = parseLog(1, log([TOPIC_REGISTERED, '0x' + word(1), addrTopic(OWNER)], abiString('data:application/json,' + 'x'.repeat(70_000))))!;
     assert.equal(r.uri_truncated, true);
