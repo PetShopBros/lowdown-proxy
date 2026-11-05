@@ -184,6 +184,30 @@ describe('근거 수준', () => {
     // 다시 붙여도 같은 결과(카드 본문에 이미 있어도 새로 계산)
     assert.deepEqual(rep.withEvidence(none), none);
   });
+  test('맨 앞 요약: 인증·마지막 응답 날짜, resolved_target 바로 다음', () => {
+    const b = rep.withEvidence({
+      target: 'gh', resolved_target: 'mcp:a/b', message: 'm',
+      status: { state: 'auth_required', latest_check: '2026-11-05', stale: false },
+      scanner: { daily_30d: [
+        { day: '2026-11-01', reached_level: 2, error_type: null, http_status: 200 },
+        { day: '2026-11-05', reached_level: 0, error_type: null, http_status: 401 },
+      ] },
+      source: { name: 'Lowdown' },
+    });
+    assert.deepEqual(b.summary, { auth: 'required', auth_basis: 'latest_check', last_answered: '2026-11-01', last_reached: '2026-11-05', latest_check: '2026-11-05', state: 'auth_required' });
+    const keys = Object.keys(b);
+    assert.equal(keys.indexOf('summary'), keys.indexOf('resolved_target') + 1);
+    assert.ok(keys.indexOf('summary') < keys.indexOf('message'));
+    assert.equal(rep.applyMenu(b, 'install-check').summary.auth, 'required');
+    assert.deepEqual(rep.withEvidence(b), b);
+    const stale = rep.withEvidence({ ...base, status: { state: 'answered', latest_check: '2026-10-01', stale: true }, scanner: { daily_30d: [] } });
+    assert.equal(stale.summary.auth, 'unknown');
+    assert.equal(stale.summary.state, null);
+    assert.equal(stale.summary.last_answered_note, 'none_in_30d');
+    const unobserved = rep.withEvidence({ ...base, scanner: { observed: false, note: 'x' } });
+    assert.equal(unobserved.summary.last_answered_note, 'not_observed');
+    assert.equal(rep.withEvidence({ task_type: 'x', message: 'm' }).summary, undefined);
+  });
   test('메뉴 응답에도 schema_version·evidence_levels 가 남는다', () => {
     const full = rep.withEvidence({ ...base, registry: { listed: true }, status: { state: 'answered' } });
     const m = rep.applyMenu(full, 'status');

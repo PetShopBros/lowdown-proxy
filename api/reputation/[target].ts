@@ -434,10 +434,52 @@ export function evidenceLevels(b: Body): Record<string, unknown> {
   };
 }
 
-/** 성공 응답(전체 모양)에 schema_version·evidence_levels 를 붙인다. 기존 필드는 그대로. 카드 본문에도 매번 다시 계산. */
+/**
+ * 맨 앞 요약 (2026-11-06): 인증 필요 여부와 마지막 응답 날짜. 새 계산 없이 status·scanner.daily_30d 에서 뽑는다.
+ *   auth: 최신 점검 기준 required | not_required | mixed | unknown (점검이 오래됐거나 응답 없음·형식 오류면 unknown)
+ *   last_answered: 자격 증명 없이 tools/list 까지 답한 마지막 날 (30일 안)
+ *   last_reached: HTTP 응답이 돌아온 마지막 날 (401·403 포함, 30일 안)
+ */
+export function summaryOf(b: Body): Body | null {
+  if (typeof b.target !== "string") return null;
+  const st = b.status && typeof b.status === "object" ? b.status : null;
+  const state = typeof st?.state === "string" ? st.state : null;
+  const latest = isoDay(st?.latest_check);
+  const fresh = !!st && st.stale !== true;
+  const auth = !fresh || !state ? "unknown"
+    : state === "auth_required" ? "required"
+    : state === "answered" ? "not_required"
+    : state === "mixed" ? "mixed"
+    : "unknown";
+  const sc = b.scanner && typeof b.scanner === "object" ? b.scanner : null;
+  const daily = sc && sc.observed !== false && Array.isArray(sc.daily_30d) ? (sc.daily_30d as Body[]) : null;
+  let lastAnswered: string | null = null;
+  let lastReached: string | null = null;
+  for (const d of daily ?? []) {
+    const day = isoDay(d?.day);
+    if (!day) continue;
+    if (d.reached_level === 2 && d.error_type == null && (!lastAnswered || day > lastAnswered)) lastAnswered = day;
+    if (Number.isInteger(d.http_status) && (!lastReached || day > lastReached)) lastReached = day;
+  }
+  const out: Body = { auth, auth_basis: "latest_check", last_answered: lastAnswered };
+  if (!lastAnswered) out.last_answered_note = daily ? "none_in_30d" : "not_observed";
+  out.last_reached = lastReached;
+  out.latest_check = latest;
+  out.state = fresh ? state : null;
+  return out;
+}
+
+/** 성공 응답(전체 모양)에 schema_version·summary·evidence_levels 를 붙인다. 기존 필드는 그대로. 카드 본문에도 매번 다시 계산. */
 export function withEvidence(b: Body): Body {
-  const { schema_version: _v, evidence_levels: _e, ...rest } = b;
-  const out: Body = { schema_version: SCHEMA_VERSION, ...rest, evidence_levels: evidenceLevels(rest) };
+  const { schema_version: _v, evidence_levels: _e, summary: _s, ...rest } = b;
+  const summary = summaryOf(rest);
+  const ordered: Body = {};
+  const anchor = rest.resolved_target !== undefined ? "resolved_target" : "target";
+  for (const [k, v] of Object.entries(rest)) {
+    ordered[k] = v;
+    if (k === anchor && summary) ordered.summary = summary; // 요약은 대상 이름 바로 다음, message 앞
+  }
+  const out: Body = { schema_version: SCHEMA_VERSION, ...ordered, evidence_levels: evidenceLevels(rest) };
   if (rest.source !== undefined) {
     delete out.source;
     out.source = rest.source; // 출처는 맨 끝 유지
@@ -1778,7 +1820,7 @@ export function parseMenu(raw: unknown): MenuParse {
 }
 
 type Body = Record<string, any>;
-const COMMON = ["schema_version", "target", "task_type", "resolved_target", "message", "evidence_levels", "registry_candidates", "scanner_candidates", "npm_candidates"];
+const COMMON = ["schema_version", "target", "task_type", "resolved_target", "summary", "message", "evidence_levels", "registry_candidates", "scanner_candidates", "npm_candidates"];
 const AGENT_REPORT_KEYS = [
   "target_type", "interactions", "rated_interactions", "success_rate", "protocol_requests", "rejected_requests", "by_source",
   "success_rate_basis", "avg_latency_ms", "failure_breakdown", "reviews", "avg_rating", "review_conversion_rate", "confidence",

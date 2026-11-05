@@ -983,7 +983,7 @@ describe('메뉴 (?menu=)', () => {
     const r = await call('mcp:io.github.acme/solo', { menu: 'declared-vs-observed' });
     assert.equal(r.status, 200);
     // 응답 스키마 v1 (2026-11-05): schema_version·evidence_levels 가 더해졌다(기존 필드·순서는 그대로)
-    assert.deepEqual(Object.keys(r.body), ['schema_version', 'target', 'resolved_target', 'message', 'evidence_levels', 'menu', 'scanner', 'source']);
+    assert.deepEqual(Object.keys(r.body), ['schema_version', 'target', 'resolved_target', 'summary', 'message', 'evidence_levels', 'menu', 'scanner', 'source']);
     assert.deepEqual(r.body.scanner, { declared_vs_observed: full.body.scanner.declared_vs_observed });
     assert.equal(r.body.message, full.body.message);
     assert.equal(lookupsInserted[0]!.menu, 'declared-vs-observed');
