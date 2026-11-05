@@ -153,6 +153,31 @@ describe('원격 MCP 메시지별 기록', () => {
     const headers = Object.fromEntries([...r.headers].filter(([k]) => k !== 'date'));
     return { status: r.status, headers, text: await r.text() };
   };
+  test('server/discover (2026-07-28): SDK 가 처리하는 버전만 알리고, _meta 의 clientInfo 를 기록', async () => {
+    on(); rows.length = 0;
+    const meta = { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientInfo': { name: 'new-client', version: '2.0' }, 'io.modelcontextprotocol/clientCapabilities': {} };
+    const r = await post({ jsonrpc: '2.0', id: 'd1', method: 'server/discover', params: { _meta: meta } });
+    assert.equal(r.status, 200);
+    const j = JSON.parse(r.text);
+    assert.equal(j.id, 'd1');
+    assert.equal(j.result.resultType, 'complete');
+    assert.ok(j.result.supportedVersions.includes('2025-11-25'));
+    assert.ok(!j.result.supportedVersions.includes('2026-07-28'));
+    assert.deepEqual(j.result.capabilities, { tools: {} });
+    assert.equal(j.result._meta['io.modelcontextprotocol/serverInfo'].name, 'lowdown');
+    assert.match(j.result.instructions, /get_lowdown/);
+    assert.equal(j.result.cacheScope, 'public');
+    await settle(1);
+    const d = rows.find((x) => x.rpc_method === 'server/discover');
+    assert.equal(d.outcome, 'ok');
+    assert.equal(d.declared_client_name, 'new-client');
+    assert.equal(d.declared_client_version, '2.0');
+    assert.equal(d.protocol_version, '2026-07-28');
+    // 알림(id 없음)·배치는 이 경로를 타지 않는다
+    const n = await post({ jsonrpc: '2.0', method: 'server/discover' });
+    assert.notEqual(n.status, 200);
+  });
+
   const init = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'probe-client', version: '9.1' } } };
 
   test('initialize · 알림 · tools/list · tools/call 을 메시지별로 기록 (인자 값은 저장하지 않음)', async () => {

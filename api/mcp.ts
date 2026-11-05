@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { SUPPORTED_PROTOCOL_VERSIONS } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 // 원격 MCP 서버 (2026-10-30). https://lowdown-proxy.vercel.app/mcp (vercel.json rewrite → /api/mcp)
@@ -234,7 +235,10 @@ export function describeMessages(body: unknown, headerProtocol: string | null): 
       const a = isObj(params.arguments) ? params.arguments : {};
       if (tool === "get_lowdown" && typeof a.menu === "string" && MENU_SET.has(a.menu)) menu = a.menu;
     }
-    const ci = method === "initialize" && isObj(params.clientInfo) ? params.clientInfo : {};
+    // 2026-07-28 스펙: initialize 없이 요청마다 _meta 에 clientInfo·protocolVersion 을 싣는다(SEP-2575)
+    const meta = isObj(params._meta) ? params._meta : {};
+    const metaCi = isObj(meta["io.modelcontextprotocol/clientInfo"]) ? meta["io.modelcontextprotocol/clientInfo"] : {};
+    const ci = method === "initialize" && isObj(params.clientInfo) ? params.clientInfo : metaCi;
     return {
       idKey: hasId ? JSON.stringify(o.id) : null,
       isNotification: method !== null && !hasId,
@@ -243,7 +247,7 @@ export function describeMessages(body: unknown, headerProtocol: string | null): 
       menu,
       clientName: s(ci.name, 100),
       clientVersion: s(ci.version, 50),
-      protocol: (method === "initialize" ? s(params.protocolVersion, 20) : null) ?? headerProtocol,
+      protocol: (method === "initialize" ? s(params.protocolVersion, 20) : s(meta["io.modelcontextprotocol/protocolVersion"], 20)) ?? headerProtocol,
     };
   });
 }
@@ -358,10 +362,33 @@ function observe(req: VercelRequest, res: VercelResponse) {
   };
 }
 
+// server/discover (MCP 2026-07-28, SEP-2575: 서버 MUST 구현) — SDK(1.32.2, 최신)가 아직 모르는 메서드라 여기서 직접 답한다.
+//   supportedVersions 는 SDK 가 실제로 처리하는 버전만 적는다(2025-11-25 이하, initialize 방식). 2026-07-28 을 적지 않으므로
+//   새 스펙 클라이언트는 이 답을 보고 initialize 방식으로 내려온다. SDK 가 새 스펙을 지원하면 SDK 쪽으로 넘긴다.
+//   단일 메시지일 때만 여기서 답한다(배치 안의 server/discover 는 SDK 가 오류로 답하던 그대로).
+export function discoverResult(id: unknown): Record<string, unknown> {
+  return {
+    jsonrpc: "2.0",
+    id,
+    result: {
+      resultType: "complete",
+      supportedVersions: [...SUPPORTED_PROTOCOL_VERSIONS],
+      capabilities: { tools: {} },
+      _meta: { "io.modelcontextprotocol/serverInfo": { name: "lowdown", version: VERSION } },
+      instructions: INSTRUCTIONS,
+      ttlMs: 3_600_000,
+      cacheScope: "public",
+    },
+  };
+}
+export function isDiscover(body: unknown): body is { id: unknown } {
+  return isObj(body) && body.method === "server/discover" && "id" in body && body.id !== undefined && body.id !== null;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "content-type, accept, mcp-protocol-version, mcp-session-id, authorization");
+  res.setHeader("Access-Control-Allow-Headers", "content-type, accept, mcp-protocol-version, mcp-session-id, mcp-method, mcp-name, authorization");
   res.setHeader("Cache-Control", "no-store");
   if (req.method === "OPTIONS") return res.status(204).end();
   const obs = observe(req, res);
@@ -380,6 +407,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ jsonrpc: "2.0", error: { code: -32700, message: "Parse error: the request body is not valid JSON." }, id: null });
   }
   obs.setMessages(body);
+  if (isDiscover(body)) return res.status(200).json(discoverResult(body.id));
   const host = header(req, "host", 200) ?? "lowdown-proxy.vercel.app";
   const server = buildServer({ host, ua: header(req, "user-agent", 300) });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
