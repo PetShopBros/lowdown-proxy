@@ -301,6 +301,8 @@ async function main(): Promise<void> {
   const prevEndpoints = await readPrev<Record<string, any>>(cfg, 'card_endpoint_checks', 'endpoint', 'endpoint,result', slice);
   // 오늘 이미 확인한 호스트는 건너뛴다(예비 실행이 이어서 할 때 중복 요청을 막는다)
   let work = all.filter((w) => w.slice === slice && !(prevHosts.get(w.origin)?.checked_at >= todayStart && !force));
+  // 주소가 많은 호스트(같은 호스트에는 차례로 보내 오래 걸림)를 먼저 시작해 끝이 늘어지지 않게 한다
+  work.sort((a, b) => b.endpoints.length - a.endpoints.length || a.origin.localeCompare(b.origin));
   if (Number.isInteger(limitArg) && limitArg > 0) work = work.slice(0, limitArg);
   const totalEndpoints = work.reduce((n, w) => n + w.endpoints.length, 0);
   console.log(`card discovery run ${runId}: day ${day}, slice ${slice}, targets ${targets.length}, origins ${all.length} (this slice ${work.length}, endpoints ${totalEndpoints}, shared ${work.filter((w) => w.shared).length}), dry_run=${dryRun}`);
@@ -310,7 +312,7 @@ async function main(): Promise<void> {
   const timeout = intEnv('CARD_TIMEOUT_MS', 8000);
   const quietTimeout = intEnv('CARD_QUIET_TIMEOUT_MS', 3000);
   const gapMs = intEnv('CARD_HOST_GAP_MS', 250);
-  const outcomes = await pool(work, intEnv('CARD_CONCURRENCY', 16), deadline - 3 * 60_000, async (w) => {
+    const outcomes = await pool(work, intEnv('CARD_CONCURRENCY', 32), deadline - 3 * 60_000, async (w) => {
     const nowIso = new Date().toISOString();
     const fetcher: Fetcher = (u, kind) => fetchCard(u, kind, w.quiet ? quietTimeout : timeout);
     return checkOrigin(w, prevHosts.get(w.origin) ?? null, prevEndpoints, fetcher, nowIso, runId, () => sleep(gapMs));
