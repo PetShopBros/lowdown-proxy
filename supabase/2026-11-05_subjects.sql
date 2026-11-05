@@ -164,11 +164,14 @@ begin
   perform pg_advisory_xact_lock(hashtext('lowdown_subjects_refresh'));
 
   drop table if exists _rem; drop table if exists _pkg; drop table if exists _ua;
+  -- 정규화 값(n)·호스트(host)는 여기서 한 번만 계산해 열로 둔다. 조인 조건에 함수를 쓰면 행 조합마다 다시 계산돼 매우 느려진다.
   create temp table _rem on commit drop as
-    select s.name, split_part(l, ' ', 1) as transport, substr(l, length(split_part(l, ' ', 1)) + 2) as raw_url
-    from registry_state s, unnest(string_to_array(s.remotes_key, E'\n')) as l
-    where s.removed_at is null and s.remotes_key <> '' and l like '% %';
-  delete from _rem where lowdown_norm_endpoint(raw_url) is null;
+    select name, transport, raw_url, lowdown_norm_endpoint(raw_url) as n, lowdown_url_host(raw_url) as host
+    from (select s.name, split_part(l, ' ', 1) as transport, substr(l, length(split_part(l, ' ', 1)) + 2) as raw_url
+          from registry_state s, unnest(string_to_array(s.remotes_key, E'\n')) as l
+          where s.removed_at is null and s.remotes_key <> '' and l like '% %') x;
+  delete from _rem where n is null;
+  analyze _rem;
 
   create temp table _pkg on commit drop as
     select s.name, lower(split_part(l, ' ', 1)) as rtype, split_part(l, ' ', 2) as ident
@@ -182,6 +185,7 @@ begin
          jsonb_array_elements(coalesce(e->'declared_urls', '[]'::jsonb)) u
     where coalesce(e->>'name_key', '') <> '';
   delete from _ua where host is null;
+  analyze _pkg; analyze _ua;
 
   -- 이름표
   insert into subject_ids (scheme, value, first_source)
@@ -189,12 +193,12 @@ begin
   on conflict (scheme, value) do nothing;
   insert into subject_ids (scheme, value, attrs, first_source)
     select distinct on (n) 'endpoint', n, lowdown_endpoint_attrs(raw_url), 'mcp_registry'
-    from (select lowdown_norm_endpoint(raw_url) as n, raw_url from _rem) x order by n, raw_url
+    from _rem order by n, raw_url
   on conflict (scheme, value) do update set attrs = subject_ids.attrs || excluded.attrs  -- 성질 규칙이 바뀌면 다음 채우기에 반영
     where subject_ids.attrs is distinct from subject_ids.attrs || excluded.attrs;
   insert into subject_ids (scheme, value, first_source)
     select distinct 'domain', h, 'rule'
-    from (select lowdown_url_host(raw_url) as h from _rem union select host from _ua) x where h is not null
+    from (select host as h from _rem union select host from _ua) x where h is not null
   on conflict (scheme, value) do nothing;
   insert into subject_ids (scheme, value, first_source)
     select distinct case when rtype in ('npm', 'pypi') then rtype else 'package' end,
@@ -210,7 +214,7 @@ begin
     select distinct on (a.id, b.id) a.id, b.id, 'declares_remote', 'declared', 'mcp_registry', jsonb_build_object('transport', r.transport)
     from _rem r
     join subject_ids a on a.scheme = 'registry' and a.value = r.name
-    join subject_ids b on b.scheme = 'endpoint' and b.value = lowdown_norm_endpoint(r.raw_url)
+    join subject_ids b on b.scheme = 'endpoint' and b.value = r.n
     order by a.id, b.id, r.transport
   on conflict (from_id, to_id, link_type, declared_by) do update
     set last_seen_at = v_now, evidence = subject_links.evidence || excluded.evidence;
@@ -218,8 +222,8 @@ begin
   insert into subject_links (from_id, to_id, link_type, basis, declared_by)
     select distinct b.id, d.id, 'hosted_on', 'derived', 'rule'
     from _rem r
-    join subject_ids b on b.scheme = 'endpoint' and b.value = lowdown_norm_endpoint(r.raw_url)
-    join subject_ids d on d.scheme = 'domain' and d.value = lowdown_url_host(r.raw_url)
+    join subject_ids b on b.scheme = 'endpoint' and b.value = r.n
+    join subject_ids d on d.scheme = 'domain' and d.value = r.host
   on conflict (from_id, to_id, link_type, declared_by) do update set last_seen_at = v_now;
 
   insert into subject_links (from_id, to_id, link_type, basis, declared_by)
@@ -325,8 +329,8 @@ begin
 end $$;
 select cron.schedule('lowdown-subjects-refresh', '47 2 * * *', 'select public.lowdown_subjects_refresh()');
 
--- 첫 채우기
-select public.lowdown_subjects_refresh();
+-- 첫 채우기는 이 파일과 따로 실행한다(대시보드 요청 시간 초과로 파일 전체가 취소되지 않게):
+--   select public.lowdown_subjects_refresh();
 
 -- ── 확인용 ─────────────────────────────────────────────
 -- select scheme, count(*) from subject_ids group by 1 order by 2 desc;
