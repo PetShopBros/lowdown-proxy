@@ -1,0 +1,61 @@
+name: erc8004
+
+# ERC-8004 등록 수집(scanner/erc8004.ts): Base·Ethereum Identity Registry 이벤트를 이어서 읽고, 등록 파일을 가져와
+# 선언된 서비스(MCP 엔드포인트·A2A 카드)를 이름표·연결선으로 잇는다. 체인은 읽기만 한다(거래·가스 없음).
+# 본 관찰(scanner.yml)과 따로 돈다. 실패해도 관찰에는 영향이 없다. DB: supabase/2026-11-05_erc8004.sql
+
+on:
+  schedule:
+    - cron: '23 3 * * *' # 매일 12:23 KST (UTC 03:23). 정각·다른 작업 시각 피함
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '계산만 (DB 쓰기 없음)'
+        type: boolean
+        default: false
+      chains:
+        description: '체인 (빈 값 = base,ethereum)'
+        type: string
+        default: ''
+      fetch_limit:
+        description: '등록 파일 가져오기 상한 (빈 값 = 5000)'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  issues: write # 예약 실행 실패 시 이슈 생성(알림)
+
+concurrency:
+  group: erc8004
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: ERC-8004 collect
+        run: >-
+          node scanner/erc8004.ts
+          ${{ inputs.dry_run && '--dry-run' || '' }}
+          ${{ inputs.chains && format('--chains={0}', inputs.chains) || '' }}
+          ${{ inputs.fetch_limit && format('--fetch-limit={0}', inputs.fetch_limit) || '' }}
+        env:
+          LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
+          LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
+
+      - name: Open issue on failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "erc8004 수집 실패 $(date -u +%F)" \
+            --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
