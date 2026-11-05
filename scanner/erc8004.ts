@@ -2,7 +2,7 @@
 // 필수 환경변수: LOWDOWN_SUPABASE_URL, LOWDOWN_SCANNER_KEY (서버에서는 LOWDOWN_SANDBOX_KEY 도 받는다)
 // 선택: ERC8004_RPC_BASE, ERC8004_RPC_ETHEREUM (기본 Blockscout 인스턴스), ERC8004_RPC_INTERVAL_MS(기본 400, 호출 간격), ERC8004_FETCH_LIMIT(기본 5000), ERC8004_TIME_BUDGET_MIN(기본 30),
 //       ERC8004_LOG_BUDGET_MIN(기본 18, 이벤트 읽기에 쓰는 시간), ERC8004_MAX_LOG_CALLS(기본 20000, 체인당), ERC8004_CONCURRENCY(기본 8)
-// 순서: 체인마다 이벤트 읽기(이어서) → 에이전트 상태 계산 → 가져올 차례인 등록 파일 가져오기 → 이름표·연결선.
+// 순서: 체인마다 이벤트 읽기(이어서) → 가져올 차례인 등록 파일 가져오기. 상태 계산·연결선은 DB 예약 작업(lowdown_erc8004_process, 10분마다).
 // 체인은 읽기만 한다. 본 관찰(scan.ts)과 따로 돈다.
 
 import { appendFileSync } from 'node:fs';
@@ -38,16 +38,6 @@ async function dbGet<T>(cfg: SupabaseConfig, path: string): Promise<T[]> {
   if (!res.ok) throw new Error(`${path.split('?')[0]} read failed: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
   return (await res.json()) as T[];
 }
-async function dbRpc<T>(cfg: SupabaseConfig, fn: string, args: Record<string, unknown>): Promise<T> {
-  const res = await fetch(`${cfg.url.replace(/\/+$/, '')}/rest/v1/rpc/${fn}`, {
-    method: 'POST',
-    headers: supabaseHeaders(cfg.key, { 'Content-Type': 'application/json', Accept: 'application/json' }),
-    body: JSON.stringify(args),
-    signal: AbortSignal.timeout(300_000),
-  });
-  if (!res.ok) throw new Error(`rpc ${fn} failed: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`);
-  return (await res.json()) as T;
-}
 
 type Cursor = { chain_id: number; registry: string; first_block: number | null; last_block: number };
 
@@ -73,22 +63,19 @@ async function readChain(cfg: SupabaseConfig, chain: ChainConf, dryRun: boolean,
   }
   const from = cur ? BigInt(cur.last_block) + 1n : (first ?? chain.startBlock);
   console.log(`${chain.name}: head ${head}, read ${from}..${safe}${first !== null && !cur ? ` (registry code from ${first})` : ''}`);
-  if (from > safe) return { chain: chain.name, events: 0, calls: 0, complete: true, applied: 0 };
+  if (from > safe) return { chain: chain.name, events: 0, calls: 0, complete: true };
 
   let pending: EventRow[] = [];
-  let applyFrom = from;
   let events = 0;
-  let applied = 0;
   let lastFlush = Date.now();
   let lastLog = Date.now();
   let chunks = 0;
-  // 순서: 이벤트 저장 → 에이전트 상태 계산 → 커서 저장. 중간에 실패하면 커서가 그대로라 다음 실행이 다시 읽는다(이벤트는 중복 무시).
+  // 순서: 이벤트 저장 → 커서 저장(상태 계산은 DB 예약 작업 lowdown_erc8004_process). 중간에 실패하면 커서가 그대로라 다음 실행이 다시 읽는다(이벤트는 중복 무시).
   const saveCursor = (upTo: bigint) =>
     postBatches(cfg, 'erc8004_cursor?on_conflict=chain_id', [{ chain_id: chain.chainId, registry: IDENTITY_REGISTRY, first_block: first === null ? null : Number(first), last_block: Number(upTo), updated_at: new Date().toISOString() }], 'resolution=merge-duplicates,return=minimal', {});
   const flush = async (upTo: bigint, force: boolean) => {
     if (pending.length === 0) {
       if (!dryRun) await saveCursor(upTo);
-      applyFrom = upTo + 1n;
       return;
     }
     // 5000건이 모이거나 60초가 지나면 저장한다(커서가 오래 멈춰 보이지 않게, 중간에 끊겨도 잃는 양이 적게)
@@ -96,11 +83,9 @@ async function readChain(cfg: SupabaseConfig, chain: ChainConf, dryRun: boolean,
     lastFlush = Date.now();
     if (!dryRun) {
       await postBatches(cfg, 'erc8004_events?on_conflict=chain_id,tx_hash,log_index', pending, 'resolution=ignore-duplicates,return=minimal', { batchSize: 500 });
-      applied += await dbRpc<number>(cfg, 'lowdown_erc8004_apply', { p_chain: chain.chainId, p_from_block: Number(applyFrom) });
       await saveCursor(upTo);
     }
     pending = [];
-    applyFrom = upTo + 1n;
   };
 
   const r = await readLogs(rpc, IDENTITY_REGISTRY, from, safe, {
@@ -124,8 +109,8 @@ async function readChain(cfg: SupabaseConfig, chain: ChainConf, dryRun: boolean,
     },
   });
   if (r.readTo >= from) await flush(r.readTo, true);
-  console.log(`${chain.name}: events ${events}, getLogs calls ${r.calls}, read to ${r.readTo}${r.complete ? '' : ' (stopped at budget, continues next run)'}, agents updated ${applied}`);
-  return { chain: chain.name, events, calls: r.calls, complete: r.complete, applied };
+  console.log(`${chain.name}: events ${events}, getLogs calls ${r.calls}, read to ${r.readTo}${r.complete ? '' : ' (stopped at budget, continues next run)'}`);
+  return { chain: chain.name, events, calls: r.calls, complete: r.complete };
 }
 
 type Due = { chain_id: number; agent_id: string; agent_uri: string | null; uri_truncated: boolean; last_ok_sha: string | null };
@@ -180,12 +165,8 @@ async function main(): Promise<void> {
   const mcp = rows.reduce((n, r) => n + (r.services ?? []).filter((s) => s.name.toLowerCase() === 'mcp').length, 0);
   console.log(`files: due ${due.length}, fetched ${rows.length}, ${[...byOutcome].map(([k, n]) => `${k} ${n}`).join(', ')}; unchanged ${rows.filter((r) => r.unchanged).length}; MCP services declared ${mcp}`);
 
-  let link: unknown = null;
-  if (!dryRun && rows.length) {
-    await postBatches(cfg, 'erc8004_files', rows, 'return=minimal', { batchSize: 200 });
-    link = await dbRpc(cfg, 'lowdown_erc8004_link', { p_run: runId });
-    console.log(`link: ${JSON.stringify(link)}`);
-  }
+  // 상태 계산·연결선은 DB 예약 작업(lowdown_erc8004_process, 10분마다)이 한다. 여기서는 저장만.
+  if (!dryRun && rows.length) await postBatches(cfg, 'erc8004_files', rows, 'return=minimal', { batchSize: 200 });
   console.log(`erc8004 done in ${Math.round((Date.now() - started) / 1000)}s${dryRun ? ' (dry-run, nothing written)' : ''}`);
   const out = process.env.GITHUB_OUTPUT;
   if (out) appendFileSync(out, `erc8004_files=${rows.length}\nerc8004_mcp=${mcp}\n`);
