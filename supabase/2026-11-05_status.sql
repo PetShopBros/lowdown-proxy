@@ -1,4 +1,5 @@
 -- 2026-11-05: Lowdown Public Status v1 — 매시간 상황판 스냅샷 (Supabase SQL Editor 에서 실행, 여러 번 실행해도 안전)
+-- 이후 변경: lowdown_status_compute() 의 최신 정의는 2026-11-05_self.sql (Lowdown 자신의 요청 제외). 이 파일을 다시 실행하면 그 이전 정의로 돌아가므로 self.sql 도 이어서 실행한다.
 --
 -- 구조:
 --   lowdown_status_compute()  매시 52분(pg_cron) 한 번 집계 → status_snapshots 에 1줄(JSON) 누적. 지우지 않는다.

@@ -1,4 +1,5 @@
 -- 2026-11-05: Agent Observatory — 방문 시스템 관측 스냅샷 (Supabase SQL Editor 에서 실행, 여러 번 실행해도 안전)
+-- 이후 변경: lowdown_agents_compute() 의 최신 정의는 2026-11-05_self.sql (Lowdown 자신의 요청 제외). 이 파일을 다시 실행하면 그 이전 정의로 돌아가므로 self.sql 도 이어서 실행한다.
 --
 -- lowdown_agents_compute()  매시 54분(pg_cron) 한 번 집계 → agent_snapshots 에 1줄(JSON) 누적. 지우지 않는다.
 -- 공개 전 검증 단계: 이 SQL 은 아직 공개 권한을 주지 않는다(anon select 없음). 대조 쿼리로 숫자를 맞춘 뒤 공개 SQL 을 따로 실행한다.
