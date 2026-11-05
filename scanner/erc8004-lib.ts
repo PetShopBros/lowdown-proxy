@@ -16,14 +16,15 @@ export interface ChainConf {
   name: string;
   rpc: string;
   confirmations: number; // 이만큼 뒤까지만 읽는다(재편성 대비)
+  startBlock: bigint; // 처음 읽기 시작할 블록(메인넷 출시 2026-01-29 보다 앞). 보관 노드 탐색은 호출이 많아 쓰지 않는다
   maxRange: number; // getLogs 한 번의 최대 블록 수(시작값, 오류 시 반으로 줄인다)
 }
 
 // Blockscout 인스턴스 JSON-RPC: 키 없이 과거 로그를 읽을 수 있다(2026-11-05, publicnode 는 과거 구간에 토큰 요구).
 //   eth_getLogs 는 한 번에 최대 1000건 → 1000건이 오면 잘렸을 수 있으므로 범위를 줄여 다시 읽는다(readLogs).
 export const CHAINS: readonly ChainConf[] = [
-  { chainId: 8453, name: 'base', rpc: 'https://base.blockscout.com/api/eth-rpc', confirmations: 30, maxRange: 10_000 },
-  { chainId: 1, name: 'ethereum', rpc: 'https://eth.blockscout.com/api/eth-rpc', confirmations: 12, maxRange: 10_000 },
+  { chainId: 8453, name: 'base', rpc: 'https://base.blockscout.com/api/eth-rpc', confirmations: 30, maxRange: 10_000, startBlock: 40_000_000n },
+  { chainId: 1, name: 'ethereum', rpc: 'https://eth.blockscout.com/api/eth-rpc', confirmations: 12, maxRange: 10_000, startBlock: 24_300_000n },
 ];
 export const MAX_LOGS_PER_CALL = 1000;
 
@@ -47,9 +48,21 @@ export interface RpcLog {
 
 export type RpcCall = (method: string, params: unknown[]) => Promise<unknown>;
 
-export function makeRpc(url: string, fetchImpl: typeof fetch = fetch, timeoutMs = 30_000, sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))): RpcCall {
+export function makeRpc(
+  url: string,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = 30_000,
+  sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+  minIntervalMs = 0,
+  now: () => number = Date.now,
+): RpcCall {
   let id = 0;
+  let last = 0;
   const once = async (method: string, params: unknown[]) => {
+    // 공개 인스턴스는 초당 요청이 적다 → 호출 사이 간격을 둔다
+    const wait = last + minIntervalMs - now();
+    if (wait > 0) await sleep(wait);
+    last = now();
     const res = await fetchImpl(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'user-agent': 'lowdown-scanner-erc8004 (+https://github.com/PetShopBros/lowdown-proxy)' },
@@ -61,21 +74,22 @@ export function makeRpc(url: string, fetchImpl: typeof fetch = fetch, timeoutMs 
     try {
       j = JSON.parse(text);
     } catch {
-      throw new RpcError(`HTTP ${res.status} non-JSON`, res.status);
+      throw new RpcError(`HTTP ${res.status} non-JSON`, res.status, undefined, Number(res.headers.get('retry-after')) || undefined);
     }
     if (j?.error) throw new RpcError(String(j.error.message ?? 'rpc error').slice(0, 200), res.status, j.error.code);
-    if (!res.ok) throw new RpcError(`HTTP ${res.status}`, res.status);
+    if (!res.ok) throw new RpcError(`HTTP ${res.status}`, res.status, undefined, Number(res.headers.get('retry-after')) || undefined);
     return j.result;
   };
-  // 429·5xx·연결 오류는 잠깐 쉬고 다시(최대 4번). 공개 인스턴스의 초당 요청 제한 대비.
+  // 429·5xx·연결 오류는 쉬고 다시(최대 6번: 2·4·8·16·30초, Retry-After 가 있으면 그 값). 공개 인스턴스의 초당 요청 제한 대비.
   return async (method, params) => {
     for (let attempt = 1; ; attempt++) {
       try {
         return await once(method, params);
       } catch (e) {
-        const retry = e instanceof RpcError ? e.status === 429 || e.status >= 500 : !(e instanceof RpcError);
-        if (!retry || attempt >= 4) throw e;
-        await sleep(1000 * 2 ** (attempt - 1));
+        const retry = e instanceof RpcError ? e.status === 429 || e.status >= 500 : true;
+        if (!retry || attempt >= 6) throw e;
+        const ra = e instanceof RpcError && e.retryAfter ? Math.min(60, e.retryAfter) * 1000 : 0;
+        await sleep(Math.max(ra, Math.min(30_000, 2000 * 2 ** (attempt - 1))));
       }
     }
   };
@@ -84,10 +98,12 @@ export function makeRpc(url: string, fetchImpl: typeof fetch = fetch, timeoutMs 
 export class RpcError extends Error {
   readonly status: number;
   readonly code: number | undefined;
-  constructor(message: string, status: number, code?: number) {
+  readonly retryAfter: number | undefined; // 초
+  constructor(message: string, status: number, code?: number, retryAfter?: number) {
     super(message);
     this.status = status;
     this.code = code;
+    this.retryAfter = retryAfter;
   }
 }
 

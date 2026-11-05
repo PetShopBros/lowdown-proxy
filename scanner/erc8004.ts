@@ -1,6 +1,6 @@
 // ERC-8004 등록 수집 — 사용: node scanner/erc8004.ts [--dry-run] [--chains=base,ethereum] [--fetch-limit=N]
 // 필수 환경변수: LOWDOWN_SUPABASE_URL, LOWDOWN_SCANNER_KEY
-// 선택: ERC8004_RPC_BASE, ERC8004_RPC_ETHEREUM (기본 publicnode), ERC8004_FETCH_LIMIT(기본 5000), ERC8004_TIME_BUDGET_MIN(기본 30),
+// 선택: ERC8004_RPC_BASE, ERC8004_RPC_ETHEREUM (기본 Blockscout 인스턴스), ERC8004_RPC_INTERVAL_MS(기본 400, 호출 간격), ERC8004_FETCH_LIMIT(기본 5000), ERC8004_TIME_BUDGET_MIN(기본 30),
 //       ERC8004_LOG_BUDGET_MIN(기본 18, 이벤트 읽기에 쓰는 시간), ERC8004_MAX_LOG_CALLS(기본 4000), ERC8004_CONCURRENCY(기본 8)
 // 순서: 체인마다 이벤트 읽기(이어서) → 에이전트 상태 계산 → 가져올 차례인 등록 파일 가져오기 → 이름표·연결선.
 // 체인은 읽기만 한다. 본 관찰(scan.ts)과 따로 돈다.
@@ -16,15 +16,12 @@ import {
   type ChainConf,
   type EventRow,
   fetchRegistrationFile,
-  findDeployBlock,
   makeRpc,
   parseLog,
   pool,
   readLogs,
 } from './erc8004-lib.ts';
 
-// 코드 탐색(eth_getCode, 보관 노드 필요)이 안 되는 RPC 일 때 시작 블록. 메인넷 출시(2026-01-29)보다 앞이면 된다(빈 구간은 로그 0건).
-const FALLBACK_START: Record<number, bigint> = { 1: 24_300_000n, 8453: 40_000_000n };
 
 function fail(message: string): never {
   console.error(`::error::${message}`);
@@ -55,24 +52,13 @@ type Cursor = { chain_id: number; registry: string; first_block: number | null; 
 
 async function readChain(cfg: SupabaseConfig, chain: ChainConf, dryRun: boolean, deadline: number, maxCalls: number) {
   const rpcUrl = process.env[`ERC8004_RPC_${chain.name.toUpperCase()}`]?.trim() || chain.rpc;
-  const rpc = makeRpc(rpcUrl);
+  const rpc = makeRpc(rpcUrl, fetch, 30_000, undefined, intEnv('ERC8004_RPC_INTERVAL_MS', 400));
   const head = BigInt((await rpc('eth_blockNumber', [])) as string);
   const safe = head - BigInt(chain.confirmations);
   const [cur] = await dbGet<Cursor>(cfg, `erc8004_cursor?chain_id=eq.${chain.chainId}&select=chain_id,registry,first_block,last_block`);
-  let first: bigint | null = cur?.first_block != null ? BigInt(cur.first_block) : null;
-  let from: bigint;
-  if (cur) {
-    from = BigInt(cur.last_block) + 1n;
-  } else {
-    try {
-      first = await findDeployBlock(rpc, IDENTITY_REGISTRY, safe);
-    } catch (e) {
-      console.log(`${chain.name}: deploy block search failed (${e instanceof Error ? e.message : e}); starting at fallback ${FALLBACK_START[chain.chainId]}`);
-      first = null;
-    }
-    from = first ?? FALLBACK_START[chain.chainId] ?? 0n;
-  }
-  console.log(`${chain.name}: head ${head}, read ${from}..${safe}${first !== null ? `, registry from ${first}` : ''}`);
+  const first: bigint | null = cur?.first_block != null ? BigInt(cur.first_block) : null;
+  const from = cur ? BigInt(cur.last_block) + 1n : chain.startBlock;
+  console.log(`${chain.name}: head ${head}, read ${from}..${safe}`);
   if (from > safe) return { chain: chain.name, events: 0, calls: 0, complete: true, applied: 0 };
 
   let pending: EventRow[] = [];
