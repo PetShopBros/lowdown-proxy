@@ -20,6 +20,9 @@
 //       REQUESTED_DAILY_CAP(기본 1000) / REQUESTED_TOTAL_CAP(기본 3000) — 조회된 대상 관찰. 누군가 조회했지만 관찰된 적 없는 Registry 서버를 매일 함께 관찰한다.
 //       REQUESTED_USER_DAILY_CAP(기본 100) / REQUESTED_USER_TOTAL_CAP(기본 1000) — 실사용 자리: AI 사용자 조회 대상은 위 전체 상한과 별도로 받는다.
 //         고정 코호트와 섞지 않는다(목록 scanner_requested, 행 source='scanner_requested'). 0 이면 끈다. limit·fallback 날은 건너뜀
+//       DECLARED_DAILY_CAP(기본 500) / DECLARED_HOST_CAP(기본 20) — Registry 밖 선언 주소 관찰(lowdown_probe_targets_declared: ERC-8004 등록 파일 등).
+//         행 source='scanner_declared', target_type='mcp_endpoint', target_id='endpoint:<정규화된 주소>'. 이번 실행이 이미 보는 주소는 뺀다.
+//         0 이면 끈다. limit 날은 건너뜀. 읽기 실패해도 다른 줄은 계속
 //       RETRY_FAILED=0 — 직후 재시도 끄기(기본 켜짐). RETRY_DELAY_SEC(기본 60), RETRY_BUDGET_SEC(기본 720)
 // 직후 재시도: 메인 probe 후 일시적일 수 있는 실패(timeout/연결 실패/408/429/5xx)만 호스트당 1건씩 다시 시도해
 //         같은 행의 metadata.retry 에 덧붙인다. 첫 시도 값은 바꾸지 않는다. 시간 예산을 넘긴 행은 retry 없이 남긴다.
@@ -58,6 +61,7 @@ import {
   selectCohort,
   utcDayStart,
 } from './lib.ts';
+import { DECLARED_SOURCE, DECLARED_VERSION, DEFAULT_DECLARED_DAILY_CAP, DEFAULT_DECLARED_HOST_CAP, fetchDeclaredTargets, normEndpoint, pickDeclared } from './declared-lib.ts';
 import { DEFAULT_REQUESTED_DAILY_CAP, DEFAULT_REQUESTED_TOTAL_CAP, DEFAULT_REQUESTED_USER_DAILY_CAP, DEFAULT_REQUESTED_USER_TOTAL_CAP, fetchRecentLookups, fetchRequestedIds, LOOKUP_WINDOW_DAYS, pickRequested, REQUESTED_SOURCE, REQUESTED_VERSION, saveRequested } from './requested-lib.ts';
 import { diffRegistry, fetchRegistryState, insertRegistryChanges, upsertRegistryState } from './registry-diff.ts';
 import { aggregateObserved, computeFirstSeen, fetchFirstSeen, insertToolSets, isPublishable, toolSetRows, upsertFirstSeen } from './first-seen.ts';
@@ -349,6 +353,32 @@ async function main(): Promise<void> {
     }
     console.log('requested', JSON.stringify(requestedStats));
   }
+
+  // Registry 밖에서 선언된 주소(declared): 맨 뒤에 붙인다. 실패해도 위 두 줄 관찰에는 영향 없음.
+  const declaredNames = new Map<string, string[]>(); // job.name(= target_id 'endpoint:…') → 선언한 곳들
+  let declaredStats: Record<string, string | number> = {};
+  {
+    const dailyCap = envSeconds('DECLARED_DAILY_CAP', DEFAULT_DECLARED_DAILY_CAP);
+    const hostCap = envSeconds('DECLARED_HOST_CAP', DEFAULT_DECLARED_HOST_CAP);
+    if (dailyCap === 0 || hostCap === 0) declaredStats = { declared: 'off' };
+    else if (limit) declaredStats = { declared: 'skipped (limit)' };
+    else if (!cohortReadCfg) declaredStats = { declared: 'skipped (no db config)' };
+    else {
+      try {
+        const targets = await fetchDeclaredTargets(cohortReadCfg);
+        const excludeUrls = new Set(jobs.map((j) => normEndpoint(j.remote.url)).filter((u): u is string => u !== null));
+        const pick = pickDeclared(targets, { excludeUrls, dailyCap, hostCap });
+        const declJobs: CohortJob[] = pick.picks.map((p) => ({ name: p.target_id, version: '', remote: { type: 'streamable-http', url: p.url }, index: 0 }));
+        for (const p of pick.picks) declaredNames.set(p.target_id, p.sources);
+        jobs = [...jobs, ...declJobs];
+        declaredStats = { declared_targets: targets.length, declared_eligible: pick.eligible, declared_jobs: declJobs.length, declared_already_observed: pick.alreadyObserved, declared_skipped_by_host_cap: pick.skippedByHostCap, declared_deferred: pick.deferred };
+      } catch (e) {
+        console.error(`declared 실패(다른 관찰은 계속): ${e instanceof Error ? e.message : 'unknown'}`);
+        declaredStats = { declared: 'error' };
+      }
+    }
+    console.log('declared', JSON.stringify(declaredStats));
+  }
   const hostTop = topHosts(jobs.map((j) => j.remote.url));
   console.log(`probing ${jobs.length} remotes (concurrency=${concurrency}) top_hosts=${JSON.stringify(hostTop)}`);
   // base 멤버는 [base, version], 추가분은 [version]. 행의 cohort_version 은 이번 실행의 코호트(version)
@@ -360,6 +390,7 @@ async function main(): Promise<void> {
   const CHUNK = 80;
   const all: ObservationRow[] = []; // 고정 코호트 행만 — 요약·first-seen 은 이것만 본다
   const requestedRows: ObservationRow[] = []; // 조회된 대상 행 (source='scanner_requested')
+  const declaredRows: ObservationRow[] = []; // Registry 밖 선언 주소 행 (source='scanner_declared')
   let pending: ObservationRow[] = [];
   let inserted = 0;
   // 저장 실패 한 번이 스캔 전체를 버리지 않게: 실패한 배치는 보관 → 막힌 동안 60초에 한 번만 시도 → 스캔 뒤 길게 대기하며 재시도
@@ -380,20 +411,25 @@ async function main(): Promise<void> {
   // (0.5.0) 도구 정의 원문도 관찰 행에 넣지 않는다. 정의·집합 단위로 중복 없이 메모리에 모았다가 비공개 테이블로 저장
   const toolDefs = new ToolDefCollector();
   const reqMeta = { cohort_version: REQUESTED_VERSION, cohort_versions: [REQUESTED_VERSION], observation_basis: 'requested' };
+  // 선언 주소 행: Registry 판(version)이 없다. 누가 선언했는지(declared_by)만 남긴다
+  const declMetaOf = (job: CohortJob) => ({ registry_version: null, cohort_version: DECLARED_VERSION, cohort_versions: [DECLARED_VERSION], observation_basis: 'declared', declared_by: declaredNames.get(job.name) ?? [] });
+  const identOf = (job: CohortJob) => {
+    if (declaredNames.has(job.name)) return { target_id: job.name, target_type: 'mcp_endpoint' as const, source: DECLARED_SOURCE as 'scanner_declared' };
+    return { target_id: `mcp:${job.name}`, target_type: 'mcp_server' as const, source: (requestedNames.has(job.name) ? REQUESTED_SOURCE : 'scanner') as 'scanner' | 'scanner_requested' };
+  };
+  const extraMetaOf = (job: CohortJob) =>
+    declaredNames.has(job.name) ? declMetaOf(job) : requestedNames.has(job.name) ? reqMeta : cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {};
   const probeOne = async (job: CohortJob): Promise<ObservationRow> => {
     const observedAt = new Date().toISOString();
-    const isReq = requestedNames.has(job.name);
     try {
       const { tool_names: toolNames, tool_defs: defs, ...p } = await probeRemote(job.remote, { registryVersion: job.version, index: job.index });
       const row: ObservationRow = {
         scan_run_id: runId,
         node_id: nodeId,
-        target_id: `mcp:${job.name}`,
-        target_type: 'mcp_server',
+        ...identOf(job),
         observed_at: observedAt,
-        source: isReq ? REQUESTED_SOURCE : 'scanner',
         ...p,
-        metadata: { ...p.metadata, ...runMeta, ...(isReq ? reqMeta : cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {}) },
+        metadata: { ...p.metadata, ...runMeta, ...extraMetaOf(job) },
       };
       if (toolNames) toolNamesByRow.set(row, toolNames);
       toolDefs.add(p.metadata.tool_set_hash, defs);
@@ -403,16 +439,14 @@ async function main(): Promise<void> {
       return {
         scan_run_id: runId,
         node_id: nodeId,
-        target_id: `mcp:${job.name}`,
-        target_type: 'mcp_server',
+        ...identOf(job),
         observed_at: observedAt,
-        source: isReq ? REQUESTED_SOURCE : 'scanner',
         transport: job.remote.type,
         http_status: null,
         reached_level: 0,
         latency_ms: null,
         error_type: 'network_error',
-        metadata: { remote_url: job.remote.url, remote_index: job.index, registry_version: job.version, scanner_version: SCANNER_VERSION, internal_error: true, ...runMeta, ...(isReq ? reqMeta : cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {}) },
+        metadata: { remote_url: job.remote.url, remote_index: job.index, registry_version: job.version, scanner_version: SCANNER_VERSION, internal_error: true, ...runMeta, ...extraMetaOf(job) },
       };
     }
   };
@@ -429,7 +463,7 @@ async function main(): Promise<void> {
     },
     {
       onResult: async (_job, row) => {
-        (row.source === REQUESTED_SOURCE ? requestedRows : all).push(row);
+        (row.source === REQUESTED_SOURCE ? requestedRows : row.source === DECLARED_SOURCE ? declaredRows : all).push(row);
         pending.push(row);
         if (pending.length >= CHUNK) await flush();
       },
@@ -457,7 +491,7 @@ async function main(): Promise<void> {
   const tRetry = Date.now();
   let retryStats: Record<string, number | string> = {};
   try {
-    retryStats = await retryFailed([...all, ...requestedRows], { supabase, concurrency });
+    retryStats = await retryFailed([...all, ...requestedRows, ...declaredRows], { supabase, concurrency });
   } catch (e) {
     console.error(`retry 단계 실패(관찰 데이터는 저장 완료): ${e instanceof Error ? e.message : 'unknown'}`);
     retryStats = { retry: 'error' };
@@ -594,6 +628,8 @@ async function main(): Promise<void> {
     ...toolDefStats,
     ...requestedStats,
     requested_rows: requestedRows.length,
+    ...declaredStats,
+    declared_rows: declaredRows.length,
   });
   console.log(summary);
   if (dryRun) {
