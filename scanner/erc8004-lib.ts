@@ -19,10 +19,13 @@ export interface ChainConf {
   maxRange: number; // getLogs 한 번의 최대 블록 수(시작값, 오류 시 반으로 줄인다)
 }
 
+// Blockscout 인스턴스 JSON-RPC: 키 없이 과거 로그를 읽을 수 있다(2026-11-05, publicnode 는 과거 구간에 토큰 요구).
+//   eth_getLogs 는 한 번에 최대 1000건 → 1000건이 오면 잘렸을 수 있으므로 범위를 줄여 다시 읽는다(readLogs).
 export const CHAINS: readonly ChainConf[] = [
-  { chainId: 8453, name: 'base', rpc: 'https://base-rpc.publicnode.com', confirmations: 30, maxRange: 10_000 },
-  { chainId: 1, name: 'ethereum', rpc: 'https://ethereum-rpc.publicnode.com', confirmations: 12, maxRange: 10_000 },
+  { chainId: 8453, name: 'base', rpc: 'https://base.blockscout.com/api/eth-rpc', confirmations: 30, maxRange: 10_000 },
+  { chainId: 1, name: 'ethereum', rpc: 'https://eth.blockscout.com/api/eth-rpc', confirmations: 12, maxRange: 10_000 },
 ];
+export const MAX_LOGS_PER_CALL = 1000;
 
 export const MAX_URI_CHARS = 65_536;
 export const MAX_FILE_BYTES = 256 * 1024;
@@ -44,9 +47,9 @@ export interface RpcLog {
 
 export type RpcCall = (method: string, params: unknown[]) => Promise<unknown>;
 
-export function makeRpc(url: string, fetchImpl: typeof fetch = fetch, timeoutMs = 30_000): RpcCall {
+export function makeRpc(url: string, fetchImpl: typeof fetch = fetch, timeoutMs = 30_000, sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))): RpcCall {
   let id = 0;
-  return async (method, params) => {
+  const once = async (method: string, params: unknown[]) => {
     const res = await fetchImpl(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'user-agent': 'lowdown-scanner-erc8004 (+https://github.com/PetShopBros/lowdown-proxy)' },
@@ -63,6 +66,18 @@ export function makeRpc(url: string, fetchImpl: typeof fetch = fetch, timeoutMs 
     if (j?.error) throw new RpcError(String(j.error.message ?? 'rpc error').slice(0, 200), res.status, j.error.code);
     if (!res.ok) throw new RpcError(`HTTP ${res.status}`, res.status);
     return j.result;
+  };
+  // 429·5xx·연결 오류는 잠깐 쉬고 다시(최대 4번). 공개 인스턴스의 초당 요청 제한 대비.
+  return async (method, params) => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await once(method, params);
+      } catch (e) {
+        const retry = e instanceof RpcError ? e.status === 429 || e.status >= 500 : !(e instanceof RpcError);
+        if (!retry || attempt >= 4) throw e;
+        await sleep(1000 * 2 ** (attempt - 1));
+      }
+    }
   };
 }
 
@@ -123,11 +138,15 @@ export async function readLogs(
       logs = (await rpc('eth_getLogs', [{ address, fromBlock: toHex(cur), toBlock: toHex(end), topics: [[TOPIC_REGISTERED, TOPIC_URI_UPDATED, TOPIC_TRANSFER]] }])) as RpcLog[];
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (range > 1n && (RANGE_ERR.test(msg) || (e instanceof RpcError && (e.status === 413 || e.status >= 500)))) {
+      if (range > 1n && (RANGE_ERR.test(msg) || (e instanceof RpcError && (e.status === 413 || e.status >= 500)))) {  // makeRpc 재시도 뒤에도 실패한 5xx 포함
         range = range / 2n > 0n ? range / 2n : 1n;
         continue;
       }
       throw e;
+    }
+    if (Array.isArray(logs) && logs.length >= MAX_LOGS_PER_CALL && range > 1n) {
+      range = range / 2n; // 1000건 = 잘렸을 수 있다 → 범위를 줄여 같은 시작점부터 다시
+      continue;
     }
     await opts.onChunk(Array.isArray(logs) ? logs.filter((l) => !l.removed) : [], end);
     readTo = end;

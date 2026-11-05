@@ -144,6 +144,28 @@ describe('체인 읽기', () => {
     assert.ok(asked.some(([a, b]) => b - a + 1 <= 2500));
   });
 
+  test('1000건이 오면 잘렸을 수 있어 범위를 줄여 다시 읽는다', async () => {
+    const at = Array.from({ length: 1500 }, (_, i) => 1000 + i); // 블록 1000~2499 에 1건씩
+    const rpc = async (_m: string, p: any[]) => {
+      const a = Number(BigInt(p[0].fromBlock));
+      const b = Number(BigInt(p[0].toBlock));
+      return at.filter((x) => x >= a && x <= b).slice(0, 1000).map((x) => log([TOPIC_REGISTERED, '0x' + word(x), addrTopic(OWNER)], abiString('u'), x));
+    };
+    let n = 0;
+    const r = await readLogs(rpc, REG, 1n, 5000n, { maxRange: 10_000, deadline: Infinity, maxCalls: 100, onChunk: async (logs) => { n += logs.length; } });
+    assert.equal(r.complete, true);
+    assert.equal(n, 1500);
+  });
+
+  test('429 는 쉬었다 다시', async () => {
+    const { makeRpc } = await import('./erc8004-lib.ts');
+    let k = 0;
+    const f = (async () => (++k < 3 ? new Response('busy', { status: 429 }) : new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x10' })))) as unknown as typeof fetch;
+    const rpc = makeRpc('https://x', f, 1000, async () => {});
+    assert.equal(await rpc('eth_blockNumber', []), '0x10');
+    assert.equal(k, 3);
+  });
+
   test('호출 상한에 걸리면 읽은 데까지', async () => {
     const rpc = async () => [];
     const r = await readLogs(rpc, REG, 1n, 100_000n, { maxRange: 1000, deadline: Infinity, maxCalls: 3, onChunk: async () => {} });
