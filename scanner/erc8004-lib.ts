@@ -61,6 +61,7 @@ export function makeRpc(
   sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
   minIntervalMs = 0,
   now: () => number = Date.now,
+  onRetry: (e: unknown, attempt: number) => void = () => {},
 ): RpcCall {
   let id = 0;
   let last = 0;
@@ -94,6 +95,7 @@ export function makeRpc(
       } catch (e) {
         const retry = e instanceof RpcError ? e.status === 429 || e.status >= 500 : true;
         if (!retry || attempt >= 6) throw e;
+        onRetry(e, attempt);
         const ra = e instanceof RpcError && e.retryAfter ? Math.min(60, e.retryAfter) * 1000 : 0;
         await sleep(Math.max(ra, Math.min(30_000, 2000 * 2 ** (attempt - 1))));
       }

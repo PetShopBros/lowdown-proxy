@@ -53,7 +53,12 @@ type Cursor = { chain_id: number; registry: string; first_block: number | null; 
 
 async function readChain(cfg: SupabaseConfig, chain: ChainConf, dryRun: boolean, deadline: number, maxCalls: number) {
   const rpcUrl = process.env[`ERC8004_RPC_${chain.name.toUpperCase()}`]?.trim() || chain.rpc;
-  const rpc = makeRpc(rpcUrl, fetch, 30_000, undefined, intEnv('ERC8004_RPC_INTERVAL_MS', 400));
+  let retries = 0;
+  let lastRetry = '';
+  const rpc = makeRpc(rpcUrl, fetch, 30_000, undefined, intEnv('ERC8004_RPC_INTERVAL_MS', 400), Date.now, (e) => {
+    retries++;
+    lastRetry = e instanceof Error ? e.message.slice(0, 80) : String(e);
+  });
   const head = BigInt((await rpc('eth_blockNumber', [])) as string);
   const safe = head - BigInt(chain.confirmations);
   const [cur] = await dbGet<Cursor>(cfg, `erc8004_cursor?chain_id=eq.${chain.chainId}&select=chain_id,registry,first_block,last_block`);
@@ -74,6 +79,9 @@ async function readChain(cfg: SupabaseConfig, chain: ChainConf, dryRun: boolean,
   let applyFrom = from;
   let events = 0;
   let applied = 0;
+  let lastFlush = Date.now();
+  let lastLog = Date.now();
+  let chunks = 0;
   // 순서: 이벤트 저장 → 에이전트 상태 계산 → 커서 저장. 중간에 실패하면 커서가 그대로라 다음 실행이 다시 읽는다(이벤트는 중복 무시).
   const saveCursor = (upTo: bigint) =>
     postBatches(cfg, 'erc8004_cursor?on_conflict=chain_id', [{ chain_id: chain.chainId, registry: IDENTITY_REGISTRY, first_block: first === null ? null : Number(first), last_block: Number(upTo), updated_at: new Date().toISOString() }], 'resolution=merge-duplicates,return=minimal', {});
@@ -83,7 +91,9 @@ async function readChain(cfg: SupabaseConfig, chain: ChainConf, dryRun: boolean,
       applyFrom = upTo + 1n;
       return;
     }
-    if (!force && pending.length < 5000) return; // 더 모은다(커서는 그대로)
+    // 5000건이 모이거나 60초가 지나면 저장한다(커서가 오래 멈춰 보이지 않게, 중간에 끊겨도 잃는 양이 적게)
+    if (!force && pending.length < 5000 && Date.now() - lastFlush < 60_000) return; // 더 모은다(커서는 그대로)
+    lastFlush = Date.now();
     if (!dryRun) {
       await postBatches(cfg, 'erc8004_events?on_conflict=chain_id,tx_hash,log_index', pending, 'resolution=ignore-duplicates,return=minimal', { batchSize: 500 });
       applied += await dbRpc<number>(cfg, 'lowdown_erc8004_apply', { p_chain: chain.chainId, p_from_block: Number(applyFrom) });
@@ -103,7 +113,14 @@ async function readChain(cfg: SupabaseConfig, chain: ChainConf, dryRun: boolean,
         if (row) pending.push(row);
       }
       events += logs.length;
+      chunks++;
       await flush(upTo, false);
+      if (Date.now() - lastLog >= 120_000) { // 2분마다 진행 상황
+        lastLog = Date.now();
+        const done = upTo - from + 1n;
+        const total = safe - from + 1n;
+        console.log(`${chain.name}: at ${upTo} (${((Number(done) / Number(total)) * 100).toFixed(1)}%), chunks ${chunks}, events ${events}, retries ${retries}${lastRetry ? ` (last: ${lastRetry})` : ''}`);
+      }
     },
   });
   if (r.readTo >= from) await flush(r.readTo, true);
