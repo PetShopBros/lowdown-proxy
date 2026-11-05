@@ -1,6 +1,14 @@
 {
   "rewrites": [
     {
+      "source": "/mcp/server-card",
+      "destination": "/api/mcp?meta=server-card"
+    },
+    {
+      "source": "/.well-known/ai-catalog.json",
+      "destination": "/api/mcp?meta=ai-catalog"
+    },
+    {
       "source": "/mcp",
       "destination": "/api/mcp"
     },

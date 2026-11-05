@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -385,7 +385,63 @@ export function isDiscover(body: unknown): body is { id: unknown } {
   return isObj(body) && body.method === "server/discover" && "id" in body && body.id !== undefined && body.id !== null;
 }
 
+// ── 서버 카드 (2026-11-05, SEP-2127 Final, experimental-ext-server-card 526201b) ──
+//   GET /mcp/server-card            → application/mcp-server-card+json (<streamable-http-url>/server-card, 권장 위치)
+//   GET /.well-known/ai-catalog.json → application/ai-catalog+json (카드 1개를 url 로 가리킴)
+//   vercel.json rewrite → /api/mcp?meta=server-card|ai-catalog. 이 파일에서 내보내는 이유: supportedProtocolVersions·version 을
+//   server/discover(discoverResult)와 같은 값에서 읽어 둘이 어긋나지 않게(스펙: 다르면 클라이언트는 server/discover 를 따름).
+//   도구 목록·capabilities 는 넣지 않는다(스펙상 제외). 요청은 middleware.ts 의 edge_hits 에만 남고 mcp_calls 에는 넣지 않는다.
+//   name 은 스펙 형식(역도메인/이름)이라 MCP Registry 이름(server.json)과 같게, version 은 serverInfo 와 같게 둔다.
+export const SERVER_CARD_NAME = "io.github.PetShopBros/lowdown-proxy";
+export const SERVER_CARD_DESCRIPTION = "Look up MCP Registry declarations, npm package status, and daily observations of MCP servers.";
+export function serverCard(): Record<string, unknown> {
+  return {
+    $schema: "https://static.modelcontextprotocol.io/schemas/v1/server-card.schema.json",
+    name: SERVER_CARD_NAME,
+    version: VERSION,
+    description: SERVER_CARD_DESCRIPTION,
+    title: "Lowdown",
+    websiteUrl: SITE,
+    repository: { url: "https://github.com/PetShopBros/lowdown-proxy", source: "github" },
+    remotes: [{ type: "streamable-http", url: `${SITE}/mcp`, supportedProtocolVersions: [...SUPPORTED_PROTOCOL_VERSIONS] }],
+  };
+}
+export function aiCatalog(): Record<string, unknown> {
+  return {
+    specVersion: "1.0",
+    entries: [{ identifier: "urn:air:lowdown-proxy.vercel.app:mcp:lowdown-proxy", type: "application/mcp-server-card+json", url: `${SITE}/mcp/server-card` }],
+  };
+}
+const META_DOCS: Record<string, { type: string; body: () => Record<string, unknown> }> = {
+  "server-card": { type: "application/mcp-server-card+json", body: serverCard },
+  "ai-catalog": { type: "application/ai-catalog+json", body: aiCatalog },
+};
+/** 카드·카탈로그 응답. CORS·캐시·ETag/304 는 docs/discovery.md 의 MUST/SHOULD 그대로. */
+export function sendMeta(req: VercelRequest, res: VercelResponse, kind: string) {
+  const doc = META_DOCS[kind]!;
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, If-None-Match");
+  res.setHeader("Access-Control-Expose-Headers", "ETag");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    res.setHeader("Allow", "GET, HEAD, OPTIONS");
+    return res.status(405).json({ error: "method_not_allowed", message: "Use GET.", retryable: false });
+  }
+  const text = JSON.stringify(doc.body(), null, 2);
+  const etag = `"${createHash("sha256").update(text).digest("hex").slice(0, 32)}"`;
+  res.setHeader("ETag", etag);
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.setHeader("Content-Type", `${doc.type}; charset=utf-8`);
+  const inm = header(req, "if-none-match", 500);
+  if (inm && inm.split(",").map((t) => t.trim().replace(/^W\//, "")).includes(etag)) return res.status(304).end();
+  if (req.method === "HEAD") return res.status(200).end();
+  return res.status(200).send(text);
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const meta = typeof req.query?.meta === "string" ? req.query.meta : null;
+  if (meta && meta in META_DOCS) return sendMeta(req, res, meta);
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "content-type, accept, mcp-protocol-version, mcp-session-id, mcp-method, mcp-name, authorization");
