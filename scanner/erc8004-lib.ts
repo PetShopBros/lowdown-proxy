@@ -26,9 +26,11 @@ export interface ChainConf {
 //   eth.blockscout.com 은 몇 번 호출 뒤 이 서버 IP 도 429("Increase limits") — 키를 받으면 ERC8004_RPC_* 로 바꾼다.
 //   안 된 곳: publicnode(과거 구간 토큰 요구), base.blockscout·llamarpc(Cloudflare 확인 화면), mainnet.base.org(429),
 //             1rpc(50블록), meowrpc·developer-access(getLogs 미지원). GitHub Actions IP 는 blockscout 가 429 → 서버에서 돈다.
+// 순서: 이더리움(따라잡을 양 약 200만 블록) 먼저, Base(약 1,200만 블록) 나중.
+//   읽기 시간은 체인마다 나누고 앞 체인이 일찍 끝나면 남은 시간은 뒤 체인(Base)으로 간다(erc8004.ts).
 export const CHAINS: readonly ChainConf[] = [
-  { chainId: 8453, name: 'base', rpc: 'https://base.drpc.org', confirmations: 30, maxRange: 10_000, startBlock: 40_000_000n },
   { chainId: 1, name: 'ethereum', rpc: 'https://eth.drpc.org', confirmations: 12, maxRange: 10_000, startBlock: 24_300_000n },
+  { chainId: 8453, name: 'base', rpc: 'https://base.drpc.org', confirmations: 30, maxRange: 10_000, startBlock: 40_000_000n },
 ];
 export const MAX_LOGS_PER_CALL = 1000;
 

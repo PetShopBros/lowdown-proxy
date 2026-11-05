@@ -1,4 +1,4 @@
-// ERC-8004 등록 수집 — 사용: node scanner/erc8004.ts [--dry-run] [--chains=base,ethereum] [--fetch-limit=N]
+// ERC-8004 등록 수집 — 사용: node scanner/erc8004.ts [--dry-run] [--chains=ethereum,base] [--fetch-limit=N]
 // 필수 환경변수: LOWDOWN_SUPABASE_URL, LOWDOWN_SCANNER_KEY (서버에서는 LOWDOWN_SANDBOX_KEY 도 받는다)
 // 선택: ERC8004_RPC_BASE, ERC8004_RPC_ETHEREUM (기본 Blockscout 인스턴스), ERC8004_RPC_INTERVAL_MS(기본 400, 호출 간격), ERC8004_FETCH_LIMIT(기본 5000), ERC8004_TIME_BUDGET_MIN(기본 30),
 //       ERC8004_LOG_BUDGET_MIN(기본 18, 이벤트 읽기에 쓰는 시간), ERC8004_MAX_LOG_CALLS(기본 20000, 체인당), ERC8004_CONCURRENCY(기본 8)
@@ -111,7 +111,7 @@ async function readChain(cfg: SupabaseConfig, chain: ChainConf, dryRun: boolean,
   return { chain: chain.name, events, calls: r.calls, complete: r.complete, applied };
 }
 
-type Due = { chain_id: number; agent_id: string; agent_uri: string | null; uri_truncated: boolean };
+type Due = { chain_id: number; agent_id: string; agent_uri: string | null; uri_truncated: boolean; last_ok_sha: string | null };
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -148,18 +148,20 @@ async function main(): Promise<void> {
   const chainIds = chains.map((c) => c.chainId).join(',');
   const due: Due[] = [];
   for (let off = 0; off < limit; off += 1000) {
-    const page = await dbGet<Due>(cfg, `erc8004_fetch_due?select=chain_id,agent_id,agent_uri,uri_truncated&chain_id=in.(${chainIds})&order=due_rank.asc,registered_block.desc.nullslast,chain_id.asc,agent_id.asc&limit=${Math.min(1000, limit - off)}&offset=${off}`);
+    const page = await dbGet<Due>(cfg, `erc8004_fetch_due?select=chain_id,agent_id,agent_uri,uri_truncated,last_ok_sha&chain_id=in.(${chainIds})&order=due_rank.asc,registered_block.desc.nullslast,chain_id.asc,agent_id.asc&limit=${Math.min(1000, limit - off)}&offset=${off}`);
     due.push(...page);
     if (page.length < 1000) break;
   }
   const rows = await pool(due, intEnv('ERC8004_CONCURRENCY', 8), total - 60_000, async (d) => {
     const f = await fetchRegistrationFile(d.agent_uri, d.uri_truncated);
-    return { chain_id: d.chain_id, agent_id: d.agent_id, agent_uri: d.agent_uri ?? '', fetched_at: new Date().toISOString(), run_id: runId, ...f };
+    // 직전 성공과 내용(해시)이 같으면 원문은 다시 저장하지 않는다(서비스 목록은 연결선 갱신에 쓰므로 둔다)
+    const unchanged = f.outcome === 'ok' && f.sha256 !== null && f.sha256 === d.last_ok_sha;
+    return { chain_id: d.chain_id, agent_id: d.agent_id, agent_uri: d.agent_uri ?? '', fetched_at: new Date().toISOString(), run_id: runId, ...f, body: unchanged ? null : f.body, unchanged };
   });
   const byOutcome = new Map<string, number>();
   for (const r of rows) byOutcome.set(r.outcome, (byOutcome.get(r.outcome) ?? 0) + 1);
   const mcp = rows.reduce((n, r) => n + (r.services ?? []).filter((s) => s.name.toLowerCase() === 'mcp').length, 0);
-  console.log(`files: due ${due.length}, fetched ${rows.length}, ${[...byOutcome].map(([k, n]) => `${k} ${n}`).join(', ')}; MCP services declared ${mcp}`);
+  console.log(`files: due ${due.length}, fetched ${rows.length}, ${[...byOutcome].map(([k, n]) => `${k} ${n}`).join(', ')}; unchanged ${rows.filter((r) => r.unchanged).length}; MCP services declared ${mcp}`);
 
   let link: unknown = null;
   if (!dryRun && rows.length) {

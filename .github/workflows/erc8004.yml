@@ -14,7 +14,7 @@ on:
         type: boolean
         default: false
       chains:
-        description: '체인 (빈 값 = base,ethereum)'
+        description: '체인 (빈 값 = ethereum,base)'
         type: string
         default: ''
       fetch_limit:
