@@ -266,7 +266,8 @@ export function judge(msgs: MsgInfo[], httpStatus: number, text: string | null):
   }
   const httpErr = { outcome: "http_error" as Outcome, code: httpStatus };
   return msgs.map((m) => {
-    if (m.isNotification) return httpStatus >= 400 ? httpErr : { outcome: "no_response", code: null };
+    // 알림은 응답 본문이 없는 것이 정상(202). 받아들였으면 ok (2026-11-06: no_response 로 적어 실패처럼 읽혔다)
+    if (m.isNotification) return httpStatus >= 400 ? httpErr : { outcome: "ok", code: null };
     const r = m.idKey !== null ? byId.get(m.idKey) : undefined;
     if (r) {
       if (isObj(r.error)) return { outcome: "rpc_error", code: typeof r.error.code === "number" ? r.error.code : null };

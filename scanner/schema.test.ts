@@ -69,6 +69,14 @@ describe('오류 공통 형식', () => {
     assertError(t, 400, 'invalid_parameter');
     assert.equal(t.body.parameter, 'target');
     assert.equal(t.body.message, 'target required');
+    // 문서의 주소 틀을 그대로 보낸 요청: 400, 조회 기록 없음(DB 를 부르기 전에 끝난다), 고치는 방법 안내
+    for (const target of ['mcp:{namespace}/{name}', '{name}', 'mcp:io.github.x/{name}']) {
+      const p = await call(rep.default, { method: 'GET', query: { target } });
+      assertError(p, 400, 'invalid_parameter');
+      assert.equal(p.body.parameter, 'target');
+      assert.match(p.body.message, /replace \{namespace\}\/\{name\}/);
+    }
+    assert.equal(rep.isUnfilledTemplate('mcp:io.github.user/server'), false);
     const m1 = rep.parseMenu('Bad Menu');
     assert.equal(m1.body.error, 'invalid_menu');
     assert.equal(m1.body.retryable, false);

@@ -30,6 +30,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // 앞뒤 공백·개행만 제거한다. 이름 안의 글자(역슬래시 등)는 고치지 않는다.
   const target = typeof rawTarget === "string" ? rawTarget.trim() : rawTarget;
   if (!target || target === "_slash") return res.status(400).json(apiError("invalid_parameter", "target required", { parameter: "target" }));
+  // 문서의 주소 틀을 채우지 않고 그대로 보낸 요청(예: mcp:{namespace}/{name}) — 조회로 기록하지 않고 400 (2026-11-06: 링크 점검기가 하루 세 번)
+  if (isUnfilledTemplate(target)) {
+    return res.status(400).json(apiError("invalid_parameter", TEMPLATE_MESSAGE, { parameter: "target" }));
+  }
   const taskType = (req.query.task_type as string) ?? null;
   // 조회 유입 측정용 태그 (예: ?ref=report). 안전한 문자만 허용.
   const refRaw = req.query.ref;
@@ -390,6 +394,13 @@ export const UNAVAILABLE_BODY = {
 // 오류: { error: 고정 코드, message: 설명(예전 문장 보존), retryable, retry_after_seconds?(429·503, Retry-After 헤더와 같은 값), ...부가 필드 }
 // 다른 API 파일과 같은 규칙(api/find.ts·interactions.ts·feedback.ts·status.ts·mcp.ts). 파일끼리 import 하지 않아 각자 둔다.
 export const SCHEMA_VERSION = 1;
+/** 주소 틀의 자리표시자가 그대로 남은 대상. Registry 이름·패키지 이름에는 중괄호가 들어가지 않는다. */
+export function isUnfilledTemplate(target: string): boolean {
+  return /[{}]/.test(target);
+}
+export const TEMPLATE_MESSAGE =
+  "target is the URL template from menu.json or the docs: replace {namespace}/{name} with a server name, e.g. mcp:io.github.user/server.";
+
 export function apiError(code: string, message: string, extra: Record<string, unknown> = {}, retryAfterSeconds?: number): Record<string, unknown> {
   return {
     error: code,

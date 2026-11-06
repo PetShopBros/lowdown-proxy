@@ -200,7 +200,7 @@ describe('원격 MCP 메시지별 기록', () => {
     assert.ok(i.protocol_version);
     const n = by('notifications/initialized')[0];
     assert.equal(n.is_notification, true);
-    assert.equal(n.outcome, 'no_response');
+    assert.equal(n.outcome, 'ok'); // 알림을 받아들임(202) — 응답 본문이 없는 것이 정상
     assert.equal(by('tools/list')[0].outcome, 'ok');
     const calls = by('tools/call');
     assert.deepEqual(calls.map((c) => [c.tool_name, c.menu, c.outcome]), [
@@ -234,7 +234,7 @@ describe('원격 MCP 메시지별 기록', () => {
     const res = rows.map((x) => x.outcome);
     // 서버가 배치를 받으면 메시지별 결과, 거절하면 요청 전체 오류로 같은 판정이 붙는다(어느 쪽이든 응답은 서버 그대로)
     if (r.status === 200) {
-      assert.deepEqual(res, ['ok', 'no_response', 'ok', 'rpc_error']);
+      assert.deepEqual(res, ['ok', 'ok', 'ok', 'rpc_error']);
       assert.equal(rows[3].error_code, -32601);
     } else {
       assert.ok(res.every((o, i) => (i === 1 ? o === 'http_error' : o === 'rpc_error' || o === 'http_error')), JSON.stringify(rows));
