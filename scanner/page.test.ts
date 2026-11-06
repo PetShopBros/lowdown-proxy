@@ -5,7 +5,7 @@ import { afterEach, describe, test } from 'node:test';
 type Mod = {
   default: (req: unknown, res: unknown) => Promise<unknown>;
   renderServerPage: (name: string, j: Record<string, unknown>) => { html: string; noindex: boolean } | null;
-  renderIndex: (rows: Array<Record<string, unknown>>) => string;
+  renderIndex: (rows: Array<Record<string, unknown>>, opts?: { home?: boolean; statusHtml?: string }) => string;
   renderSitemap: (rows: Array<Record<string, unknown>>) => string;
   nameOf: (t: unknown) => string | null;
 };

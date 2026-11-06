@@ -1,0 +1,47 @@
+name: test
+
+# 코드 검사: push·PR 마다 빌드, 타입 검사, 테스트 전부. 실패하면 커밋 옆에 X 가 붙고 GitHub 알림 메일이 간다.
+# 가짜 DB·가짜 응답으로 코드 논리만 본다. 실제 서비스가 살아 있는지는 smoke.yml 이 본다.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # 빌드 + 기본 테스트 (src/, test/p0.test.ts)
+      - name: Build and core tests
+        run: npm test
+
+      - name: Typecheck scanner
+        run: npm run scanner:typecheck
+
+      - name: Typecheck sandbox
+        run: npm run sandbox:typecheck
+
+      - name: Scanner and API tests
+        run: npm run scanner:test
+
+      - name: Sandbox tests
+        run: npm run sandbox:test

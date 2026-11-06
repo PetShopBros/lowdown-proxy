@@ -1,0 +1,52 @@
+name: smoke
+
+# 실제 서비스 점검(scanner/smoke.ts): status.json, 조회 API, 원격 MCP 를 실제로 불러 본다. 실패하면 이슈를 만든다.
+#   매일 12:07 KST(UTC 03:07, 본 관찰 10:17 KST 이 끝난 뒤): 오늘 고정 코호트 관찰 행 수까지 확인(--db).
+#   Vercel 운영 배포가 끝날 때(deployment_status): 배포 뒤 API 가 깨지지 않았는지(DB 행 수는 보지 않음).
+# 코드 검사(test.yml)와 다르다: 이쪽은 DB 정지·배포 후 장애·관찰 누락을 잡는다.
+on:
+  schedule:
+    - cron: '7 3 * * *'
+  deployment_status:
+  workflow_dispatch:
+    inputs:
+      db:
+        description: '오늘 관찰 행 수도 확인'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    # 배포 이벤트는 운영 배포 성공만(미리보기·실패·진행 중 상태는 건너뜀)
+    if: github.event_name != 'deployment_status' || (github.event.deployment_status.state == 'success' && github.event.deployment.environment == 'Production')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Smoke checks
+        run: node scanner/smoke.ts ${{ (github.event_name == 'schedule' || inputs.db) && '--db' || '' }}
+        env:
+          LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
+          LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
+
+      - name: Open issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "smoke 실패 $(date -u +%F) (${{ github.event_name }})" \
+            --body "실패한 점검은 실행 요약에 있습니다. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
