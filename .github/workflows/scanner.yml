@@ -51,6 +51,10 @@ on:
         description: 'tool names + first observed (0.4.0)'
         type: boolean
         default: false
+      rotation_days:
+        description: '바깥 고리 간격 (빈 값 = 정기 실행은 저장소 변수 ROTATION_DAYS, 수동 실행은 끔)'
+        type: string
+        default: ''
 
 
 permissions:
@@ -65,9 +69,10 @@ jobs:
   scan:
     # ubuntu-latest 는 2026-10-19부터 26.04로 바뀐다. 검증 전까지 24.04 고정.
     runs-on: ubuntu-24.04
+    # 2026-11-06: 바깥 고리(순환 관찰, ROTATION_DAYS) 추가로 하루 약 2만 행 → 약 70분 예상, 상한 120분. 11/5 본 실행 43분(약 1.3만 행).
     # 2026-10-29 v3(10,000): 고정 10,000 + 조회 대상 3,000 ≈ 13,000행. 10/28 실측(8,000행 14분 + Registry 목록 약 13분)으로
     # 약 36분 예상 → 상한 60분. v3 첫 주 실측 뒤 다시 정한다.
-    timeout-minutes: 60
+    timeout-minutes: 120
     outputs:
       scanned: ${{ steps.run.outputs.scanned }}
       registry_fallback: ${{ steps.run.outputs.registry_fallback }}
@@ -98,6 +103,9 @@ jobs:
           FIRST_SEEN: ${{ (github.event_name == 'schedule' || inputs.daily || inputs.first_seen) && '1' || '' }}
           TOOL_DEFS: ${{ (github.event_name == 'schedule' || inputs.daily) && '1' || '' }}
           COHORT_HOST_CAP: ${{ inputs.cohort_host_cap || '3' }}
+          # 바깥 고리(순환 관찰): 저장소 변수 ROTATION_DAYS 로 켠다(기본 0 = 끔). 상태 계산 v2(supabase/2026-11-06_target_status_v2.sql) 적용 뒤에.
+          #   켜기: gh variable set ROTATION_DAYS --body 3 / 끄기: gh variable set ROTATION_DAYS --body 0
+          ROTATION_DAYS: ${{ inputs.rotation_days || ((github.event_name == 'schedule' || inputs.daily) && vars.ROTATION_DAYS) || '0' }}
           # Registry 491페이지(2026-10-24), Actions 에서 페이지당 약 1.6초 → 8분 상한으로는 부족
           REGISTRY_BUDGET_SEC: '1200'
 

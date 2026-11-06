@@ -911,7 +911,7 @@ export interface ObservationRow extends ProbeResult {
   target_type: 'mcp_server' | 'mcp_endpoint';
   observed_at: string;
   /** 'scanner' = 고정 코호트, 'scanner_requested' = 조회된 대상, 'scanner_declared' = Registry 밖 선언 주소(셋 다 섞지 않는다) */
-  source: 'scanner' | 'scanner_requested' | 'scanner_declared';
+  source: 'scanner' | 'scanner_requested' | 'scanner_declared' | 'scanner_rotating';
 }
 
 /** 새 형식(sb_...) 키는 apikey 헤더만, 레거시 JWT(service_role)는 apikey + Authorization. */

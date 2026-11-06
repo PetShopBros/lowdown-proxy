@@ -18,6 +18,8 @@ const BULK_DATA_LINK = '<https://github.com/PetShopBros/lowdown-data>; rel="rela
 const DAY_MS = 86_400_000;
 /** 마지막 점검이 이보다 오래되면 상태 조건에 넣지 않는다 (조회 API 의 STATUS_STALE_DAYS 와 같은 값) */
 export const STALE_DAYS = 2;
+/** 순환 관찰(observation_basis = rotating) 대상의 오래됨 기준: 점검 간격(ROTATION_DAYS, 기본 운용 3) + 1일. 간격을 바꾸면 같이 바꾼다. */
+export const ROTATING_STALE_DAYS = 4;
 export const MAX_LIMIT = 50;
 export const MAX_OFFSET = 2000;
 
@@ -165,7 +167,7 @@ const daysBefore = (now: number, n: number): string => utcDay(Date.parse(utcDay(
 const PARAMETERS = {
   q: "part of the Registry name (2-100 characters)",
   does: "what the server does: 1-3 words (e.g. 'postgres', 'github issue'); each word must appear in the Registry name or in a tool name from the latest observed tool list. Tool descriptions are not searched",
-  state: `latest daily check result: ${STATES.join(", ")} (only servers checked in the last ${STALE_DAYS} days)`,
+  state: `latest check result: ${STATES.join(", ")} (only servers checked in the last ${STALE_DAYS} days, or ${ROTATING_STALE_DAYS} days for servers checked in rotation)`,
   no_auth: "1 = same as state=answered (answered tools/list with no credentials)",
   answered_days: "minimum daily checks in the last 30 days that answered tools/list (1-30)",
   stable_days: "current tool list first observed at least this many days ago (1-3650); tool lists are recorded from 2026-10-20, so a longer period returns nothing yet",
@@ -207,7 +209,8 @@ export function shapeResult(r: Record<string, any>, sortKey: string, now: number
   const name = String(r.name);
   const [ns, ...rest] = name.split("/");
   const latest = typeof r.latest_day === "string" ? r.latest_day.slice(0, 10) : null;
-  const stale = latest ? Date.parse(utcDay(now)) - Date.parse(latest) > STALE_DAYS * DAY_MS : null;
+  const staleDays = r.observation_basis === "rotating" ? ROTATING_STALE_DAYS : STALE_DAYS;
+  const stale = latest ? Date.parse(utcDay(now)) - Date.parse(latest) > staleDays * DAY_MS : null;
   return {
     name,
     sort_value: r[SORTS[sortKey]!.column] ?? null,
@@ -259,7 +262,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let qb: any = supabase.from("server_cards").select(COLUMNS, { count: "exact" });
     if (f.q) qb = qb.ilike("name", `%${f.q.replace(/[\\%_]/g, "\\$&")}%`);
     for (const w of f.does ?? []) qb = qb.ilike("search_text", `%${w.replace(/[\\%_]/g, "\\$&")}%`);
-    if (f.state) qb = qb.eq("latest_state", f.state).gte("latest_day", daysBefore(now, STALE_DAYS));
+    if (f.state) qb = qb.eq("latest_state", f.state).or(`latest_day.gte.${daysBefore(now, STALE_DAYS)},and(observation_basis.eq.rotating,latest_day.gte.${daysBefore(now, ROTATING_STALE_DAYS)})`);
     if (f.answered_days !== null) qb = qb.gte("answered_days_30d", f.answered_days);
     if (f.stable_days !== null) qb = qb.lte("tool_set_since", daysBefore(now, f.stable_days));
     if (f.tools_min !== null) qb = qb.gte("tool_count", f.tools_min);

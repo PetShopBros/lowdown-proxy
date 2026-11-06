@@ -615,7 +615,7 @@ const REGISTRY_RECORDS_SINCE = "2026-10-19";
 const METHOD = {
   requests: "POST initialize, then tools/list. No tool calls and no authentication.",
   vantage: "One network location (GitHub Actions). A timeout or refusal means not reachable from there, not necessarily from everywhere.",
-  frequency: "Once per day, for a fixed sample of MCP Registry entries with a streamable-http remote, plus entries looked up through this API (observation_basis: on_request, observed from the day after the lookup).",
+  frequency: "Once per day for a fixed sample of MCP Registry entries with a streamable-http remote and for entries looked up through this API (observation_basis: on_request, from the day after the lookup); the other entries are checked in rotation every few days (observation_basis: rotating, see status.check_interval_days).",
   limits: "Each row is a single probe at one moment. It is not a measure of availability or uptime, and not a score.",
   dataset: "https://github.com/PetShopBros/lowdown-data",
 };
@@ -763,6 +763,8 @@ export function shapeRegistry(row: any, changes: any[]): Record<string, unknown>
 
 interface ObsRow {
   observed_at: string;
+  source?: unknown;
+  rotation_days?: unknown;
   reached_level: number | null;
   http_status: number | null;
   error_type: string | null;
@@ -1063,13 +1065,17 @@ export function dailyFromRows(rows: ObsRow[]): Array<Record<string, unknown>> {
 }
 
 /** 관찰을 시작한 뒤 행이 없는 날. 그날 코호트 공백 기록이 있으면 그 사유, 없으면 no_observation. 오늘(UTC)은 넣지 않는다. */
-export function missingDays(observedDays: Set<string>, startDay: string, now: number, gaps: Map<string, string>): Array<{ day: string; reason: string }> {
+export function missingDays(observedDays: Set<string>, startDay: string, now: number, gaps: Map<string, string>, interval = 1): Array<{ day: string; reason: string }> {
+  // 순환 관찰(interval > 1): 예정일만 센다 — 가장 최근 관찰일과 간격이 맞는 날. 예정일이 아닌 날은 빠진 날이 아니다.
+  const latestObserved = [...observedDays].sort().at(-1);
+  const anchor = latestObserved ? Date.parse(`${latestObserved}T00:00:00Z`) : null;
+  const scheduled = (t: number) => interval <= 1 || anchor === null || Math.round((anchor - t) / DAY_MS) % interval === 0;
   const out: Array<{ day: string; reason: string }> = [];
   const today = utcDay(now);
   for (let t = Date.parse(`${startDay}T00:00:00Z`); ; t += DAY_MS) {
     const d = utcDay(t);
     if (d >= today) break;
-    if (!observedDays.has(d)) out.push({ day: d, reason: gaps.get(d) ?? "no_observation" });
+    if (!observedDays.has(d) && scheduled(t)) out.push({ day: d, reason: gaps.get(d) ?? "no_observation" });
   }
   return out.slice(-WINDOW_DAYS);
 }
@@ -1079,7 +1085,7 @@ async function scannerHistory(supabase: any, targetId: string, registryRow: any 
   const [obs, first, cohort, gaps] = await Promise.all([
     supabase
       .from("scanner_observations")
-      .select("observed_at,reached_level,http_status,error_type,tool_count:metadata->>tool_count,schema_hash:metadata->>schema_hash,desc_hash:metadata->>desc_hash,server_version:metadata->>server_version,names_hash:metadata->>names_hash,remote_url:metadata->>remote_url,retry_level:metadata->retry->>reached_level,tool_set_hash:metadata->>tool_set_hash")
+      .select("observed_at,source,rotation_days:metadata->rotation->>days,reached_level,http_status,error_type,tool_count:metadata->>tool_count,schema_hash:metadata->>schema_hash,desc_hash:metadata->>desc_hash,server_version:metadata->>server_version,names_hash:metadata->>names_hash,remote_url:metadata->>remote_url,retry_level:metadata->retry->>reached_level,tool_set_hash:metadata->>tool_set_hash")
       .eq("target_id", targetId)
       .gte("observed_at", sinceIso)
       .order("observed_at", { ascending: true })
@@ -1098,7 +1104,10 @@ async function scannerHistory(supabase: any, targetId: string, registryRow: any 
 
   const firstDay = typeof firstObservedAt === "string" ? firstObservedAt.slice(0, 10) : null;
   const windowStart = utcDay(now - WINDOW_DAYS * DAY_MS);
-  const missing = firstDay ? missingDays(new Set(daily.map((d) => String(d.day))), firstDay > windowStart ? firstDay : windowStart, now, gapByDay) : [];
+  // 마지막 관찰이 순환 줄이면 그 간격의 예정일만 빠진 날로 센다
+  const lastRow = rows.length ? rows[rows.length - 1]! : null;
+  const rotDays = lastRow?.source === "scanner_rotating" && /^[1-7]$/.test(String(lastRow.rotation_days ?? "")) ? Number(lastRow.rotation_days) : 1;
+  const missing = firstDay ? missingDays(new Set(daily.map((d) => String(d.day))), firstDay > windowStart ? firstDay : windowStart, now, gapByDay, rotDays) : [];
 
   // 최신 관찰의 도구 이름 목록 (0.4.0 부터). 최신 L2 행의 names_hash 로 찾는다.
   let tools: Record<string, unknown> | null = null;
@@ -1120,7 +1129,7 @@ async function scannerHistory(supabase: any, targetId: string, registryRow: any 
     extra: {
       in_sample: cohorts === null ? null : cohorts.length > 0,
       // 고정 코호트(fixed_cohort)는 매일 같은 대상을 본 표본. on_request 는 누군가 조회한 뒤부터 관찰하기 시작한 대상이라 표본이 아니다 — 추세를 표본 통계와 합쳐 읽지 말 것
-      observation_basis: cohorts === null ? null : cohorts.length > 0 ? "fixed_cohort" : rows.length > 0 ? "on_request" : null,
+      observation_basis: cohorts === null ? null : cohorts.length > 0 ? "fixed_cohort" : rows.length === 0 ? null : rotDays > 1 ? "rotating" : "on_request",
       ...(cohorts ? { cohorts } : {}),
       first_observed_at: firstObservedAt,
       definition_changes: await attachNewFlags(supabase, definitionChanges(rows)),
@@ -1326,6 +1335,8 @@ const STATUS_COLUMNS =
   "target_id,latest_day,latest_state,latest_remote_states,latest_remotes,latest_tool_count,latest_observation_basis," +
   "streak_days,streak_start_day,streak_break,observed_days_30d,answered_days_30d,auth_required_days_30d," +
   "no_response_days_30d,mixed_days_30d,definition_id,definition_version,computed_at";
+/** target_status v2 (2026-11-06) 열. SQL 적용 전이면 v1 열로 다시 읽는다(503 이 되지 않게). */
+const STATUS_COLUMNS_V2 = `${STATUS_COLUMNS},check_interval_days,scheduled_checks_30d`;
 const REMOTE_STATES = ["answered", "auth_required", "list_failed", "no_response", "invalid_response"] as const;
 const STATUS_STATES = new Set<string>([...REMOTE_STATES, "mixed"]);
 const STATUS_BREAKS = new Set(["state_change", "not_observed", "no_earlier_observation", "window_start"]);
@@ -1349,7 +1360,10 @@ const isoDay = (v: unknown): string | null => (typeof v === "string" && ISO_DAY.
 
 async function attachStatus(supabase: any, ev: Evidence, targetId: string, now: number): Promise<void> {
   try {
-    const r = await supabase.from("target_status_summary").select(STATUS_COLUMNS).eq("target_id", targetId).limit(1);
+    let r = await supabase.from("target_status_summary").select(STATUS_COLUMNS_V2).eq("target_id", targetId).limit(1);
+    if (r.error && /column|42703/i.test(`${r.error.code ?? ""} ${r.error.message ?? ""}`)) {
+      r = await supabase.from("target_status_summary").select(STATUS_COLUMNS).eq("target_id", targetId).limit(1);
+    }
     if (r.error) {
       ev.statusFailed = true;
       return;
@@ -1391,7 +1405,11 @@ export function shapeStatus(row: Record<string, unknown>, now: number): { block:
   }
   const tools = statusCount(row.latest_tool_count);
   const daysSince = Math.round((Date.parse(utcDay(now)) - Date.parse(latest)) / DAY_MS);
-  const stale = daysSince > STATUS_STALE_DAYS;
+  // 점검 간격: 매일 1, 순환 관찰은 그 간격(v2 열). 오래됨 기준 = 간격 + 1일 (매일이면 STATUS_STALE_DAYS 와 같다)
+  const ivRaw = statusCount(row.check_interval_days);
+  const iv = ivRaw && ivRaw >= 1 && ivRaw <= 7 ? ivRaw : 1;
+  const scheduled = statusCount(row.scheduled_checks_30d);
+  const stale = daysSince > (iv === 1 ? STATUS_STALE_DAYS : iv + 1);
   const version = statusCount(row.definition_version);
   const computedAt = typeof row.computed_at === "string" && !Number.isNaN(Date.parse(row.computed_at)) ? new Date(row.computed_at).toISOString() : null;
 
@@ -1403,28 +1421,33 @@ export function shapeStatus(row: Record<string, unknown>, now: number): { block:
     consecutive_days: n,
     consecutive_since: since,
     consecutive_break: brk,
-    checks_30d: days,
+    checks_30d: scheduled !== null && scheduled >= observed ? { ...days, scheduled } : days,
+    check_interval_days: iv,
     remote_states: remoteStates,
     tool_count: state === "answered" ? tools : null,
-    observation_basis: row.latest_observation_basis === "fixed_cohort" ? "fixed_cohort" : "on_request",
+    observation_basis: row.latest_observation_basis === "fixed_cohort" ? "fixed_cohort" : row.latest_observation_basis === "rotating" ? "rotating" : "on_request",
     definition: { id: "target_status", version },
     computed_at: computedAt,
     basis: STATUS_BASIS,
   };
 
   let lead: string;
+  // 매일 관찰이면 "daily check", 순환 관찰이면 "check" + 간격을 밝힌다
+  const ck = iv === 1 ? "daily check" : "check";
+  const cks = iv === 1 ? "daily checks" : "checks";
+  const every = iv === 1 ? "" : ` (Lowdown checks this server every ${iv} days)`;
   if (stale) {
-    lead = `No Lowdown daily check since ${latest} (${daysSince} days ago), so no current connectivity is stated.`;
+    lead = `No Lowdown ${ck} since ${latest} (${daysSince} days ago), so no current connectivity is stated.`;
   } else if (state === "mixed") {
     const parts = REMOTE_STATES.filter((k) => remoteStates[k]).map((k) => `${remoteStates[k]} ${REMOTE_PHRASE[k]}`);
-    lead = `On the latest daily check (${latest}) its remotes differed: ${parts.join(", ")}.`;
+    lead = `On the latest ${ck} (${latest}) its remotes differed: ${parts.join(", ")}.${every}`;
   } else {
     const all = n === observed;
     const span =
-      n === 1 && observed === 1 ? `on the only daily check recorded in the last 30 days (${latest})`
-      : n === 1 ? `on the latest daily check (${latest})`
-      : all ? `on all ${n} daily checks recorded in the last 30 days (${since} to ${latest})`
-      : `on the last ${n} consecutive daily checks (${since} to ${latest})`;
+      n === 1 && observed === 1 ? `on the only ${ck} recorded in the last 30 days (${latest})`
+      : n === 1 ? `on the latest ${ck} (${latest})`
+      : all ? `on all ${n} ${cks} recorded in the last 30 days (${since} to ${latest})`
+      : `on the last ${n} consecutive ${cks} (${since} to ${latest})`;
     const verb: Record<string, string> = {
       answered: "Answered initialize and tools/list",
       auth_required: "Required authentication (HTTP 401/403)",
@@ -1432,14 +1455,15 @@ export function shapeStatus(row: Record<string, unknown>, now: number): { block:
       no_response: "No successful response",
       invalid_response: "Did not answer as an MCP server",
     };
-    lead = `${verb[state]} ${span}`;
+    lead = `${verb[state]} ${span}${every}`;
     if (state === "answered" && tools !== null) lead += `; ${tools} tool${tools === 1 ? "" : "s"} listed`;
     lead += ".";
     if (state === "auth_required") lead += " Lowdown checks without credentials, so no tools were listed.";
     if (state === "no_response") lead += " Checked from one network location.";
     const sameDays = state === "answered" ? days.answered : state === "auth_required" ? days.auth_required : state === "no_response" ? days.no_response : null;
-    if (!all && sameDays !== null) lead += ` ${sameDays} of ${observed} observed days in the last 30 had this result.`;
-    if (brk === "not_observed") lead += ` The day before ${since} has no check.`;
+    if (!all && sameDays !== null) lead += ` ${sameDays} of ${observed} ${iv === 1 ? "observed days in the last 30" : "checks in the last 30 days"} had this result.`;
+    if (iv > 1 && scheduled !== null && scheduled > observed) lead += ` ${scheduled - observed} of ${scheduled} scheduled checks have no record.`;
+    if (brk === "not_observed") lead += iv === 1 ? ` The day before ${since} has no check.` : ` The scheduled check before ${since} has no record.`;
   }
   return { block, lead };
 }
@@ -1480,7 +1504,8 @@ function evidenceHead(ev: Evidence | null, lookup: ScannerLookup | null, interac
   else if (ev?.undeclared) parts.push(`no MCP Registry entry declares the ${ev.undeclared.type === "pypi" ? "PyPI" : "npm"} package ${ev.undeclared.ident}`);
   else if (reg) parts.push("no MCP Registry record found");
   if (lookup?.summary) {
-    parts.push(ev?.scannerSince ? `observed daily by Lowdown Scanner since ${String(ev.scannerSince).slice(0, 10)}` : "observed by Lowdown Scanner");
+    const ivMsg = Number((ev?.status as any)?.check_interval_days) > 1 ? `every ${(ev?.status as any).check_interval_days} days` : "daily";
+    parts.push(ev?.scannerSince ? `observed ${ivMsg} by Lowdown Scanner since ${String(ev.scannerSince).slice(0, 10)}` : "observed by Lowdown Scanner");
     const dc = ev?.scannerExtra?.definition_changes as Record<string, unknown> | undefined;
     if (dc?.pattern === "changed") parts.push(`tool definitions last changed on ${dc.last_change} after ${dc.stable_days_before_last_change} days without change`);
     else if (dc?.pattern === "changes_on_most_days") parts.push(`tool definitions change on most observed days (${dc.change_days} of ${dc.compared_days})`);

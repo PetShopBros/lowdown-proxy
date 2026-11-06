@@ -1082,7 +1082,7 @@
                 "mixed"
               ]
             },
-            "description": "Latest daily check result. Only servers checked in the last 2 days match."
+            "description": "Latest check result. Only servers checked in the last 2 days match (4 days for servers checked in rotation, observation_basis rotating)."
           },
           {
             "name": "no_auth",

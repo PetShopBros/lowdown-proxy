@@ -96,7 +96,7 @@ export function cardColumns(body: Record<string, any>) {
     tool_count: int(status?.tool_count) ?? int(scanner?.tools?.count),
     package_flag: packageFlag,
     registry_status: typeof body.registry?.status === "string" ? body.registry.status : null,
-    observation_basis: basis === "fixed_cohort" || basis === "on_request" ? basis : null,
+    observation_basis: basis === "fixed_cohort" || basis === "on_request" || basis === "rotating" ? basis : null,
     // find 조건·정렬용 (cards-2, 2026-10-31)
     answered_days_30d: int(checks?.answered),
     observed_days_30d: int(checks?.observed),

@@ -20,6 +20,8 @@
 //       REQUESTED_DAILY_CAP(기본 1000) / REQUESTED_TOTAL_CAP(기본 3000) — 조회된 대상 관찰. 누군가 조회했지만 관찰된 적 없는 Registry 서버를 매일 함께 관찰한다.
 //       REQUESTED_USER_DAILY_CAP(기본 100) / REQUESTED_USER_TOTAL_CAP(기본 1000) — 실사용 자리: AI 사용자 조회 대상은 위 전체 상한과 별도로 받는다.
 //         고정 코호트와 섞지 않는다(목록 scanner_requested, 행 source='scanner_requested'). 0 이면 끈다. limit·fallback 날은 건너뜀
+//       ROTATION_DAYS(기본 0 = 끔, 1~7) — 바깥 고리: 고정 코호트·조회 대상 밖의 점검 가능한 Registry 대상을 N 묶음으로 나눠 하루 한 묶음씩 관찰.
+//         행 source='scanner_rotating', metadata.observation_basis='rotating', rotation={days, group}. limit·fallback 날은 건너뜀 (scanner/rotating-lib.ts)
 //       DECLARED_DAILY_CAP(기본 500) / DECLARED_HOST_CAP(기본 20) — Registry 밖 선언 주소 관찰(lowdown_probe_targets_declared: ERC-8004 등록 파일 등).
 //         행 source='scanner_declared', target_type='mcp_endpoint', target_id='endpoint:<정규화된 주소>'. 이번 실행이 이미 보는 주소는 뺀다.
 //         0 이면 끈다. limit 날은 건너뜀. 읽기 실패해도 다른 줄은 계속
@@ -62,6 +64,7 @@ import {
   utcDayStart,
 } from './lib.ts';
 import { DECLARED_SOURCE, DECLARED_VERSION, DEFAULT_DECLARED_DAILY_CAP, DEFAULT_DECLARED_HOST_CAP, fetchDeclaredTargets, normEndpoint, pickDeclared } from './declared-lib.ts';
+import { DEFAULT_ROTATION_DAYS, MAX_ROTATION_DAYS, pickRotating, ROTATING_SOURCE, rotationMeta } from './rotating-lib.ts';
 import { DEFAULT_REQUESTED_DAILY_CAP, DEFAULT_REQUESTED_TOTAL_CAP, DEFAULT_REQUESTED_USER_DAILY_CAP, DEFAULT_REQUESTED_USER_TOTAL_CAP, fetchRecentLookups, fetchRequestedIds, LOOKUP_WINDOW_DAYS, pickRequested, REQUESTED_SOURCE, REQUESTED_VERSION, saveRequested } from './requested-lib.ts';
 import { diffRegistry, fetchRegistryState, insertRegistryChanges, upsertRegistryState } from './registry-diff.ts';
 import { aggregateObserved, computeFirstSeen, fetchFirstSeen, insertToolSets, isPublishable, toolSetRows, upsertFirstSeen } from './first-seen.ts';
@@ -354,6 +357,33 @@ async function main(): Promise<void> {
     console.log('requested', JSON.stringify(requestedStats));
   }
 
+  // 바깥 고리(rotating): 고정 코호트·조회 대상 밖의 점검 가능한 대상 중 오늘 묶음. 실패해도 위 두 줄 관찰에는 영향 없음.
+  const rotatingNames = new Set<string>();
+  let rotatingStats: Record<string, string | number> = {};
+  let rotation = { days: 0, group: 0 };
+  {
+    const days = envSeconds('ROTATION_DAYS', DEFAULT_ROTATION_DAYS);
+    if (!(days >= 0 && days <= MAX_ROTATION_DAYS)) fail(`ROTATION_DAYS 는 0~${MAX_ROTATION_DAYS} 사이여야 합니다: ${days}`);
+    if (days === 0) rotatingStats = { rotating: 'off' };
+    else if (limit) rotatingStats = { rotating: 'skipped (limit)' };
+    else if (!registry) rotatingStats = { rotating: 'skipped (registry fallback)' };
+    else {
+      try {
+        const exclude = new Set([...cohortIds, ...[...requestedNames].map((n) => `mcp:${n}`)]);
+        const pick = pickRotating(registry.targets.map((t) => t.name), exclude, days, Date.now());
+        const rotJobs = planCohortJobs(registry.targets, pick.ids, registry.registryInfo).jobs;
+        for (const j of rotJobs) rotatingNames.add(j.name);
+        rotation = { days, group: pick.group };
+        jobs = [...jobs, ...rotJobs];
+        rotatingStats = { rotation_days: days, rotation_group: pick.group, rotating_outside: pick.outside, rotating_targets: pick.ids.length, rotating_jobs: rotJobs.length };
+      } catch (e) {
+        console.error(`rotating 실패(다른 관찰은 계속): ${e instanceof Error ? e.message : 'unknown'}`);
+        rotatingStats = { rotating: 'error' };
+      }
+    }
+    console.log('rotating', JSON.stringify(rotatingStats));
+  }
+
   // Registry 밖에서 선언된 주소(declared): 맨 뒤에 붙인다. 실패해도 위 두 줄 관찰에는 영향 없음.
   const declaredNames = new Map<string, string[]>(); // job.name(= target_id 'endpoint:…') → 선언한 곳들
   let declaredStats: Record<string, string | number> = {};
@@ -391,6 +421,7 @@ async function main(): Promise<void> {
   const all: ObservationRow[] = []; // 고정 코호트 행만 — 요약·first-seen 은 이것만 본다
   const requestedRows: ObservationRow[] = []; // 조회된 대상 행 (source='scanner_requested')
   const declaredRows: ObservationRow[] = []; // Registry 밖 선언 주소 행 (source='scanner_declared')
+  const rotatingRows: ObservationRow[] = []; // 바깥 고리 행 (source='scanner_rotating')
   let pending: ObservationRow[] = [];
   let inserted = 0;
   // 저장 실패 한 번이 스캔 전체를 버리지 않게: 실패한 배치는 보관 → 막힌 동안 60초에 한 번만 시도 → 스캔 뒤 길게 대기하며 재시도
@@ -415,10 +446,11 @@ async function main(): Promise<void> {
   const declMetaOf = (job: CohortJob) => ({ registry_version: null, cohort_version: DECLARED_VERSION, cohort_versions: [DECLARED_VERSION], observation_basis: 'declared', declared_by: declaredNames.get(job.name) ?? [] });
   const identOf = (job: CohortJob) => {
     if (declaredNames.has(job.name)) return { target_id: job.name, target_type: 'mcp_endpoint' as const, source: DECLARED_SOURCE as 'scanner_declared' };
+    if (rotatingNames.has(job.name)) return { target_id: `mcp:${job.name}`, target_type: 'mcp_server' as const, source: ROTATING_SOURCE as 'scanner_rotating' };
     return { target_id: `mcp:${job.name}`, target_type: 'mcp_server' as const, source: (requestedNames.has(job.name) ? REQUESTED_SOURCE : 'scanner') as 'scanner' | 'scanner_requested' };
   };
   const extraMetaOf = (job: CohortJob) =>
-    declaredNames.has(job.name) ? declMetaOf(job) : requestedNames.has(job.name) ? reqMeta : cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {};
+    declaredNames.has(job.name) ? declMetaOf(job) : requestedNames.has(job.name) ? reqMeta : rotatingNames.has(job.name) ? rotationMeta(rotation.days, rotation.group) : cohortBase ? { cohort_versions: cohortVersionsOf(`mcp:${job.name}`) } : {};
   const probeOne = async (job: CohortJob): Promise<ObservationRow> => {
     const observedAt = new Date().toISOString();
     try {
@@ -463,7 +495,7 @@ async function main(): Promise<void> {
     },
     {
       onResult: async (_job, row) => {
-        (row.source === REQUESTED_SOURCE ? requestedRows : row.source === DECLARED_SOURCE ? declaredRows : all).push(row);
+        (row.source === REQUESTED_SOURCE ? requestedRows : row.source === DECLARED_SOURCE ? declaredRows : row.source === ROTATING_SOURCE ? rotatingRows : all).push(row);
         pending.push(row);
         if (pending.length >= CHUNK) await flush();
       },
@@ -491,7 +523,7 @@ async function main(): Promise<void> {
   const tRetry = Date.now();
   let retryStats: Record<string, number | string> = {};
   try {
-    retryStats = await retryFailed([...all, ...requestedRows, ...declaredRows], { supabase, concurrency });
+    retryStats = await retryFailed([...all, ...requestedRows, ...declaredRows, ...rotatingRows], { supabase, concurrency });
   } catch (e) {
     console.error(`retry 단계 실패(관찰 데이터는 저장 완료): ${e instanceof Error ? e.message : 'unknown'}`);
     retryStats = { retry: 'error' };
@@ -549,7 +581,8 @@ async function main(): Promise<void> {
       try {
         const now = new Date().toISOString();
         const namesOf = (r: ObservationRow) => toolNamesByRow.get(r);
-        const sets = toolSetRows(all, namesOf, { now, scanRunId: runId });
+        // 도구 이름 목록은 바깥 고리 대상도 저장(조회 응답의 도구 목록). 최초 관측(first seen)은 지금처럼 고정 코호트만.
+        const sets = toolSetRows([...all, ...rotatingRows], namesOf, { now, scanRunId: runId });
         const prev = await fetchFirstSeen(cohortReadCfg);
         const fs = computeFirstSeen(prev, aggregateObserved(all, namesOf), { now, scanRunId: runId });
         let written = 'dry-run (not written)';
@@ -630,6 +663,8 @@ async function main(): Promise<void> {
     requested_rows: requestedRows.length,
     ...declaredStats,
     declared_rows: declaredRows.length,
+    rotating_rows: rotatingRows.length,
+    ...rotatingStats,
   });
   console.log(summary);
   if (dryRun) {
