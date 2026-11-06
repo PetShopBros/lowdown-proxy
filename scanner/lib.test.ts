@@ -1101,7 +1101,14 @@ describe('scanner 버전 정보', () => {
     assert.equal(scannerCommit('0123456789ABCDEF0123456789abcdef01234567'), '0123456789ab');
   });
   test('없거나 형식이 아니면 null (로컬 실행)', () => {
-    assert.equal(scannerCommit(undefined), null);
+    // 인자가 없으면 GITHUB_SHA 를 읽는다 → GitHub Actions 에서도 "없음"을 시험하려고 잠시 지운다
+    const saved = process.env.GITHUB_SHA;
+    delete process.env.GITHUB_SHA;
+    try {
+      assert.equal(scannerCommit(undefined), null);
+    } finally {
+      if (saved !== undefined) process.env.GITHUB_SHA = saved;
+    }
     assert.equal(scannerCommit(''), null);
     assert.equal(scannerCommit('abc123'), null);
     assert.equal(scannerCommit('g'.repeat(40)), null);
