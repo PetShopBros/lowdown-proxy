@@ -25,6 +25,15 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+/** --day=YYYY-MM-DD (UTC): 그날 시작한 run 으로 빠진 하루 JSON 을 채운다. 없으면 null(최신 run). */
+function parseBackfillDay(args: readonly string[]): string | null {
+  const a = args.find((x) => x.startsWith('--day='));
+  if (!a) return null;
+  const d = a.slice('--day='.length);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) fail(`--day must be YYYY-MM-DD: ${d}`);
+  return d;
+}
+
 async function getAll<T>(cfg: SupabaseConfig, table: string, params: Record<string, string>, keyset: boolean): Promise<T[]> {
   const base = `${cfg.url.replace(/\/+$/, '')}/rest/v1/${table}`;
   const out: T[] = [];
@@ -125,15 +134,21 @@ async function main(): Promise<void> {
   const docs = join(repoDir, 'docs');
 
   // 1) 최신 run — REPORT.md 와 같은 안전장치(부분 실행이면 buildReport 가 throw)
-  const now = new Date();
-  const rows = await fetchReportRows(cfg, new Date(now.getTime() - WINDOW_DAYS * 86_400_000).toISOString());
+  const backfillDay = parseBackfillDay(process.argv.slice(3));
+  const windowEnd = backfillDay ? new Date(`${backfillDay}T23:59:59.999Z`) : new Date();
+  const fetched = await fetchReportRows(cfg, new Date(windowEnd.getTime() - WINDOW_DAYS * 86_400_000).toISOString());
+  const rows = backfillDay ? fetched.filter((r) => r.observed_at <= windowEnd.toISOString()) : fetched;
   if (rows.length === 0) fail(`최근 ${WINDOW_DAYS}일 안에 관찰 행이 없습니다.`);
   const byRun = new Map<string, ReportRow[]>();
   for (const r of rows) (byRun.get(r.scan_run_id) ?? byRun.set(r.scan_run_id, []).get(r.scan_run_id)!).push(r);
   const runs = [...byRun.entries()]
     .map(([id, g]) => ({ id, rows: g, start: g.reduce((m, r) => (r.observed_at < m ? r.observed_at : m), g[0]!.observed_at), end: g.reduce((m, r) => (r.observed_at > m ? r.observed_at : m), g[0]!.observed_at) }))
     .sort((a, b) => (a.end < b.end ? -1 : 1));
-  const latest = runs.at(-1)!;
+  let latestIdx = runs.length - 1;
+  if (backfillDay) while (latestIdx >= 0 && runs[latestIdx]!.start.slice(0, 10) !== backfillDay) latestIdx--;
+  if (latestIdx < 0) fail(`--day=${backfillDay}: no scanner run started on that day (UTC)`);
+  const latest = runs[latestIdx]!;
+  const now = backfillDay ? new Date(latest.end) : new Date();
   const version = (rs: readonly ReportRow[]) => {
     const c = new Map<string, number>();
     for (const r of rs) if (r.cohort_version) c.set(r.cohort_version, (c.get(r.cohort_version) ?? 0) + 1);
@@ -147,7 +162,7 @@ async function main(): Promise<void> {
 
   // 직전 run: 자기 코호트의 절반 이상을 관찰한 가장 최근 run
   let previous: { run: (typeof runs)[number]; summary: ObservationSummary } | null = null;
-  for (let i = runs.length - 2; i >= 0 && !previous; i--) {
+  for (let i = latestIdx - 1; i >= 0 && !previous; i--) {
     const run = runs[i]!;
     const v = version(run.rows);
     if (!v) continue;
@@ -208,7 +223,7 @@ async function main(): Promise<void> {
   const existingDays = readdirSync(daysDir).filter((f) => /^\d{4}-\d{2}-\d{2}\.json$/.test(f)).map((f) => f.slice(0, 10));
   const dayPath = join(daysDir, `${day}.json`);
   const nextText = serializeDay(d);
-  const decision = dayWriteDecision(day, existingDays, existsSync(dayPath) ? readFileSync(dayPath, 'utf8') : null, nextText);
+  const decision = dayWriteDecision(day, existingDays, existsSync(dayPath) ? readFileSync(dayPath, 'utf8') : null, nextText, { fillMissingPast: backfillDay !== null });
   if (decision === 'write') writeFileSync(dayPath, nextText);
   console.log(`market day ${day}: ${decision} (run ${latest.id}, data_as_of ${latest.end})`);
 

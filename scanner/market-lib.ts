@@ -394,8 +394,16 @@ export function parseDay(text: string): MarketDay {
  *  - 기존 파일과 바이트가 같으면 아무것도 쓰지 않는다.
  *  - 가장 최근 날짜(또는 새 날짜)만 쓴다. 더 새로운 날짜가 이미 있으면 과거 기록은 고치지 않는다.
  */
-export function dayWriteDecision(day: string, existingDays: readonly string[], existingText: string | null, nextText: string): 'write' | 'unchanged' | 'past_day_locked' {
+export function dayWriteDecision(
+  day: string,
+  existingDays: readonly string[],
+  existingText: string | null,
+  nextText: string,
+  opts: { fillMissingPast?: boolean } = {},
+): 'write' | 'unchanged' | 'past_day_locked' {
   if (existingText === nextText) return 'unchanged';
+  // 채우기(--day): 파일이 없는 지난 날짜만 쓴다. 이미 있는 지난 날짜는 그대로 잠금.
+  if (opts.fillMissingPast && existingText === null) return 'write';
   const newest = [...existingDays].sort().at(-1);
   if (newest !== undefined && day < newest) return 'past_day_locked';
   return 'write';

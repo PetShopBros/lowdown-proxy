@@ -6,6 +6,11 @@ name: report
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      day:
+        description: 'Backfill a missing market day (YYYY-MM-DD, UTC). Empty = latest run'
+        required: false
+        default: ''
 
 permissions:
   contents: read
