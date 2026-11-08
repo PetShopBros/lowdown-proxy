@@ -1721,7 +1721,8 @@ export async function fetchMonthRows(cfg: SupabaseConfig, range: MonthRange, dep
   for (;;) {
     const qs = new URLSearchParams();
     qs.set('select', EXPORT_COLUMNS.join(','));
-    qs.append('observed_at', `gte.${range.start}`);
+    // keyset: 다음 페이지는 마지막 시각부터 인덱스 범위로 읽는다(or 조건만으로는 매 페이지 range.start 부터 다시 훑는다).
+    qs.append('observed_at', `gte.${after ? after.at : range.start}`);
     qs.append('observed_at', `lt.${range.end}`);
     if (after) qs.set('or', `(observed_at.gt."${after.at}",and(observed_at.eq."${after.at}",id.gt.${after.id}))`);
     qs.set('order', 'observed_at.asc,id.asc');
