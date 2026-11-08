@@ -45,7 +45,8 @@ export async function fetchReportRows(cfg: SupabaseConfig, sinceIso: string, dep
   for (;;) {
     const qs = new URLSearchParams();
     qs.set('select', REPORT_COLUMNS);
-    qs.set('observed_at', `gte.${sinceIso}`);
+    // keyset: 다음 페이지는 마지막 시각부터 인덱스 범위로 읽는다(or 조건만으로는 매 페이지 since 부터 다시 훑는다).
+    qs.set('observed_at', `gte.${after ? after.at : sinceIso}`);
     qs.set('source', 'eq.scanner'); // 고정 코호트만. 조회된 대상(scanner_requested)은 섞지 않는다
     if (after) qs.set('or', `(observed_at.gt."${after.at}",and(observed_at.eq."${after.at}",id.gt.${after.id}))`);
     qs.set('order', 'observed_at.asc,id.asc');

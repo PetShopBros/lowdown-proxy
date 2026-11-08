@@ -188,7 +188,7 @@ export async function fetchObservations(cfg: SupabaseConfig, sinceIso: string, d
   let after: { at: string; id: number } | null = null;
   for (;;) {
     const qs = new URLSearchParams({ select: OBS_SELECT, order: 'observed_at.asc,id.asc', limit: String(pageSize) });
-    qs.append('observed_at', `gte.${sinceIso}`);
+    qs.append('observed_at', `gte.${after ? after.at : sinceIso}`);
     qs.append('source', 'eq.scanner');
     qs.append('reached_level', 'eq.2');
     if (after) qs.append('or', `(observed_at.gt."${after.at}",and(observed_at.eq."${after.at}",id.gt.${after.id}))`);
