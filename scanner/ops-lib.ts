@@ -11,6 +11,8 @@ export interface WorkflowCheck {
   kind: 'workflow' | 'job';
   workflow: string; // 파일 이름 (예: scanner.yml)
   job?: RegExp; // kind=job: 작업 이름
+  /** 같은 일을 하는 단독 워크플로(수동 재실행용). 그 실행도 같은 판정에 넣는다. 예: scanner 의 report 작업 ↔ report.yml */
+  alsoWorkflow?: string;
   maxAgeHours: number | null; // 마지막 성공 허용 간격. null = 실패만 본다
 }
 
@@ -25,7 +27,7 @@ export interface DbCheck {
 
 export const WORKFLOW_CHECKS: WorkflowCheck[] = [
   { id: 'scanner/scan', kind: 'job', workflow: 'scanner.yml', job: /^scan$/, maxAgeHours: 26 },
-  { id: 'scanner/report', kind: 'job', workflow: 'scanner.yml', job: /^report\b/, maxAgeHours: 26 },
+  { id: 'scanner/report', kind: 'job', workflow: 'scanner.yml', job: /^report\b/, alsoWorkflow: 'report.yml', maxAgeHours: 26 },
   { id: 'scanner/cards', kind: 'job', workflow: 'scanner.yml', job: /^cards\b/, maxAgeHours: 8 * 24 },
   { id: 'backup', kind: 'workflow', workflow: 'backup.yml', maxAgeHours: 26 },
   { id: 'cards', kind: 'workflow', workflow: 'cards.yml', maxAgeHours: 14 },

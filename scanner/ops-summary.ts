@@ -62,6 +62,10 @@ async function main(): Promise<void> {
       } else {
         list = runs.map((r) => ({ created_at: r.run_started_at ?? r.created_at, completed_at: r.status === 'completed' ? r.updated_at : null, status: r.status, conclusion: r.conclusion }));
       }
+      if (c.alsoWorkflow) {
+        // workflow_call 로 불린 실행은 호출한 쪽(scanner)에만 잡힌다 → 여기는 단독(수동) 실행만 더한다
+        for (const r of await runsOf(c.alsoWorkflow)) list.push({ created_at: r.run_started_at ?? r.created_at, completed_at: r.status === 'completed' ? r.updated_at : null, status: r.status, conclusion: r.conclusion });
+      }
       rows.push(judgeRuns(c, list, now));
     } catch (e) {
       rows.push({ check_id: c.id, kind: c.kind, status: 'error', last_at: null, last_conclusion: null, last_success_at: null, failing_since: null, runs_24h: null, failures_24h: null, details: { workflow: c.workflow, error: e instanceof Error ? e.message : String(e) } });

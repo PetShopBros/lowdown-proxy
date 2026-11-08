@@ -43,3 +43,9 @@ test('renderMarkdown: 복구 안 됨을 맨 위에, 오류 원문 없음', () =>
   assert.match(md, /\*\*scanner\/report\*\* — ❌ failing, 5일째/);
   assert.doesNotMatch(md, /secret detail/);
 });
+
+test('judgeRuns: 단독 재실행 성공(alsoWorkflow)이 더 최근이면 복구로 본다', () => {
+  const job = [R('2026-11-07T01:50:00Z', 'failure'), R('2026-11-08T01:50:00Z', 'failure')];
+  const manual = [R('2026-11-08T03:00:00Z', 'success')];
+  assert.equal(judgeRuns(W(26), [...job, ...manual], now).status, 'ok');
+});
