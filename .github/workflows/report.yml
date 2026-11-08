@@ -63,7 +63,7 @@ jobs:
       # 시장판 3단계: 일일 기록 페이지·피드 (lowdown-data/docs → GitHub Pages).
       # REPORT.md 커밋 뒤에 돈다 — 여기서 실패해도 REPORT.md 는 이미 올라가 있다.
       - name: Generate daily record pages
-        run: node scanner/market.ts data-repo
+        run: node scanner/market.ts data-repo ${{ inputs.day && format('--day={0}', inputs.day) || '' }}
         env:
           LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
           LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
