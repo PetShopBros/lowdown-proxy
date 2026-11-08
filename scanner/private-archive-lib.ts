@@ -67,6 +67,8 @@ export const SPECS: Record<PrivateDataset, DatasetSpec> = {
     columns: null,
     pageSize: 1000,
     from: PROJECT_FROM,
+    // 2026-11-08: (created_at, id) keyset. id 순 keyset 은 pkey 로 표 전체를 훑으며 하루치를 걸러 timeout(11/7 HTTP 500).
+    timeKeyset: true,
   },
   interactions: {
     table: 'interactions',
@@ -191,7 +193,8 @@ export async function fetchPrivateDay(cfg: SupabaseConfig, spec: DatasetSpec, ra
   for (;;) {
     const order = spec.timeKeyset ? `${spec.timeColumn}.asc,${spec.key}.asc` : `${spec.key}.asc`;
     const qs = new URLSearchParams({ select: cols ? cols.join(',') : '*', order, limit: String(spec.pageSize) });
-    qs.append(spec.timeColumn, `gte.${range.start}`);
+    // keyset: 다음 페이지는 마지막 시각부터 인덱스 범위로 읽는다(or 조건만으로는 매 페이지 range.start 부터 다시 훑는다).
+    qs.append(spec.timeColumn, `gte.${spec.timeKeyset && lastTime !== null ? lastTime : range.start}`);
     qs.append(spec.timeColumn, `lt.${range.end}`);
     if (last !== null) {
       if (spec.timeKeyset && lastTime !== null) qs.append('or', `(${spec.timeColumn}.gt.${q(lastTime)},and(${spec.timeColumn}.eq.${q(lastTime)},${spec.key}.gt.${q(last)}))`);
