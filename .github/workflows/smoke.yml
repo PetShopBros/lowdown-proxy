@@ -42,6 +42,15 @@ jobs:
           LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
           LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
 
+      # SQL 적용 기록 비교(안정화 2단계): 경고만, 실패로 치지 않는다.
+      - name: SQL migrations recorded
+        if: github.event_name != 'deployment_status'
+        continue-on-error: true
+        run: node scanner/migrations.ts check
+        env:
+          LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
+          LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
+
       - name: Open issue on failure
         if: failure()
         env:
