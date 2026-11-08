@@ -14,6 +14,7 @@ import type { SupabaseConfig } from './lib.ts';
 import { supabaseHeaders } from './lib.ts';
 import { NOTABLE_RULE_VERSION, type NotableRow, type RuleId } from './notable-lib.ts';
 import type { DiffIoDeps } from './registry-diff.ts';
+import { readErrorBody } from './rest-retry.ts';
 
 export const STABLE_MIN = 7;
 
@@ -192,7 +193,7 @@ export async function fetchObservations(cfg: SupabaseConfig, sinceIso: string, d
     qs.append('reached_level', 'eq.2');
     if (after) qs.append('or', `(observed_at.gt."${after.at}",and(observed_at.eq."${after.at}",id.gt.${after.id}))`);
     const res = await f(`${base}?${qs.toString()}`, { headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }), signal: AbortSignal.timeout(60_000) });
-    if (!res.ok) throw new Error(`scanner_observations read failed: HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`scanner_observations read failed: HTTP ${res.status} ${await readErrorBody(res)}`.trim());
     const page = (await res.json()) as ObsIn[];
     if (!Array.isArray(page)) throw new Error('scanner_observations read failed: unexpected response');
     out.push(...page);

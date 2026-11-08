@@ -18,6 +18,7 @@ import { getKeyset } from './npm-lib.ts';
 import { parseDeclared } from './pages-lib.ts';
 import { buildReport, fetchReportRows, MIN_RUN_COVERAGE, WINDOW_DAYS } from './report-lib.ts';
 import type { ReportRow } from './report-lib.ts';
+import { fetchRetry } from './rest-retry.ts';
 
 function fail(message: string): never {
   console.error(`::error::${message}`);
@@ -161,11 +162,11 @@ async function main(): Promise<void> {
   // 2) 사실 종류별 입력
   // 그날 Registry 목록을 받지 못했으면(fallback) 비교를 건너뛴 날이다 — 0 을 "변경 없음"으로 싣지 않는다
   const fbQs = new URLSearchParams({ select: 'registry_fallback:metadata->>registry_fallback', scan_run_id: `eq.${latest.id}`, source: 'eq.scanner', limit: '1' });
-  const fbRes = await fetch(`${cfg.url.replace(/\/+$/, '')}/rest/v1/scanner_observations?${fbQs.toString()}`, {
-    headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!fbRes.ok) throw new Error(`scanner_observations read failed: HTTP ${fbRes.status}`);
+  const fbRes = await fetchRetry(
+    `${cfg.url.replace(/\/+$/, '')}/rest/v1/scanner_observations?${fbQs.toString()}`,
+    () => ({ headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }), signal: AbortSignal.timeout(30_000) }),
+    'scanner_observations read',
+  );
   const fb = (await fbRes.json()) as Array<{ registry_fallback: string | null }>;
   const registryCompared = !(Array.isArray(fb) && fb[0]?.registry_fallback === 'true');
   const registryRows = registryCompared ? await fetchRegistryChangesDay(cfg, day) : [];
