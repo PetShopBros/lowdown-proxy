@@ -1,0 +1,42 @@
+name: ops-summary
+
+# 운영 요약(안정화 3단계): 워크플로·작업·DB 신선도를 하루 한 번 판정해
+#   ops_daily(비공개) 에 쓰고, 실행 요약과 고정 이슈 "운영 상태 (자동 갱신)" 을 갱신한다.
+#   24시간 넘게 복구되지 않은 것은 이슈 맨 위에 "N일째" 로 표시된다(실패마다 새 이슈를 만들지 않는다).
+# 매일 12:37 KST (UTC 03:37): 본 관찰(10:17)·report·smoke(12:07) 뒤.
+on:
+  schedule:
+    - cron: '37 3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '판정만 (DB·이슈 쓰기 없음)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: ops-summary
+  cancel-in-progress: false
+
+jobs:
+  ops-summary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Ops summary
+        run: node scanner/ops-summary.ts ${{ inputs.dry_run && '--dry-run' || '' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
+          LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
