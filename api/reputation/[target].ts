@@ -1941,7 +1941,7 @@ export const SETS: Record<string, MenuItem & { includes: string[] }> = {
 /** 아직 열지 않은 메뉴: 이름만 예약. 무엇인지·언제인지 사실만. */
 export const PLANNED: Record<string, { what: string; status: string; spec?: string }> = {
   stdio: { what: "Results of installing the declared npm or PyPI package in an isolated sandbox and running initialize and tools/list over stdio.", status: "first full pass completed on 2026-11-09; results are not in the public dataset (CC BY 4.0) or this API and will be offered separately later", spec: "https://github.com/PetShopBros/lowdown-proxy/blob/main/sandbox/README.md" },
-  radar: { what: "Rule-based notable facts (for example a deprecated package, or tool definitions that changed without a server version change), with the rule and the evidence. No scores.", status: "recorded privately; publication criteria not decided yet" },
+  radar: { what: "Rule-based notable facts (for example a deprecated package, or tool definitions that changed without a server version change), with the rule and the evidence. No scores.", status: "recorded privately since 2026-10-26; results are not in the public dataset (CC BY 4.0) or this API and will be offered separately later", spec: "https://github.com/PetShopBros/lowdown-proxy/blob/main/scanner/RADAR.md" },
   watch: { what: "Notify when chosen servers change.", status: "planned paid set; not available" },
   "bulk-history": { what: "Many servers and history longer than 30 days in one request (the raw daily data stays free in the public dataset).", status: "planned paid set; not available" },
 };

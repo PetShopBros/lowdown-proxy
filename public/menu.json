@@ -137,7 +137,8 @@
     {
       "menu": "radar",
       "what": "Rule-based notable facts (for example a deprecated package, or tool definitions that changed without a server version change), with the rule and the evidence. No scores.",
-      "status": "recorded privately; publication criteria not decided yet"
+      "status": "recorded privately since 2026-10-26; results are not in the public dataset (CC BY 4.0) or this API and will be offered separately later",
+      "spec": "https://github.com/PetShopBros/lowdown-proxy/blob/main/scanner/RADAR.md"
     },
     {
       "menu": "watch",
