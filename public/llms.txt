@@ -30,7 +30,7 @@ Ask for only the part that answers your question: `GET https://lowdown-proxy.ver
 - `declared-vs-observed`: does what the Registry declares (version, hosts) match what is observed.
 - `content-flags`: did a tool definition change add a URL or invisible characters.
 - `tool-list`, `registry`, `history` (30 days), `agent-reports`.
-- Not available yet: `stdio` (sandbox install-and-run results, pilot running), `radar` (rule-based notable facts), and two planned paid sets, `watch` and `bulk-history`. Asking for them returns HTTP 400 with their status.
+- Not available yet: `stdio` (sandbox install-and-run results; first full pass completed on 2026-11-09; results are not in the public dataset; method: [sandbox/README.md](https://github.com/PetShopBros/lowdown-proxy/blob/main/sandbox/README.md)), `radar` (rule-based notable facts), and two planned paid sets, `watch` and `bulk-history`. Asking for them returns HTTP 400 with their status.
 - Find (several servers by condition): `GET https://lowdown-proxy.vercel.app/api/find?no_auth=1&stable_days=7&sort=tools&limit=10`. See Query.
 - Find by what a server does: `GET https://lowdown-proxy.vercel.app/api/find?does=postgres&no_auth=1&limit=10` (words in the Registry name or tool names).
 - Feedback: `POST https://lowdown-proxy.vercel.app/api/feedback` with `{"useful": "yes|no|partly", "missing": [...], "menu": "...", "target": "..."}` (`GET` the same URL for the format).

@@ -4,6 +4,16 @@ Lowdown Scanner probes remote (`streamable-http`) servers. The sandbox covers th
 
 It runs on a separate, disposable server. It does not run on GitHub Actions.
 
+## Status
+
+- First full pass completed on 2026-11-09. Runner 0.3.0 has run since 2026-10-25; the first runs on 2026-10-23 and 2026-10-24 used 0.1.0 to 0.2.1.
+- Scope on 2026-11-09: 9,837 npm packages (18,101 package versions) and 1,763 PyPI packages (3,968 package versions) declared with `stdio` transport in the official MCP Registry. A package counts as two versions when its declared version and its latest release differ.
+- After the first full pass, each daily batch runs new package versions and retries only.
+- Results are not part of Lowdown's public dataset (CC BY 4.0). The lookup API and the MCP tools do not return them. They will be offered separately later.
+- To ask about access, [open an issue](https://github.com/PetShopBros/lowdown-proxy/issues).
+
+This page is the specification: what is run, under which conditions, and what each result means.
+
 ## What is recorded
 
 For each `npm:<package>@<version>`:
@@ -141,18 +151,13 @@ Daily: `lowdown-observe.timer`, 12:17 KST, up to 200 targets (`SANDBOX_OBSERVE_L
 
 ## Publication
 
-Built, switched off. Nothing from the sandbox is public until both of these are done (`supabase/2026-10-26_sandbox_summary.sql`):
+Sandbox results are kept out of the public dataset (CC BY 4.0), the lookup API and the MCP tools. The method on this page is public; the results will be offered separately later, under their own terms. Nothing is deleted.
 
-1. `grant select on sandbox_summary to anon, authenticated;` (the summary is one row per package version: outcome, reached level, tool count, whether install scripts are declared; no tool names, hashes, arguments or logs)
-2. Vercel environment variable `SANDBOX_PUBLIC=1`
+The code path that could add a `sandbox` block to `GET /api/reputation/{target}` (`sandbox_summary`, `SANDBOX_PUBLIC`) stays switched off. Do not run `grant select on sandbox_summary to anon, authenticated;` and do not set `SANDBOX_PUBLIC=1`.
 
-Then `GET /api/reputation/{target}` carries a `sandbox` block for the declared npm packages (declared version and npm latest, at most 2 rows per package) and a `sandbox_note` saying what one start without network or credentials does and does not show. PyPI rows are not published until the pilot data has been looked at.
+Before results are offered, all of these must hold:
 
-Switch on only when all of these hold (pilot review, not before):
-
-- at least 4 weeks of runs, and the share of targets covered is stated next to the numbers wherever they are shown (covered / declared stdio packages), so a result is never read as the whole Registry
+- the share of targets covered is stated next to every number (covered / declared stdio packages), so a result is never read as the whole Registry
 - `runner_error` is under 2% of runs in the last 2 weeks, and the same version run twice gives the same outcome in a spot check of 30 targets
 - the wording of every outcome has been read once as "fact under these conditions" (a server that needs a key reports `exited` or `init_error`; that is not a verdict)
 - the daily archive of `sandbox_runs` in `lowdown-private` exists for every closed day since the start
-
-Switch off: `revoke select on sandbox_summary from anon, authenticated;` and remove `SANDBOX_PUBLIC`. Nothing is deleted.

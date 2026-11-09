@@ -1020,7 +1020,8 @@ describe('메뉴 (?menu=)', () => {
     const p = await call('mcp:io.github.acme/solo', { menu: 'stdio' });
     assert.equal(p.status, 400);
     assert.equal(p.body.error, 'menu_not_available');
-    assert.match(p.body.status, /not published/);
+    assert.match(p.body.status, /not in the public dataset/);
+    assert.match(p.body.spec, /sandbox\/README\.md$/);
     const w = await call('mcp:io.github.acme/solo', { menu: 'watch' });
     assert.match(w.body.status, /paid/);
     const u = await call('mcp:io.github.acme/solo', { menu: 'nope' });

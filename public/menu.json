@@ -13,7 +13,7 @@
     {
       "menu": "install-check",
       "question": "Should I install or connect this MCP server? Facts to decide before installing.",
-      "contains": "status, packages, declared-vs-observed, content-flags (and stdio results when published)",
+      "contains": "status, packages, declared-vs-observed, content-flags",
       "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=install-check",
       "includes": [
         "status",
@@ -131,7 +131,8 @@
     {
       "menu": "stdio",
       "what": "Results of installing the declared npm or PyPI package in an isolated sandbox and running initialize and tools/list over stdio.",
-      "status": "pilot running; not published yet"
+      "status": "first full pass completed on 2026-11-09; results are not in the public dataset (CC BY 4.0) or this API and will be offered separately later",
+      "spec": "https://github.com/PetShopBros/lowdown-proxy/blob/main/sandbox/README.md"
     },
     {
       "menu": "radar",

@@ -1927,7 +1927,7 @@ export const DISHES: Record<string, MenuItem> = {
 export const SETS: Record<string, MenuItem & { includes: string[] }> = {
   "install-check": {
     question: "Should I install or connect this MCP server? Facts to decide before installing.",
-    contains: "status, packages, declared-vs-observed, content-flags (and stdio results when published)",
+    contains: "status, packages, declared-vs-observed, content-flags",
     includes: ["status", "packages", "declared-vs-observed", "content-flags"],
   },
   "change-watch": {
@@ -1939,8 +1939,8 @@ export const SETS: Record<string, MenuItem & { includes: string[] }> = {
 };
 
 /** 아직 열지 않은 메뉴: 이름만 예약. 무엇인지·언제인지 사실만. */
-export const PLANNED: Record<string, { what: string; status: string }> = {
-  stdio: { what: "Results of installing the declared npm or PyPI package in an isolated sandbox and running initialize and tools/list over stdio.", status: "pilot running; not published yet" },
+export const PLANNED: Record<string, { what: string; status: string; spec?: string }> = {
+  stdio: { what: "Results of installing the declared npm or PyPI package in an isolated sandbox and running initialize and tools/list over stdio.", status: "first full pass completed on 2026-11-09; results are not in the public dataset (CC BY 4.0) or this API and will be offered separately later", spec: "https://github.com/PetShopBros/lowdown-proxy/blob/main/sandbox/README.md" },
   radar: { what: "Rule-based notable facts (for example a deprecated package, or tool definitions that changed without a server version change), with the rule and the evidence. No scores.", status: "recorded privately; publication criteria not decided yet" },
   watch: { what: "Notify when chosen servers change.", status: "planned paid set; not available" },
   "bulk-history": { what: "Many servers and history longer than 30 days in one request (the raw daily data stays free in the public dataset).", status: "planned paid set; not available" },
