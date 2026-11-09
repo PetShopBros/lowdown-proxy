@@ -155,7 +155,7 @@ export function buildServer(ctx: { host: string; ua: string | null; fetchImpl?: 
     },
     async ({ target, menu }) => {
       const t = target.trim();
-      if (!TARGET_RE.test(t)) return toolError({ error: "invalid_parameter", message: "target must be printable ASCII without spaces, up to 300 characters.", retryable: false, parameter: "target" });
+      if (!TARGET_RE.test(t)) return toolError({ error: "invalid_parameter", message: "target must be printable ASCII without spaces, up to 300 characters.", retryable: false, parameter: "target", example: "mcp:io.github.user/server" });
       return callApi(lookupUrl(ctx.host, t, menu ?? null), "lookup");
     },
   );
