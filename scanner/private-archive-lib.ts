@@ -185,21 +185,9 @@ export function planPrivateDays(dataset: PrivateDataset, days: readonly string[]
 export async function fetchPrivateDay(cfg: SupabaseConfig, spec: DatasetSpec, range: { start: string; end: string }, fetchImpl: typeof fetch = fetch): Promise<Array<Record<string, unknown>>> {
   const base = `${cfg.url.replace(/\/+$/, '')}/rest/v1/${spec.table}`;
   const out: Array<Record<string, unknown>> = [];
-  let last: string | number | null = null;
-  let lastTime: string | null = null;
-  // PostgREST or=(...) 안의 값은 예약 문자(, . : ( ))가 있으면 큰따옴표로 감싼다
-  const q = (v: string | number) => `"${String(v).replace(/"/g, '')}"`;
   const cols = spec.columns ? [...spec.columns] : null;
-  for (;;) {
-    const order = spec.timeKeyset ? `${spec.timeColumn}.asc,${spec.key}.asc` : `${spec.key}.asc`;
-    const qs = new URLSearchParams({ select: cols ? cols.join(',') : '*', order, limit: String(spec.pageSize) });
-    // keyset: 다음 페이지는 마지막 시각부터 인덱스 범위로 읽는다(or 조건만으로는 매 페이지 range.start 부터 다시 훑는다).
-    qs.append(spec.timeColumn, `gte.${spec.timeKeyset && lastTime !== null ? lastTime : range.start}`);
-    qs.append(spec.timeColumn, `lt.${range.end}`);
-    if (last !== null) {
-      if (spec.timeKeyset && lastTime !== null) qs.append('or', `(${spec.timeColumn}.gt.${q(lastTime)},and(${spec.timeColumn}.eq.${q(lastTime)},${spec.key}.gt.${q(last)}))`);
-      else qs.append(spec.key, `gt.${last}`);
-    }
+  const params = (order: string) => new URLSearchParams({ select: cols ? cols.join(',') : '*', order, limit: String(spec.pageSize) });
+  const get = async (qs: URLSearchParams): Promise<Array<Record<string, unknown>>> => {
     let res: Response;
     try {
       res = await fetchImpl(`${base}?${qs.toString()}`, { headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }), signal: AbortSignal.timeout(60_000) });
@@ -209,22 +197,62 @@ export async function fetchPrivateDay(cfg: SupabaseConfig, spec: DatasetSpec, ra
     if (!res.ok) throw new Error(`${spec.table} read failed: HTTP ${res.status}`);
     const page = (await res.json()) as Array<Record<string, unknown>>;
     if (!Array.isArray(page)) throw new Error(`${spec.table} read failed: unexpected response`);
+    return page;
+  };
+  const keyOf = (row: Record<string, unknown> | undefined): string | number => {
+    const k = row?.[spec.key];
+    if (typeof k !== 'string' && typeof k !== 'number') throw new Error(`${spec.table} read: keyset did not advance`);
+    return k;
+  };
+
+  if (!spec.timeKeyset) {
+    let last: string | number | null = null;
+    for (;;) {
+      const qs = params(`${spec.key}.asc`);
+      qs.append(spec.timeColumn, `gte.${range.start}`);
+      qs.append(spec.timeColumn, `lt.${range.end}`);
+      if (last !== null) qs.append(spec.key, `gt.${last}`);
+      const page = await get(qs);
+      out.push(...page);
+      if (page.length < spec.pageSize) break;
+      const k = keyOf(page[page.length - 1]);
+      if (last !== null && k <= last) throw new Error(`${spec.table} read: keyset did not advance`);
+      last = k;
+    }
+    return out;
+  }
+
+  // 시간 keyset — or=(...) 를 쓰지 않는 두 단계 읽기 (2026-11-11).
+  // 한 시각에 수만 행이 몰리면(11/9 tool_defs: 한 시각 49,872행) or 조건은 인덱스 조건이 못 되어
+  // 페이지마다 그 시각 행을 처음부터 다시 훑다가 statement_timeout(8s)에 걸렸다.
+  // (가) 시각 구간: time gte/gt + lt, 정렬 (time, key)
+  // (나) 페이지가 꽉 차면 같은 시각의 남은 행: time=eq.T & key=gt.K, 정렬 key — 둘 다 (time, key) 인덱스 범위 조건.
+  let lastTime: string | null = null;
+  for (;;) {
+    const qs = params(`${spec.timeColumn}.asc,${spec.key}.asc`);
+    qs.append(spec.timeColumn, lastTime === null ? `gte.${range.start}` : `gt.${lastTime}`);
+    qs.append(spec.timeColumn, `lt.${range.end}`);
+    const page = await get(qs);
     out.push(...page);
     if (page.length < spec.pageSize) break;
     const lastRow = page[page.length - 1];
-    const k = lastRow?.[spec.key];
-    if (typeof k !== 'string' && typeof k !== 'number') throw new Error(`${spec.table} read: keyset did not advance`);
-    if (spec.timeKeyset) {
-      const t = lastRow?.[spec.timeColumn];
-      if (typeof t !== 'string') throw new Error(`${spec.table} read: keyset did not advance`);
-      if (lastTime !== null && last !== null && (Date.parse(t) < Date.parse(lastTime) || (t === lastTime && k <= last))) throw new Error(`${spec.table} read: keyset did not advance`);
-      lastTime = t;
-    } else if (last !== null && k <= last) {
-      throw new Error(`${spec.table} read: keyset did not advance`);
+    const t = lastRow?.[spec.timeColumn];
+    if (typeof t !== 'string' || (lastTime !== null && (t === lastTime || Date.parse(t) < Date.parse(lastTime)))) throw new Error(`${spec.table} read: keyset did not advance`);
+    let last = keyOf(lastRow);
+    lastTime = t;
+    for (;;) {
+      const tq = params(`${spec.key}.asc`);
+      tq.append(spec.timeColumn, `eq.${t}`);
+      tq.append(spec.key, `gt.${last}`);
+      const tie = await get(tq);
+      out.push(...tie);
+      if (tie.length < spec.pageSize) break;
+      const k = keyOf(tie[tie.length - 1]);
+      if (k <= last) throw new Error(`${spec.table} read: keyset did not advance`);
+      last = k;
     }
-    last = k;
   }
   // 파일은 예전과 같은 키 순서 (같은 행이면 같은 바이트·해시)
-  if (spec.timeKeyset) out.sort((a, b) => { const x = a[spec.key] as string | number; const y = b[spec.key] as string | number; return x < y ? -1 : x > y ? 1 : 0; });
+  out.sort((a, b) => { const x = a[spec.key] as string | number; const y = b[spec.key] as string | number; return x < y ? -1 : x > y ? 1 : 0; });
   return out;
 }

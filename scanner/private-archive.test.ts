@@ -73,7 +73,7 @@ describe('원문 비공개 보관', () => {
     await assert.rejects(fetchPrivateDay({ url: 'https://db', key: 'k' }, SPECS.tool_defs, { start: 'a', end: 'b' }, bad), (e: Error) => !e.message.includes('secret'));
   });
 
-  test('DB 읽기 (시각, 키) keyset: tool_defs·tool_set_versions, 결과는 키 순서로 다시 정렬', async () => {
+  test('DB 읽기 (시각, 키) keyset: or 없이 두 단계(시각 구간 / 같은 시각 남은 행), 결과는 키 순서로 다시 정렬', async () => {
     assert.equal(SPECS.tool_defs.timeKeyset, true);
     assert.equal(SPECS.tool_set_versions.timeKeyset, true);
     assert.equal(SPECS.lookups.timeKeyset, true); // 2026-11-08
@@ -85,18 +85,30 @@ describe('원문 비공개 보관', () => {
       call++;
       const page = call === 1
         ? [{ def_hash: 'c', first_seen_at: '2026-10-21T01:00:00.5+00:00' }, { def_hash: 'a', first_seen_at: '2026-10-21T02:00:00+00:00' }]
-        : [{ def_hash: 'b', first_seen_at: '2026-10-21T02:00:00+00:00' }];
+        : call === 2
+          ? [{ def_hash: 'b', first_seen_at: '2026-10-21T02:00:00+00:00' }]
+          : [];
       return new Response(JSON.stringify(page), { status: 200 });
     }) as typeof fetch;
     const rows = await fetchPrivateDay({ url: 'https://db', key: 'k' }, { ...SPECS.tool_defs, pageSize: 2 }, { start: '2026-10-21T00:00:00.000Z', end: '2026-10-22T00:00:00.000Z' }, fetchImpl);
     assert.deepEqual(rows.map((r) => r.def_hash), ['a', 'b', 'c']);
+    assert.equal(urls.length, 3);
+    // (가) 시각 구간
     const u1 = new URL(urls[0]!);
     assert.equal(u1.searchParams.get('order'), 'first_seen_at.asc,def_hash.asc');
+    assert.deepEqual(u1.searchParams.getAll('first_seen_at'), ['gte.2026-10-21T00:00:00.000Z', 'lt.2026-10-22T00:00:00.000Z']);
     assert.equal(u1.searchParams.get('or'), null);
+    // (나) 같은 시각의 남은 행 — eq + 키 gt, or 없음 (2026-11-11: 한 시각 49,872행에서 or 가 timeout)
     const u2 = new URL(urls[1]!);
-    assert.deepEqual(u2.searchParams.getAll('first_seen_at'), ['gte.2026-10-21T02:00:00+00:00', 'lt.2026-10-22T00:00:00.000Z']); // 하한을 마지막 시각으로
-    assert.equal(u2.searchParams.get('or'), '(first_seen_at.gt."2026-10-21T02:00:00+00:00",and(first_seen_at.eq."2026-10-21T02:00:00+00:00",def_hash.gt."a"))');
-    assert.equal(u2.searchParams.get('def_hash'), null);
+    assert.deepEqual(u2.searchParams.getAll('first_seen_at'), ['eq.2026-10-21T02:00:00+00:00']);
+    assert.equal(u2.searchParams.get('def_hash'), 'gt.a');
+    assert.equal(u2.searchParams.get('order'), 'def_hash.asc');
+    assert.equal(u2.searchParams.get('or'), null);
+    // (가) 다음 시각부터
+    const u3 = new URL(urls[2]!);
+    assert.deepEqual(u3.searchParams.getAll('first_seen_at'), ['gt.2026-10-21T02:00:00+00:00', 'lt.2026-10-22T00:00:00.000Z']);
+    assert.equal(u3.searchParams.get('def_hash'), null);
+    assert.equal(u3.searchParams.get('or'), null);
     // 같은 페이지가 다시 오면 멈춘다
     const stuck = (async () => new Response(JSON.stringify([{ def_hash: 'a', first_seen_at: '2026-10-21T02:00:00+00:00' }, { def_hash: 'a', first_seen_at: '2026-10-21T02:00:00+00:00' }]), { status: 200 })) as typeof fetch;
     await assert.rejects(fetchPrivateDay({ url: 'https://db', key: 'k' }, { ...SPECS.tool_defs, pageSize: 2 }, { start: 's', end: 'e' }, stuck), /did not advance/);
