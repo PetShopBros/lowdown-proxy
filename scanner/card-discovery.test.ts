@@ -256,3 +256,33 @@ describe('시간 상한·연속 실패·이어서 하기', () => {
     assert.ok(calls.every((u) => u.endsWith('/server-card') && !u.includes('/.well-known/')));
   });
 });
+
+// ── 2026-11-11: server card SEP-1649 초안 형식(serverInfo) ──
+import { test as __scTest } from 'node:test';
+import __scAssert from 'node:assert/strict';
+import { parseServerCard as __parseSC } from './card-lib.ts';
+
+__scTest('server card: SEP-1649 초안 (serverInfo + endpoint 문자열 + transport 문자열)', () => {
+  const f = __parseSC({ serverInfo: { name: '212medya-growth-check', title: 'x', version: '1.0.0' }, endpoint: 'https://212medya.com.tr/mcp', transport: 'streamable-http', capabilities: { tools: {} } });
+  __scAssert.deepEqual(f, { claimed_name: '212medya-growth-check', name_format_ok: false, version: '1.0.0', endpoints: [{ url: 'https://212medya.com.tr/mcp', type: 'streamable-http', versions: [] }], format: 'sep1649_draft' });
+});
+
+__scTest('server card: SEP-1649 초안 (transport 객체 url + protocolVersion, 역DNS 이름)', () => {
+  const f = __parseSC({ $schema: 'https://static.modelcontextprotocol.io/schemas/mcp-server-card/v1.json', protocolVersion: '2025-06-18', serverInfo: { name: 'io.github.acarchidi/agentforge', version: '1.13.1' }, transport: { type: 'streamable-http', url: 'https://agentforge.example/mcp' } });
+  __scAssert.equal(f?.format, 'sep1649_draft');
+  __scAssert.equal(f?.name_format_ok, true);
+  __scAssert.deepEqual(f?.endpoints, [{ url: 'https://agentforge.example/mcp', type: 'streamable-http', versions: ['2025-06-18'] }]);
+});
+
+__scTest('server card: SEP-2127 (name + remotes) 은 그대로, format 없음', () => {
+  const f = __parseSC({ name: 'com.acme/tools', version: '1.0.0', remotes: [{ type: 'streamable-http', url: 'https://acme.example/mcp', supportedProtocolVersions: ['2025-11-25'] }] });
+  __scAssert.equal(f?.format, undefined);
+  __scAssert.equal(f?.claimed_name, 'com.acme/tools');
+  __scAssert.deepEqual(f?.endpoints, [{ url: 'https://acme.example/mcp', type: 'streamable-http', versions: ['2025-11-25'] }]);
+});
+
+__scTest('server card: 이름도 주소도 없으면 null, http(s) 아닌 주소는 버림', () => {
+  __scAssert.equal(__parseSC({ serverInfo: { title: 'x' }, capabilities: {} }), null);
+  __scAssert.equal(__parseSC({ capabilities: { tools: {} } }), null);
+  __scAssert.equal(__parseSC({ serverInfo: { name: 'x' }, endpoint: 'ftp://nope' })?.endpoints.length, 0);
+});

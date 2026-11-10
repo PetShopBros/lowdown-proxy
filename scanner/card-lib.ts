@@ -169,14 +169,19 @@ export interface McpCardFacts {
   name_format_ok: boolean;
   version: string | null;
   endpoints: Array<{ url: string; type: string | null; versions: string[] }>;
+  /** 없으면 SEP-2127(name + remotes). 'sep1649_draft' = serverInfo 형식 초안 (2026-11-11부터 읽음) */
+  format?: 'sep1649_draft';
 }
 
+const obj = (v: unknown): Record<string, unknown> | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
+const VERSION_RE = /^[0-9A-Za-z.-]{1,20}$/;
+
 export function parseServerCard(v: unknown): McpCardFacts | null {
-  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
-  const o = v as Record<string, unknown>;
+  const o = obj(v);
+  if (!o) return null;
   const name = str(o.name, 200);
   const remotes = Array.isArray(o.remotes) ? o.remotes : [];
-  if (!name && remotes.length === 0) return null;
+  if (!name && remotes.length === 0) return parseDraftServerCard(o);
   const endpoints: McpCardFacts['endpoints'] = [];
   for (const r of remotes.slice(0, 20)) {
     if (!r || typeof r !== 'object') continue;
@@ -184,11 +189,39 @@ export function parseServerCard(v: unknown): McpCardFacts | null {
     const url = str(x.url, 2000);
     if (!url) continue;
     const versions = Array.isArray(x.supportedProtocolVersions)
-      ? x.supportedProtocolVersions.filter((s): s is string => typeof s === 'string' && /^[0-9A-Za-z.-]{1,20}$/.test(s)).slice(0, 10)
+      ? x.supportedProtocolVersions.filter((s): s is string => typeof s === 'string' && VERSION_RE.test(s)).slice(0, 10)
       : [];
     endpoints.push({ url, type: str(x.type, 40), versions });
   }
   return { claimed_name: name, name_format_ok: !!name && NAME_RE.test(name), version: str(o.version, 80), endpoints };
+}
+
+/**
+ * SEP-1649 초안 형식 (2026-11-11): serverInfo{name,title,version} + endpoint/url/transport + protocolVersion.
+ * 실제 서버 다수가 이 형식이라 SEP-2127 파서만으로는 wrong_shape 로 버려졌다(11/10 기준 1,658 호스트).
+ * 이름도 주소도 없으면 null(wrong_shape). 주소는 http(s) 문자열만.
+ */
+function parseDraftServerCard(o: Record<string, unknown>): McpCardFacts | null {
+  const si = obj(o.serverInfo);
+  if (!si) return null;
+  const name = str(si.name, 200);
+  const t = o.transport;
+  const tObj = obj(t);
+  const type = typeof t === 'string' ? str(t, 40) : tObj ? str(tObj.type, 40) : null;
+  const pv = typeof o.protocolVersion === 'string' && VERSION_RE.test(o.protocolVersion) ? [o.protocolVersion] : [];
+  const urls: string[] = [];
+  for (const c of [o.endpoint, o.url, tObj?.url, tObj?.endpoint, si.endpoint, si.url]) {
+    const u = typeof c === 'string' ? str(c, 2000) : str(obj(c)?.url, 2000);
+    if (u && /^https?:\/\//i.test(u) && !urls.includes(u)) urls.push(u);
+  }
+  if (!name && urls.length === 0) return null;
+  return {
+    claimed_name: name,
+    name_format_ok: !!name && NAME_RE.test(name),
+    version: str(si.version, 80),
+    endpoints: urls.slice(0, 20).map((url) => ({ url, type, versions: pv })),
+    format: 'sep1649_draft',
+  };
 }
 
 export interface A2aCardFacts {

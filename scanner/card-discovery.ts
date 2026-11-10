@@ -188,7 +188,7 @@ export async function checkOrigin(
             const c = await get(u, 'mcp_server_card');
             const parsed = c.outcome === 'found' ? parseServerCard(JSON.parse(c.text!)) : null;
             const outcome = c.outcome === 'found' && !parsed ? 'wrong_shape' : c.outcome;
-            cards.push({ source: 'url', url: u, outcome, claimed_name: parsed?.claimed_name ?? null, declared_endpoints: parsed ? normList(parsed.endpoints.map((e) => e.url)) : [] });
+            cards.push({ source: 'url', url: u, outcome, claimed_name: parsed?.claimed_name ?? null, ...(parsed?.format ? { card_format: parsed.format } : {}), declared_endpoints: parsed ? normList(parsed.endpoints.map((e) => e.url)) : [] });
             if (parsed) {
               keepBody('mcp_server_card', c);
               out.declarations.push({ card_url: u, kind: 'mcp_server_card', origin: w.origin, claimed_name: parsed.claimed_name, endpoints: parsed.endpoints, interfaces: [], sha256: c.sha256, observed_at: nowIso });
@@ -226,7 +226,7 @@ export async function checkOrigin(
         if (!facts) cur = { ...cur, outcome: 'wrong_shape', sha256: null };
         else {
           keepBody('mcp_server_card', f);
-          cur = { ...cur, claimed_name: facts.claimed_name, name_format_ok: facts.name_format_ok, declared_endpoints: normList(facts.endpoints.map((e) => e.url)), transports: [...new Set(facts.endpoints.map((e) => e.type).filter(Boolean))] };
+          cur = { ...cur, claimed_name: facts.claimed_name, name_format_ok: facts.name_format_ok, ...(facts.format ? { card_format: facts.format } : {}), declared_endpoints: normList(facts.endpoints.map((e) => e.url)), transports: [...new Set(facts.endpoints.map((e) => e.type).filter(Boolean))] };
           out.declarations.push({ card_url: f.url, kind: 'mcp_server_card', origin: w.origin, claimed_name: facts.claimed_name, endpoints: facts.endpoints, interfaces: [], sha256: f.sha256, observed_at: nowIso });
         }
       }
@@ -266,6 +266,7 @@ export async function checkOrigin(
           ...cur,
           claimed_name: facts.claimed_name,
           name_format_ok: facts.name_format_ok,
+          ...(facts.format ? { card_format: facts.format } : {}),
           declared_endpoints: declared,
           transports: [...new Set(facts.endpoints.map((e) => e.type).filter(Boolean))],
           supported_protocol_versions: [...new Set(facts.endpoints.flatMap((e) => e.versions))].slice(0, 10),
