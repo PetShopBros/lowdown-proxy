@@ -45,7 +45,12 @@ async function getAll<T>(cfg: SupabaseConfig, table: string, params: Record<stri
       qs.set('id', `gt.${lastId}`);
       qs.set('order', 'id.asc');
     } else qs.set('offset', String(offset));
-    const res = await fetch(`${base}?${qs.toString()}`, { headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }), signal: AbortSignal.timeout(30_000) });
+    let res: Response;
+    try {
+      res = await fetch(`${base}?${qs.toString()}`, { headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }), signal: AbortSignal.timeout(30_000) });
+    } catch {
+      throw new Error(`${table} read failed: network`);
+    }
     if (!res.ok) throw new Error(`${table} read failed: HTTP ${res.status}`);
     const page = (await res.json()) as Array<T & { id?: number }>;
     if (!Array.isArray(page)) throw new Error(`${table} read failed: unexpected response`);
@@ -79,7 +84,12 @@ const MIN_REGISTRY_ACTIVE = 1000;
 /** 그날(UTC) 스냅샷이 돌았는가: 그날 확인한 상태 행이 하나라도 있으면 돈 것으로 본다 */
 async function snapshotRan(cfg: SupabaseConfig, table: string, day: string, next: string): Promise<boolean> {
   const qs = new URLSearchParams({ select: 'ident', and: `(checked_at.gte.${day}T00:00:00Z,checked_at.lt.${next}T00:00:00Z)`, limit: '1' });
-  const res = await fetch(`${cfg.url.replace(/\/+$/, '')}/rest/v1/${table}?${qs.toString()}`, { headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }), signal: AbortSignal.timeout(30_000) });
+  let res: Response;
+  try {
+    res = await fetch(`${cfg.url.replace(/\/+$/, '')}/rest/v1/${table}?${qs.toString()}`, { headers: supabaseHeaders(cfg.key, { Accept: 'application/json' }), signal: AbortSignal.timeout(30_000) });
+  } catch {
+    throw new Error(`${table} read failed: network`);
+  }
   if (!res.ok) throw new Error(`${table} read failed: HTTP ${res.status}`);
   const rows = (await res.json()) as unknown[];
   return Array.isArray(rows) && rows.length > 0;
