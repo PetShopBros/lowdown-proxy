@@ -16,6 +16,12 @@ import { normEndpoint } from './declared-lib.ts';
 import { USER_AGENT } from './lib.ts';
 
 export const CARD_MAX_BYTES = 64 * 1024;
+/** 종류별 읽기 상한. ai-catalog 는 도메인의 카드 목록이라 큼(2026-11-11: 64KB → 256KB). 나머지는 64KB 그대로 */
+export const CARD_MAX_BYTES_BY_KIND: Record<CardKind, number> = {
+  mcp_server_card: CARD_MAX_BYTES,
+  a2a_agent_card: CARD_MAX_BYTES,
+  ai_catalog: 256 * 1024,
+};
 export const SHARED_HOST_MIN = 5;
 export const SLICES = 7;
 /** 같은 호스트에서 주소 확인이 이만큼 연속으로 timeout·network 이면 나머지 주소는 이번 주 건너뛴다 */
@@ -139,7 +145,7 @@ export async function fetchCard(url: string, kind: CardKind, timeoutMs: number, 
     let text: string | null = null;
     if (res.status >= 200 && res.status < 300) {
       try {
-        text = await readCapped(res, CARD_MAX_BYTES);
+        text = await readCapped(res, CARD_MAX_BYTES_BY_KIND[kind]);
       } catch {
         return { ...base, outcome: 'network', http_status: res.status, content_type: ct };
       }
@@ -147,7 +153,7 @@ export async function fetchCard(url: string, kind: CardKind, timeoutMs: number, 
       try { await res.body?.cancel(); } catch { /* 무시 */ }
     }
     const outcome = classify(res.status, ct, res.status >= 200 && res.status < 300 ? text : '');
-    const bytes = text === null ? (outcome === 'too_large' ? CARD_MAX_BYTES + 1 : null) : Buffer.byteLength(text, 'utf8');
+    const bytes = text === null ? (outcome === 'too_large' ? CARD_MAX_BYTES_BY_KIND[kind] + 1 : null) : Buffer.byteLength(text, 'utf8');
     return { url, outcome, http_status: res.status, content_type: ct, bytes, sha256: text === null ? null : sha(text), text: outcome === 'found' ? text : null };
   }
   return { ...base, outcome: 'redirect_blocked' };
