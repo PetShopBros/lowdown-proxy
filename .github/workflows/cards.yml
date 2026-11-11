@@ -33,8 +33,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    # 2026-11-12: 대상 39,304개, 실측 2시간 30분에 25,000개. 이어 만들기(cards-resume.ts)로 취소돼도 다음 실행이 이어 간다.
-    timeout-minutes: 240
+    # 2026-11-12: 매시 나눠 만들기. 실행마다 CARD_TIME_BUDGET_MIN(40분) 뒤 정상 종료, 남은 대상은 다음 실행이 이어 간다.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
@@ -54,6 +54,7 @@ jobs:
           CARD_LIMIT: ${{ inputs.limit }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           SKIP_IF_DONE: ${{ github.event_name == 'schedule' && '1' || '' }}
+          CARD_TIME_BUDGET_MIN: '40'
 
       - name: Open issue on failure
         if: failure() && github.event_name == 'schedule'
