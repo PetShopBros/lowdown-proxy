@@ -1337,7 +1337,7 @@ const STATUS_COLUMNS =
   "no_response_days_30d,mixed_days_30d,definition_id,definition_version,computed_at";
 /** target_status v2 (2026-11-06) 열. SQL 적용 전이면 v1 열로 다시 읽는다(503 이 되지 않게). */
 const STATUS_COLUMNS_V2 = `${STATUS_COLUMNS},check_interval_days,scheduled_checks_30d`;
-const REMOTE_STATES = ["answered", "auth_required", "list_failed", "no_response", "invalid_response"] as const;
+const REMOTE_STATES = ["answered", "auth_required", "payment_required", "list_failed", "no_response", "invalid_response"] as const;
 const STATUS_STATES = new Set<string>([...REMOTE_STATES, "mixed"]);
 const STATUS_BREAKS = new Set(["state_change", "not_observed", "no_earlier_observation", "window_start"]);
 /** 마지막 점검이 이보다 오래되면 현재 상태를 말하지 않는다 */
@@ -1350,6 +1350,7 @@ const STATUS_BASIS =
 const REMOTE_PHRASE: Record<string, string> = {
   answered: "answered tools/list",
   auth_required: "required authentication",
+  payment_required: "required payment (HTTP 402)",
   list_failed: "answered initialize but not tools/list",
   no_response: "did not respond",
   invalid_response: "did not answer as an MCP server",
@@ -1451,6 +1452,7 @@ export function shapeStatus(row: Record<string, unknown>, now: number): { block:
     const verb: Record<string, string> = {
       answered: "Answered initialize and tools/list",
       auth_required: "Required authentication (HTTP 401/403)",
+      payment_required: "Required payment (HTTP 402)",
       list_failed: "Answered initialize but not tools/list",
       no_response: "No successful response",
       invalid_response: "Did not answer as an MCP server",
@@ -1459,6 +1461,7 @@ export function shapeStatus(row: Record<string, unknown>, now: number): { block:
     if (state === "answered" && tools !== null) lead += `; ${tools} tool${tools === 1 ? "" : "s"} listed`;
     lead += ".";
     if (state === "auth_required") lead += " Lowdown checks without credentials, so no tools were listed.";
+    if (state === "payment_required") lead += " Lowdown checks without paying, so no tools were listed.";
     if (state === "no_response") lead += " Checked from one network location.";
     const sameDays = state === "answered" ? days.answered : state === "auth_required" ? days.auth_required : state === "no_response" ? days.no_response : null;
     if (!all && sameDays !== null) lead += ` ${sameDays} of ${observed} ${iv === 1 ? "observed days in the last 30" : "checks in the last 30 days"} had this result.`;

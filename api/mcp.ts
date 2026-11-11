@@ -32,7 +32,7 @@ const TARGET_RE = /^[\x21-\x7e]{1,300}$/; // 출력 가능한 ASCII 만(공백·
 
 // find (api/find.ts 의 STATES·REGISTRY_STATUSES·PACKAGE_FILTERS·SORTS 키와 같아야 한다).
 // API 파일끼리 import 하지 않는 규칙(api/find.ts 머리말) 때문에 값을 여기 따로 둔다. 값 검사는 find API 가 한다.
-export const FIND_STATES = ["answered", "auth_required", "list_failed", "no_response", "invalid_response", "mixed"] as const;
+export const FIND_STATES = ["answered", "auth_required", "payment_required", "list_failed", "no_response", "invalid_response", "mixed"] as const;
 export const FIND_SORTS = ["name", "newest", "updated", "tools", "stable", "answering", "changed", "release"] as const;
 const FIND_REGISTRY = ["active", "deprecated"] as const;
 const FIND_PACKAGE = ["ok", "flagged", "none"] as const;

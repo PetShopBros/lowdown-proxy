@@ -59,6 +59,17 @@ describe('연결 상태 첫 문장', () => {
     assert.equal(r.block.tool_count, null);
   });
 
+  test('결제 필요(402)는 고장이 아니라 따로 (2026-11-12, target_status v3)', async () => {
+    const { shapeStatus } = await load();
+    const r = shapeStatus(row({ latest_state: 'payment_required', latest_remote_states: { payment_required: 1 }, streak_days: 30, streak_start_day: '2026-09-27', streak_break: 'window_start', observed_days_30d: 30, answered_days_30d: 0 }), NOW)!;
+    assert.equal(r.lead, 'Required payment (HTTP 402) on all 30 daily checks recorded in the last 30 days (2026-09-27 to 2026-10-26). Lowdown checks without paying, so no tools were listed.');
+    assert.equal(r.block.state, 'payment_required');
+    assert.deepEqual(r.block.remote_states, { payment_required: 1 });
+    assert.equal(r.block.tool_count, null);
+    const m = shapeStatus(row({ latest_state: 'mixed', latest_remote_states: { answered: 1, payment_required: 1 }, latest_remotes: 2, streak_days: 1, streak_start_day: '2026-10-26', observed_days_30d: 1 }), NOW)!;
+    assert.equal(m.lead, 'On the latest daily check (2026-10-26) its remotes differed: 1 answered tools/list, 1 required payment (HTTP 402).');
+  });
+
   test('원격이 다르면 서버 전체를 응답했다고 말하지 않는다', async () => {
     const { shapeStatus } = await load();
     const r = shapeStatus(row({ latest_state: 'mixed', latest_remote_states: { answered: 1, auth_required: 1 }, latest_remotes: 2, streak_days: 1, streak_start_day: '2026-10-26', observed_days_30d: 1 }), NOW)!;

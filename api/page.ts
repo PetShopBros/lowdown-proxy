@@ -58,6 +58,7 @@ const FLAG_TEXT: Record<string, string> = {
 const STATE_TEXT: Record<string, string> = {
   answered: "answered initialize and tools/list",
   auth_required: "required authentication (HTTP 401/403)",
+  payment_required: "required payment (HTTP 402)",
   list_failed: "answered initialize but not tools/list",
   no_response: "did not respond",
   invalid_response: "did not answer as an MCP server",

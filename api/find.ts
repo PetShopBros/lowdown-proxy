@@ -23,7 +23,7 @@ export const ROTATING_STALE_DAYS = 4;
 export const MAX_LIMIT = 50;
 export const MAX_OFFSET = 2000;
 
-export const STATES = ["answered", "auth_required", "list_failed", "no_response", "invalid_response", "mixed"] as const;
+export const STATES = ["answered", "auth_required", "payment_required", "list_failed", "no_response", "invalid_response", "mixed"] as const;
 export const REGISTRY_STATUSES = ["active", "deprecated"] as const;
 export const PACKAGE_FILTERS = ["ok", "flagged", "none"] as const;
 

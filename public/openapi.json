@@ -1076,6 +1076,7 @@
               "enum": [
                 "answered",
                 "auth_required",
+                "payment_required",
                 "list_failed",
                 "no_response",
                 "invalid_response",

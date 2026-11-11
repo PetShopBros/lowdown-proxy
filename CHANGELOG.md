@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed (2026-11-12)
+- Connection status: a check that returned HTTP 402 now counts as `payment_required` (target status definition v3, `supabase/2026-11-12_target_status_v3.sql`). Until now it fell through to `invalid_response` ("did not answer as an MCP server"), so servers that ask for payment during `initialize` or `tools/list` looked broken. Lowdown does not pay and does not call tools; the state records only that payment was requested. The 30-day window is recomputed from the same raw observations. The lookup API status sentence, server pages, `GET /api/find` and the remote MCP `find_servers` tool accept and show the new state.
+
 ### Added (2026-11-06)
 - Scanner: a third observation line for MCP endpoints declared outside the MCP Registry (`scanner/declared-lib.ts`, `supabase/2026-11-06_declared_targets.sql`). It reads `lowdown_probe_targets_declared` (endpoints linked by `declares_service` from any source other than the Registry; today ERC-8004 registration files) and observes each address once a day with the same `initialize` + `tools/list` probe, SSRF checks, per-host concurrency and retry rules. Rows carry `source = 'scanner_declared'`, `target_type = 'mcp_endpoint'`, `target_id = 'endpoint:<normalized url>'` and `metadata.declared_by`; they are not mixed into the fixed cohort, reports or market summaries. Order is first-declared first; caps `DECLARED_DAILY_CAP` (500) and `DECLARED_HOST_CAP` (20); addresses already probed in the same run are skipped. Any future collector that adds `declares_service` links feeds this line without Scanner changes.
 
