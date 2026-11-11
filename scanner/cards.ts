@@ -11,6 +11,14 @@
 //   DRY_RUN=1      DB 에 쓰지 않고 요약만 출력
 //   SKIP_IF_DONE=1 이번 시간대(UTC 04:00~ / 15:00~)에 만든 카드가 대상의 90% 이상이면 건너뛴다
 //                  (서버 dispatch 로 정시에 이미 돈 날, 늦게 도는 GitHub 예약 실행이 같은 일을 반복하지 않게 — cards.yml 이 schedule 일 때 켠다)
+//   CARD_FULL=1    이어 만들기 판단 없이 전체를 다시 만든다(수동 점검용)
+//
+// 이어 만들기 (2026-11-12): 대상 39,304개(순환 관찰 뒤)가 150분 안에 끝나지 않아 취소 → 다음 실행이 처음부터 다시 돌며
+// DB 를 몇 시간씩 누름(57014). 이제 오늘 쓸 수 있는 카드(cardUsable)가 있고 요약 값이 그대로면 건너뛴다(needsBuild).
+// → 취소돼도 다음 실행이 멈춘 곳부터 이어 가고, 오후 실행은 오전 뒤 요약이 바뀐 대상만 만든다.
+
+import { fetchRetry } from "./rest-retry.ts";
+import { needsBuild, type CardRow, type SummaryRow } from "./cards-resume.ts";
 
 process.env.LOWDOWN_CARD_BUILD = "1";
 const BASE = process.env.LOWDOWN_SUPABASE_URL ?? "";
@@ -21,6 +29,9 @@ const LIMIT = Number(process.env.CARD_LIMIT || 0) || 0;
 const CONCURRENCY = Math.max(1, Math.min(16, Number(process.env.CARD_CONCURRENCY || 6) || 6));
 const DRY = process.env.DRY_RUN === "1";
 const SKIP_IF_DONE = process.env.SKIP_IF_DONE === "1";
+const FULL = process.env.CARD_FULL === "1";
+/** upsert 한 번에 쓰는 카드 수. search_text GIN trgm 인덱스 때문에 200개 묶음이 57014(2026-11-11) → 50 */
+export const UPSERT_BATCH = 50;
 
 /** 지금이 속한 조리 시간대의 시작(UTC 04:00 또는 15:00, 그 전이면 전날 15:00). */
 export function slotStart(now: number): number {
@@ -51,18 +62,36 @@ if (!BASE || !KEY) {
 
 const headers = { apikey: KEY, Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" };
 
-async function listTargets(): Promise<string[]> {
-  const out: string[] = [];
-  for (let from = 0; ; from += 1000) {
-    const r = await fetch(`${BASE}/rest/v1/target_status_summary?select=target_id&order=target_id.asc`, {
-      headers: { ...headers, Range: `${from}-${from + 999}`, "Range-Unit": "items" },
-    });
-    if (!r.ok) throw new Error(`target_status_summary ${r.status}`);
-    const rows = (await r.json()) as Array<{ target_id: string }>;
-    for (const x of rows) if (typeof x.target_id === "string" && x.target_id.startsWith("mcp:") && NAME_RE.test(x.target_id.slice(4))) out.push(x.target_id);
+/** target_id 순 keyset 으로 전부 읽는다(둘 다 target_id 고유 인덱스). 5xx 는 fetchRetry 로 재시도. */
+async function readAllByTarget<T extends { target_id: string }>(table: string, select: string): Promise<T[]> {
+  const out: T[] = [];
+  let after: string | null = null;
+  for (;;) {
+    const gt = after === null ? "" : `&target_id=gt.${encodeURIComponent(after)}`;
+    const url = `${BASE}/rest/v1/${table}?select=${select}&order=target_id.asc&limit=1000${gt}`;
+    const r = await fetchRetry(url, () => ({ headers }), `${table} read`);
+    const rows = (await r.json()) as T[];
+    out.push(...rows);
     if (rows.length < 1000) break;
+    after = rows[rows.length - 1]!.target_id;
   }
   return out;
+}
+
+async function listTargets(): Promise<SummaryRow[]> {
+  const rows = await readAllByTarget<SummaryRow>(
+    "target_status_summary",
+    "target_id,latest_day,latest_state,observed_days_30d,answered_days_30d,streak_days",
+  );
+  return rows.filter((x) => typeof x.target_id === "string" && x.target_id.startsWith("mcp:") && NAME_RE.test(x.target_id.slice(4)));
+}
+
+async function listCards(): Promise<Map<string, CardRow>> {
+  const rows = await readAllByTarget<CardRow>(
+    "server_cards",
+    "target_id,built_at,builder_version,latest_day,latest_state,observed_days_30d,answered_days_30d,consecutive_days",
+  );
+  return new Map(rows.map((r) => [r.target_id, r]));
 }
 
 const isoDay = (v: unknown): string | null => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null);
@@ -145,18 +174,21 @@ function fakeRes() {
 async function main() {
   const t0 = Date.now();
   const { default: handler } = (await import("../api/reputation/[target].ts" as string)) as { default: (req: unknown, res: unknown) => Promise<unknown> };
-  let targets = await listTargets();
-  if (LIMIT) targets = targets.slice(0, LIMIT);
+  let summary = await listTargets();
+  if (LIMIT) summary = summary.slice(0, LIMIT);
   if (SKIP_IF_DONE) {
     const since = slotStart(Date.now());
     const done = await builtSince(since);
-    if (done !== null && done >= targets.length * 0.9) {
-      console.log(`skip: ${done}/${targets.length} cards already built since ${new Date(since).toISOString()}`);
+    if (done !== null && done >= summary.length * 0.9) {
+      console.log(`skip: ${done}/${summary.length} cards already built since ${new Date(since).toISOString()}`);
       return;
     }
   }
+  const cards = FULL ? new Map<string, CardRow>() : await listCards();
+  const now0 = Date.now();
+  const targets = summary.filter((s) => FULL || needsBuild(s, cards.get(s.target_id), now0, BUILDER_VERSION)).map((s) => s.target_id);
   const dataDay = new Date().toISOString().slice(0, 10);
-  console.log(`targets ${targets.length}, concurrency ${CONCURRENCY}, data_day ${dataDay}${DRY ? ", dry run" : ""}`);
+  console.log(`targets ${targets.length} to build / ${summary.length} total (fresh ${summary.length - targets.length}), concurrency ${CONCURRENCY}, data_day ${dataDay}${FULL ? ", full" : ""}${DRY ? ", dry run" : ""}`);
 
   const stats = { built: 0, skipped: 0, failed: 0, bytes: 0, written: 0 };
   const skippedCodes: Record<string, number> = {};
@@ -209,7 +241,7 @@ async function main() {
           // 핸들러가 계산한 응답 종류(조회 기록의 result_kind 와 같은 값)
           result_kind: res.headers["x-lowdown-result-kind"] ?? null,
         });
-        if (batch.length >= 200) await flush();
+        if (batch.length >= UPSERT_BATCH) await flush();
       } catch (err) {
         stats.failed++;
         if (stats.failed <= 5) console.error("card failed", targetId, err);

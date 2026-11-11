@@ -35,3 +35,40 @@ describe('서버 카드', () => {
   });
 
 });
+
+describe('서버 카드 이어 만들기 (2026-11-12)', () => {
+  const nb = async () => (await import('./cards-resume.ts' as string)) as {
+    needsBuild: (s: any, card: any, now: number, version: string) => boolean;
+  };
+  const now = Date.parse('2026-11-12T15:10:00Z');
+  const s = { target_id: 'mcp:a/b', latest_day: '2026-11-12', latest_state: 'answered', observed_days_30d: 4, answered_days_30d: 4, streak_days: 4 };
+  const card = {
+    target_id: 'mcp:a/b', built_at: '2026-11-12T05:00:00Z', builder_version: 'cards-3',
+    latest_day: '2026-11-12', latest_state: 'answered', observed_days_30d: 4, answered_days_30d: 4, consecutive_days: 4,
+  };
+
+  test('오늘 카드가 있고 요약 값이 같으면 건너뛴다', async () => {
+    const { needsBuild } = await nb();
+    assert.equal(needsBuild(s, card, now, 'cards-3'), false);
+  });
+
+  test('카드 없음·다른 버전·오늘 쓸 수 없는 카드는 만든다', async () => {
+    const { needsBuild } = await nb();
+    assert.equal(needsBuild(s, undefined, now, 'cards-3'), true);
+    assert.equal(needsBuild(s, card, now, 'cards-4'), true);
+    assert.equal(needsBuild(s, { ...card, built_at: '2026-11-12T03:59:00Z' }, now, 'cards-3'), true); // 04:00 UTC 전
+    assert.equal(needsBuild(s, { ...card, built_at: '2026-11-11T20:00:00Z' }, now, 'cards-3'), true); // 전날
+    assert.equal(needsBuild(s, { ...card, built_at: null }, now, 'cards-3'), true);
+  });
+
+  test('요약 값이 바뀐 대상만 다시 만든다 (오후 실행)', async () => {
+    const { needsBuild } = await nb();
+    assert.equal(needsBuild({ ...s, latest_day: '2026-11-13' }, card, now, 'cards-3'), true);
+    assert.equal(needsBuild({ ...s, latest_state: 'no_response' }, card, now, 'cards-3'), true);
+    assert.equal(needsBuild({ ...s, observed_days_30d: 5 }, card, now, 'cards-3'), true);
+    assert.equal(needsBuild({ ...s, answered_days_30d: 3 }, card, now, 'cards-3'), true);
+    assert.equal(needsBuild({ ...s, streak_days: 1 }, card, now, 'cards-3'), true);
+    // 날짜 형식 차이(timestamp 꼴)는 같은 날로 본다
+    assert.equal(needsBuild({ ...s, latest_day: '2026-11-12T00:00:00' }, card, now, 'cards-3'), false);
+  });
+});
