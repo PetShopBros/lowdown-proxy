@@ -1,0 +1,14 @@
+[Unit]
+Description=Lowdown: start backup at 09:43 KST (00:43 UTC, DB 가 조용한 시각 — cards 13:07~ 와 겹치지 않게)
+
+[Timer]
+# 2026-11-12: GitHub 예약(00:43 UTC)이 매일 6~7시간 늦게 시작(06:34~07:43 UTC)해 cards 부하 시간대와 겹침
+# → 11/7·11/10·11/11 실패. 서버가 정시에 직접 실행을 보낸다. GitHub 예약은 예비(이미 보관한 날은 건너뜀).
+OnCalendar=*-*-* 00:43:00 UTC
+AccuracySec=1s
+# 꺼져 있던 동안 놓친 실행을 켜질 때 몰아서 하지 않는다(그날은 GitHub 예약이 예비로 돈다)
+Persistent=false
+Unit=lowdown-dispatch@backup.yml.service
+
+[Install]
+WantedBy=timers.target
