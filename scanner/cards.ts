@@ -12,6 +12,8 @@
 //   SKIP_IF_DONE=1 이번 시간대(UTC 04:00~ / 15:00~)에 만든 카드가 대상의 90% 이상이면 건너뛴다
 //                  (서버 dispatch 로 정시에 이미 돈 날, 늦게 도는 GitHub 예약 실행이 같은 일을 반복하지 않게 — cards.yml 이 schedule 일 때 켠다)
 //   CARD_FULL=1    이어 만들기 판단 없이 전체를 다시 만든다(수동 점검용)
+//   CARD_TIME_BUDGET_MIN  이 분이 지나면 새 대상을 집지 않고 만든 것만 저장한 뒤 정상 종료(비우면 상한 없음).
+//                  남은 대상은 다음 실행이 이어 간다 — 매시 짧게 나눠 돌리기(2026-11-12, cards.yml·cards-am 타이머)
 //
 // 이어 만들기 (2026-11-12): 대상 39,304개(순환 관찰 뒤)가 150분 안에 끝나지 않아 취소 → 다음 실행이 처음부터 다시 돌며
 // DB 를 몇 시간씩 누름(57014). 이제 오늘 쓸 수 있는 카드(cardUsable)가 있고 요약 값이 그대로면 건너뛴다(needsBuild).
@@ -32,6 +34,7 @@ const SKIP_IF_DONE = process.env.SKIP_IF_DONE === "1";
 const FULL = process.env.CARD_FULL === "1";
 /** upsert 한 번에 쓰는 카드 수. search_text GIN trgm 인덱스 때문에 200개 묶음이 57014(2026-11-11) → 50 */
 export const UPSERT_BATCH = 50;
+const BUDGET_MIN = Math.max(0, Number(process.env.CARD_TIME_BUDGET_MIN || 0) || 0);
 
 /** 지금이 속한 조리 시간대의 시작(UTC 04:00 또는 15:00, 그 전이면 전날 15:00). */
 export function slotStart(now: number): number {
@@ -213,8 +216,11 @@ async function main() {
   };
 
   let next = 0;
+  const deadline = BUDGET_MIN ? t0 + BUDGET_MIN * 60_000 : Infinity;
+  let budgetHit = false;
   const worker = async () => {
     while (next < targets.length) {
+      if (Date.now() >= deadline) { budgetHit = true; break; }
       const targetId = targets[next++]!;
       try {
         const res = fakeRes();
@@ -253,9 +259,12 @@ async function main() {
   await flush();
 
   const sec = Math.round((Date.now() - t0) / 1000);
-  console.log(JSON.stringify({ ...stats, skipped_by: skippedCodes, avg_bytes: stats.built ? Math.round(stats.bytes / stats.built) : 0, seconds: sec }));
-  // 절반 넘게 실패하면 실패로 끝낸다(이슈 알림)
-  if (targets.length > 0 && stats.failed > targets.length / 2) process.exit(1);
+  const remaining = targets.length - next;
+  if (budgetHit) console.log(`time budget ${BUDGET_MIN} min reached: ${remaining} target(s) left for the next run`);
+  console.log(JSON.stringify({ ...stats, remaining, skipped_by: skippedCodes, avg_bytes: stats.built ? Math.round(stats.bytes / stats.built) : 0, seconds: sec }));
+  // 이번 실행에서 다룬 대상의 절반 넘게 실패하면 실패로 끝낸다(이슈 알림). 시간 상한으로 남긴 대상은 실패가 아니다.
+  const handled = stats.built + stats.skipped + stats.failed;
+  if (handled > 0 && stats.failed > handled / 2) process.exit(1);
 }
 
 await main();
