@@ -13,6 +13,10 @@ on:
         description: '계산만 (파일·커밋 없음)'
         type: boolean
         default: false
+      daily:
+        description: '정시 본 실행 (서버 dispatch.sh 가 보냄, 2026-11-12)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
