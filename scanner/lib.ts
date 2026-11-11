@@ -2,6 +2,7 @@
 // 원칙: 관찰한 사실만 기록한다. tools/call 은 하지 않는다. 관찰 행에는 tool 이름/설명문을 넣지 않는다.
 //       (0.5.0~) 도구 정의 원문은 비공개 테이블 scanner_tool_defs 에만 저장한다. 공개 view·API 에는 해시·변경 유형·플래그만.
 
+import { PAYMENT_BODY_MAX, parsePaymentRequired } from './payment-lib.ts';
 import { createHash } from 'node:crypto';
 import { lookup as dnsLookup } from 'node:dns';
 import type { LookupAddress } from 'node:dns';
@@ -15,7 +16,7 @@ import type { LookupFunction } from 'node:net';
 //   0.3.0 — 2026-10-19 메인 probe 호스트당 동시 1건 / 0.4.0 — capabilities·names_hash 기록, 도구 이름 목록 별도 저장
 //   0.5.0 — 2026-10-21 metadata.tool_set_hash 기록, 도구 정의 원문 비공개 저장(scanner_tool_defs)
 //   (0.1.0 기간에도 재시도·대체·사유 분리가 추가됐으므로 그 기간 행의 정확한 코드는 알 수 없다)
-export const SCANNER_VERSION = '0.5.0';
+export const SCANNER_VERSION = '0.6.0'; // 0.6.0 (2026-11-12): 402 응답의 결제 조건을 metadata.payment 로
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 export const USER_AGENT = `lowdown-scanner/${SCANNER_VERSION}`;
 export const DEFAULT_REGISTRY_URL = 'https://registry.modelcontextprotocol.io';
@@ -206,6 +207,10 @@ export interface PostResult {
   message: RpcMessage | null;
   parseError: boolean;
   ms: number;
+  /** 402 응답 본문(결제 조건 읽기용, PAYMENT_BODY_MAX 까지). 402 가 아니면 없음 (2026-11-12) */
+  body?: string;
+  /** 402 본문이 PAYMENT_BODY_MAX 를 넘어 읽지 않음 */
+  bodyTooLarge?: boolean;
 }
 
 export type PostFn = (url: string, body: string | null, opts: PostOptions) => Promise<PostResult>;
@@ -298,6 +303,27 @@ export function httpsPost(rawUrl: string, body: string | null, opts: PostOptions
         const contentType = String(res.headers['content-type'] ?? '').toLowerCase();
         const base = { status, headers: res.headers, contentType };
         const ok = status >= 200 && status < 300;
+        // 402: 결제 조건을 읽으려고 본문을 PAYMENT_BODY_MAX 까지만 받는다(2026-11-12). 요청은 늘지 않는다.
+        if (status === 402 && opts.expectId !== undefined) {
+          let text402 = '';
+          let size402 = 0;
+          res.setEncoding('utf8');
+          res.on('data', (chunk: string) => {
+            if (settled) return;
+            size402 += Buffer.byteLength(chunk);
+            if (size402 > PAYMENT_BODY_MAX) {
+              res.destroy();
+              done(() => resolve({ ...base, message: null, parseError: false, ms: elapsed(), bodyTooLarge: true }));
+              return;
+            }
+            text402 += chunk;
+          });
+          const finish402 = () => done(() => resolve({ ...base, message: null, parseError: false, ms: elapsed(), body: text402 }));
+          res.on('end', finish402);
+          res.on('close', finish402);
+          res.on('error', finish402);
+          return;
+        }
         if (!ok || opts.expectId === undefined) {
           res.destroy();
           done(() => resolve({ ...base, message: null, parseError: false, ms: elapsed() }));
@@ -495,6 +521,13 @@ function headerValue(h: IncomingHttpHeaders, name: string): string | undefined {
   return Array.isArray(v) ? v.join(', ') : v;
 }
 
+/** 402 응답의 결제 조건(관측만, 결제·도구 호출 없음). 이미 남겼으면 덮어쓰지 않는다 (2026-11-12) */
+function notePayment(metadata: Record<string, unknown>, res: PostResult, stage: 'initialize' | 'tools/list'): void {
+  if (res.status !== 402 || metadata.payment !== undefined) return;
+  const p = parsePaymentRequired({ status: res.status, headers: res.headers, body: res.body, bodyTooLarge: res.bodyTooLarge, stage });
+  if (p) metadata.payment = p;
+}
+
 function noteAuthHeaders(metadata: Record<string, unknown>, res: PostResult): void {
   if (res.status === 401 || res.status === 403) {
     const wa = headerValue(res.headers, 'www-authenticate');
@@ -565,6 +598,7 @@ export async function probeRemote(
   const latency = init.ms;
   metadata.init_status = init.status;
   noteAuthHeaders(metadata, init);
+  notePayment(metadata, init, 'initialize');
   if (init.status < 200 || init.status >= 300) {
     return out({ http_status: init.status, reached_level: 0, latency_ms: latency, error_type: null });
   }
@@ -636,6 +670,7 @@ export async function probeRemote(
     metadata.list_status = list.status;
     metadata.list_latency_ms = list.ms;
     noteAuthHeaders(metadata, list);
+    notePayment(metadata, list, 'tools/list');
     if (list.status < 200 || list.status >= 300) {
       return out({ http_status: list.status, reached_level: 1, latency_ms: latency, error_type: null });
     }

@@ -191,6 +191,30 @@ describe('probeRemote', () => {
     assert.deepEqual([r.reached_level, r.http_status], [0, 403]);
     assert.equal(r.metadata.www_authenticate, false);
   });
+  test('402 (tools/list 단계) + MPP 도전 → metadata.payment, 결과는 그대로 (2026-11-12)', async () => {
+    const req = Buffer.from(JSON.stringify({ amount: '5000', currency: '0xUSDC', recipient: '0xabc', note: 'x'.repeat(40) })).toString('base64url');
+    const post: PostFn = async (_u, body, o) => {
+      if (o.method === 'DELETE') return res({ status: 204 });
+      const m = body ? (JSON.parse(body) as { method?: string }).method : '';
+      if (m === 'initialize') return res({ message: INIT_OK });
+      if (m === 'notifications/initialized') return res({ status: 202 });
+      return res({ status: 402, headers: { 'www-authenticate': `Bearer realm="x", Payment id="abc", realm="api", method="tempo", intent="charge", request="${req}"` } });
+    };
+    const r = await probeRemote(REMOTE, CTX, post);
+    assert.deepEqual([r.reached_level, r.http_status, r.error_type], [1, 402, null]);
+    assert.deepEqual(r.metadata.payment, {
+      parse: 'ok', stage: 'tools/list', protocol: 'mpp',
+      challenges: [{ method: 'tempo', intent: 'charge', amount: '5000', currency: '0xUSDC', recipient: '0xabc' }],
+    });
+    assert.ok(!JSON.stringify(r.metadata).includes('xxxx'));
+  });
+  test('402 인데 결제 조건 없음 → parse none, 다른 metadata 는 그대로', async () => {
+    const r = await probeRemote(REMOTE, CTX, async () => res({ status: 402, body: 'Payment Required' }));
+    assert.deepEqual([r.reached_level, r.http_status], [0, 402]);
+    assert.deepEqual(r.metadata.payment, { parse: 'none', stage: 'initialize' });
+    assert.equal(r.metadata.init_status, 402);
+    assert.equal(r.metadata.remote_url, REMOTE.url);
+  });
   test('전송 실패 → http_status null + error_type', async () => {
     const r = await probeRemote(REMOTE, CTX, async () => {
       throw new TransportError('timeout', 't', 10_001);
@@ -305,6 +329,13 @@ describe('httpsPost over local HTTPS', () => {
           }, 30);
         } else if (path === '/401') {
           res.writeHead(401, { 'www-authenticate': 'Bearer realm="x"' }).end('{"error":"auth"}');
+        } else if (path === '/402v1') {
+          res.writeHead(402, { 'content-type': 'application/json' }).end(JSON.stringify({ x402Version: 1, error: 'pay', accepts: [{ scheme: 'exact', network: 'base', maxAmountRequired: '10000', asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', payTo: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', maxTimeoutSeconds: 60, description: 'x'.repeat(50) }] }));
+        } else if (path === '/402v2') {
+          const pr = Buffer.from(JSON.stringify({ x402Version: 2, resource: { url: 'https://x/mcp' }, accepts: [{ scheme: 'exact', network: 'eip155:8453', amount: '1100', asset: '0xabc', payTo: '0xdef', maxTimeoutSeconds: 60 }] })).toString('base64');
+          res.writeHead(402, { 'payment-required': pr }).end();
+        } else if (path === '/402big') {
+          res.writeHead(402, { 'content-type': 'application/json' }).end(`{"x402Version":1,"accepts":[],"pad":"${'x'.repeat(64 * 1024)}"}`);
         } else if (path === '/302') {
           res.writeHead(302, { location: 'https://127.0.0.1:1/' }).end();
         } else if (path === '/big') {
@@ -357,6 +388,34 @@ describe('httpsPost over local HTTPS', () => {
   test('302 리다이렉트는 따라가지 않음', async (t) => {
     if (skip) return t.skip('openssl 없음');
     assert.equal((await post('/302')).status, 302);
+  });
+  test('402: 본문(v1)·헤더(v2)에서 결제 조건 읽기, 큰 본문은 읽지 않음 (2026-11-12)', async (t) => {
+    if (skip) return t.skip('openssl 없음');
+    const wrapped: PostFn = (u, b, o) => httpsPost(u, b, { ...o, allowPrivate: true, ca });
+    const a = await probeRemote({ type: 'streamable-http', url: `${base}/402v1` }, CTX, wrapped);
+    assert.deepEqual([a.reached_level, a.http_status, a.error_type], [0, 402, null]);
+    assert.deepEqual(a.metadata.payment, {
+      parse: 'ok', stage: 'initialize', protocol: 'x402', version: 1, source: 'body',
+      options: [{ scheme: 'exact', network: 'base', asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', amount: '10000', pay_to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', max_timeout_s: 60 }],
+    });
+    assert.ok(!JSON.stringify(a.metadata).includes('xxxx'), '설명문 등 원문은 남기지 않는다');
+    const b = await probeRemote({ type: 'streamable-http', url: `${base}/402v2` }, CTX, wrapped);
+    assert.deepEqual(b.metadata.payment, {
+      parse: 'ok', stage: 'initialize', protocol: 'x402', version: 2, source: 'header',
+      options: [{ scheme: 'exact', network: 'eip155:8453', asset: '0xabc', amount: '1100', pay_to: '0xdef', max_timeout_s: 60 }],
+    });
+    const c = await probeRemote({ type: 'streamable-http', url: `${base}/402big` }, CTX, wrapped);
+    assert.deepEqual([c.reached_level, c.http_status], [0, 402]);
+    assert.deepEqual(c.metadata.payment, { parse: 'too_large', stage: 'initialize' });
+  });
+  test('402 아닌 오류 응답은 본문을 읽지 않고 payment 도 없음', async (t) => {
+    if (skip) return t.skip('openssl 없음');
+    const r = await post('/401');
+    assert.equal(r.status, 401);
+    assert.equal(r.body, undefined);
+    const wrapped: PostFn = (u, b, o) => httpsPost(u, b, { ...o, allowPrivate: true, ca });
+    const p = await probeRemote({ type: 'streamable-http', url: `${base}/401` }, CTX, wrapped);
+    assert.equal(p.metadata.payment, undefined);
   });
   test('본문 크기 상한 초과 → parseError', async (t) => {
     if (skip) return t.skip('openssl 없음');

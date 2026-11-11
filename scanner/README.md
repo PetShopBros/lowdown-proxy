@@ -67,7 +67,7 @@ npm run scanner:test
 | `http_status` | 마지막으로 응답을 받은 요청의 HTTP 상태. 응답이 없으면 NULL. 401/403은 해석 없이 숫자 그대로 |
 | `error_type` | HTTP 응답이 없을 때(`timeout` `dns` `tls` `conn_refused` `conn_reset` `network_error`), 2xx인데 JSON-RPC 응답이 아닐 때(`invalid_response`), 또는 Scanner가 URL을 거부했을 때(`blocked_url`). 그 외 NULL |
 | `latency_ms` | initialize 요청 소요 시간 |
-| `metadata` | `remote_url`, `init_status`, `list_status`, `tool_count`, `schema_hash`, `desc_hash`, `server_version`, `www_authenticate`, `rpc_error_code` 등 사실 값 |
+| `metadata` | `remote_url`, `init_status`, `list_status`, `tool_count`, `schema_hash`, `desc_hash`, `server_version`, `www_authenticate`, `rpc_error_code`, `payment` 등 사실 값 |
 
 `schema_hash` = tool 이름 + inputSchema + outputSchema, `desc_hash` = 이름 + title + description. 둘 다 순서/키 순서와 무관합니다. 설명문 변경은 `desc_hash`로만 감지됩니다.
 
