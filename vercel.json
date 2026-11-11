@@ -33,6 +33,10 @@
       "destination": "/public/.well-known/glama.json"
     },
     {
+      "source": "/googleb19fff907d96fcb7.html",
+      "destination": "/public/googleb19fff907d96fcb7.html"
+    },
+    {
       "source": "/privacy",
       "destination": "/api/page?kind=privacy"
     },
