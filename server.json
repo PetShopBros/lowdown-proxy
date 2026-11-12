@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.PetShopBros/lowdown-proxy",
-  "description": "Look up MCP Registry declarations, npm package status, and daily observations of MCP servers.",
+  "description": "Dated facts on MCP servers: daily checks, Registry and card declarations, packages, payment terms.",
   "repository": {
     "url": "https://github.com/PetShopBros/lowdown-proxy",
     "source": "github"
   },
-  "version": "0.1.20",
+  "version": "0.1.21",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "lowdown-proxy",
-      "version": "0.1.19",
+      "version": "0.1.20",
       "transport": {
         "type": "stdio"
       }

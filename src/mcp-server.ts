@@ -22,23 +22,36 @@ const server = new McpServer({
 });
 
 // ── 1. get_lowdown ──────────────────────────────────────────────
+// 메뉴 목록은 원격 MCP(api/mcp.ts MENUS)·조회 API(api/reputation/[target].ts DISHES·SETS)와 같아야 한다.
+const MENUS = [
+  "install-check", "change-watch", "full",
+  "status", "payment", "packages", "tools", "declared-vs-observed", "content-flags", "tool-list", "registry", "history", "agent-reports",
+] as const;
+
 server.tool(
   "get_lowdown",
   "Look up recorded facts about an MCP server before installing or connecting to it. " +
-  "Accepts an MCP Registry name ('mcp:io.github.user/server'), a short name, or an npm package ('npm:@scope/name'). " +
-  "Returns, in order: `registry` (what the official MCP Registry declares, and changes in the last 30 days); " +
-  "`packages` (for each declared npm package: npm's latest version, whether that latest version is marked deprecated, and whether npm answers 404, checked daily); " +
-  "`scanner` (daily initialize and tools/list observations over 30 days, including when tool definitions last changed); and interactions reported by agents. " +
-  "When a declared npm package is deprecated or answers 404, the first sentence of `message` says so. " +
-  "These are recorded facts with dates and sources, not scores. Absence of data says nothing about a server's status.",
+  "Accepts an MCP Registry name ('mcp:io.github.user/server'), a short name, or a package ('npm:@scope/name', 'pypi:name'). " +
+  "Returns dated facts, not scores: `status` (latest daily initialize/tools/list check: answered, required authentication, required payment, or no response), " +
+  "`payment` (HTTP 402 payment terms stated on the latest check — x402, MPP or L402 — and payment support declared in the server's card or an ERC-8004 registration file; Lowdown does not pay), " +
+  "`registry` (what the official MCP Registry declares, and changes in the last 30 days), " +
+  "`packages` (declared npm/PyPI packages: deprecated, yanked, archived, or 404), " +
+  "`scanner` (when tool definitions changed and content markers such as a new URL or invisible characters), and agent reports. " +
+  "The optional `menu` returns only one part, e.g. 'install-check' (the facts used before installing). " +
+  "Absence of data says nothing about a server's status.",
   {
-    target: z.string().describe(
-      "MCP Registry name with the mcp: prefix (e.g. 'mcp:io.github.user/server'), a short name, an npm package with the npm: prefix (e.g. 'npm:@scope/name'), or an id such as 'agent:some-agent-id'"
+    target: z.string().min(1).max(300).describe(
+      "MCP Registry name with the mcp: prefix (e.g. 'mcp:io.github.user/server'), a short name, or a package with the npm: or pypi: prefix"
+    ),
+    menu: z.enum(MENUS).optional().describe(
+      "Optional. Before installing, use 'install-check' (status, payment, packages, declared-vs-observed, content-flags). 'change-watch' = what changed recently, " +
+      "or one part: status, payment, packages, tools, declared-vs-observed, content-flags, tool-list, registry, history, agent-reports. Omit or 'full' for everything."
     ),
   },
-  async ({ target }) => {
+  async ({ target, menu }) => {
+    const q = menu && menu !== "full" ? `?menu=${encodeURIComponent(menu)}` : "";
     const res = await fetch(
-      `${BASE_URL}/api/reputation/${encodeURIComponent(target)}`,
+      `${BASE_URL}/api/reputation/${encodeURIComponent(target.trim())}${q}`,
       { headers: { "x-lowdown-source": "organic", "x-lowdown-node-id": NODE_ID } }
     );
     const data = await res.json() as any;

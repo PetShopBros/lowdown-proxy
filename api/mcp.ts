@@ -139,16 +139,17 @@ export function buildServer(ctx: { host: string; ua: string | null; fetchImpl?: 
         "Returns dated facts, not scores: `status` (latest daily initialize/tools/list check: answered, required authentication, or no response), " +
         "`registry` (what the official MCP Registry declares, and changes in the last 30 days), " +
         "`packages` (declared npm/PyPI packages: deprecated, yanked, archived, or 404), " +
-        "`scanner` (when tool definitions changed and content markers such as a new URL or invisible characters), and agent reports. " +
-        "The optional `menu` returns only one part, e.g. 'install-check' (the facts used before installing). " +
+        "`scanner` (when tool definitions changed and content markers such as a new URL or invisible characters), " +
+        "`payment` (HTTP 402 payment terms stated on the latest check — x402, MPP or L402 — and payment support declared in the server's card or an ERC-8004 registration file; Lowdown does not pay), and agent reports. " +
+        "The optional `menu` returns only one part, e.g. 'install-check' (the facts used before installing) or 'payment'. " +
         "Absence of data says nothing about a server's status. Each answer ends with a `source` block (dataset, CC BY 4.0 license, retrieval time).",
       inputSchema: {
         target: z.string().min(1).max(300).describe(
           "MCP Registry name with the mcp: prefix (e.g. 'mcp:io.github.user/server'), a short name, or a package with the npm: or pypi: prefix",
         ),
         menu: z.enum(MENUS).optional().describe(
-          "Optional. Before installing, use 'install-check' (status, packages, declared-vs-observed, content-flags). 'change-watch' = what changed recently, " +
-          "or one part: status, packages, tools, declared-vs-observed, content-flags, tool-list, registry, history, agent-reports. Omit or 'full' for everything.",
+          "Optional. Before installing, use 'install-check' (status, payment, packages, declared-vs-observed, content-flags). 'change-watch' = what changed recently, " +
+          "or one part: status, payment, packages, tools, declared-vs-observed, content-flags, tool-list, registry, history, agent-reports. Omit or 'full' for everything.",
         ),
       },
       annotations: { title: "Look up recorded facts about an MCP server", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -394,7 +395,7 @@ export function isDiscover(body: unknown): body is { id: unknown } {
 //   도구 목록·capabilities 는 넣지 않는다(스펙상 제외). 요청은 middleware.ts 의 edge_hits 에만 남고 mcp_calls 에는 넣지 않는다.
 //   name 은 스펙 형식(역도메인/이름)이라 MCP Registry 이름(server.json)과 같게, version 은 serverInfo 와 같게 둔다.
 export const SERVER_CARD_NAME = "io.github.PetShopBros/lowdown-proxy";
-export const SERVER_CARD_DESCRIPTION = "Look up MCP Registry declarations, npm package status, and daily observations of MCP servers.";
+export const SERVER_CARD_DESCRIPTION = "Dated facts on MCP servers: daily checks, Registry and card declarations, packages, payment terms.";
 export function serverCard(): Record<string, unknown> {
   return {
     $schema: "https://static.modelcontextprotocol.io/schemas/v1/server-card.schema.json",
