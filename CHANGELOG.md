@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed (2026-11-13)
+- Scanner 0.6.2: every `metadata.payment` now carries `cause` — `payment_terms` (the response stated payment terms), `platform_limit` (the hosting platform blocked the request, not a payment request) or `unknown`. A 402 with `X-Vercel-Error` (for example `DEPLOYMENT_DISABLED`) or a JSON-RPC error with `error.data["alpic/reason"]` (for example `request-limit-exceeded`) is recorded as `platform_limit` with `platform` and `platform_reason`. x402 terms are also read inside a JSON-RPC `error.data`, and from bodies that name x402 but lack `x402Version` or give `accepts` as a single object; those are marked `nonstandard: true`, and fields Lowdown does not recognize are not read as an amount.
+- Connection status: a 402 that the Scanner identified as a hosting-platform block now counts as `no_response`, not `payment_required` (target status definition v4, `supabase/2026-11-13_target_status_v4.sql`). It applies to observations from Scanner 0.6.2 on; earlier 402s keep the v3 reading. No new state values.
+
 ### Added (2026-11-12)
 - Scanner 0.6.0: when `initialize` or `tools/list` returns HTTP 402, the payment terms stated in that same response are recorded as `metadata.payment` (`scanner/payment-lib.ts`). x402 v2 is read from the `PAYMENT-REQUIRED` header, x402 v1/v2 from a JSON body (read up to 16 KiB), MPP from `WWW-Authenticate: Payment` challenges, and L402 (Lightning, bLIP-0026, also the older `LSAT` name) from `WWW-Authenticate: L402`, keeping only the invoice's network and amount. Kept fields: protocol and version, scheme, network, asset, amount, recipient address and timeout (x402); method, intent, amount, currency and recipient (MPP); at most 5 options. Each field must pass a format check or it is left out and counted in `dropped`; the response text is not stored. No extra request is sent, nothing is paid and no tool is called. A 402 without readable terms is recorded as `parse: none`. Reading never changes the probe result. These are observed terms, not proof that payment works or that an address is valid.
 

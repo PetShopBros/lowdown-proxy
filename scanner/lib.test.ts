@@ -203,7 +203,7 @@ describe('probeRemote', () => {
     const r = await probeRemote(REMOTE, CTX, post);
     assert.deepEqual([r.reached_level, r.http_status, r.error_type], [1, 402, null]);
     assert.deepEqual(r.metadata.payment, {
-      parse: 'ok', stage: 'tools/list', protocol: 'mpp',
+      parse: 'ok', cause: 'payment_terms', stage: 'tools/list', protocol: 'mpp',
       challenges: [{ method: 'tempo', intent: 'charge', amount: '5000', currency: '0xUSDC', recipient: '0xabc' }],
     });
     assert.ok(!JSON.stringify(r.metadata).includes('xxxx'));
@@ -211,7 +211,7 @@ describe('probeRemote', () => {
   test('402 인데 결제 조건 없음 → parse none, 다른 metadata 는 그대로', async () => {
     const r = await probeRemote(REMOTE, CTX, async () => res({ status: 402, body: 'Payment Required' }));
     assert.deepEqual([r.reached_level, r.http_status], [0, 402]);
-    assert.deepEqual(r.metadata.payment, { parse: 'none', stage: 'initialize' });
+    assert.deepEqual(r.metadata.payment, { parse: 'none', cause: 'unknown', stage: 'initialize' });
     assert.equal(r.metadata.init_status, 402);
     assert.equal(r.metadata.remote_url, REMOTE.url);
   });
@@ -395,18 +395,18 @@ describe('httpsPost over local HTTPS', () => {
     const a = await probeRemote({ type: 'streamable-http', url: `${base}/402v1` }, CTX, wrapped);
     assert.deepEqual([a.reached_level, a.http_status, a.error_type], [0, 402, null]);
     assert.deepEqual(a.metadata.payment, {
-      parse: 'ok', stage: 'initialize', protocol: 'x402', version: 1, source: 'body',
+      parse: 'ok', cause: 'payment_terms', stage: 'initialize', protocol: 'x402', version: 1, source: 'body',
       options: [{ scheme: 'exact', network: 'base', asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', amount: '10000', pay_to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', max_timeout_s: 60 }],
     });
     assert.ok(!JSON.stringify(a.metadata).includes('xxxx'), '설명문 등 원문은 남기지 않는다');
     const b = await probeRemote({ type: 'streamable-http', url: `${base}/402v2` }, CTX, wrapped);
     assert.deepEqual(b.metadata.payment, {
-      parse: 'ok', stage: 'initialize', protocol: 'x402', version: 2, source: 'header',
+      parse: 'ok', cause: 'payment_terms', stage: 'initialize', protocol: 'x402', version: 2, source: 'header',
       options: [{ scheme: 'exact', network: 'eip155:8453', asset: '0xabc', amount: '1100', pay_to: '0xdef', max_timeout_s: 60 }],
     });
     const c = await probeRemote({ type: 'streamable-http', url: `${base}/402big` }, CTX, wrapped);
     assert.deepEqual([c.reached_level, c.http_status], [0, 402]);
-    assert.deepEqual(c.metadata.payment, { parse: 'too_large', stage: 'initialize' });
+    assert.deepEqual(c.metadata.payment, { parse: 'too_large', cause: 'unknown', stage: 'initialize' });
   });
   test('402 아닌 오류 응답은 본문을 읽지 않고 payment 도 없음', async (t) => {
     if (skip) return t.skip('openssl 없음');

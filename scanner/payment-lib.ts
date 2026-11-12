@@ -11,6 +11,10 @@
 //            본문에 같은 JSON 을 그대로 두는 구현도 있다.
 //   x402 v1: 본문 JSON {x402Version:1, accepts[{scheme, network, maxAmountRequired, asset, payTo, maxTimeoutSeconds}]}
 //   MPP:     WWW-Authenticate: Payment id="…", realm="…", method="…", intent="…", request="<base64url JSON>"
+//   비표준 x402(2026-11-13 실측): x402Version 없이 accepts 가 객체/배열, 본문에 "x402" 언급 → nonstandard: true
+//   JSON-RPC 오류 안의 x402: {"jsonrpc":"2.0","error":{"data":{x402Version, accepts}}}
+//   호스팅 차단(결제 아님, 2026-11-13 실측): Vercel `X-Vercel-Error: DEPLOYMENT_DISABLED`, Alpic JSON-RPC error.data["alpic/reason"]
+//            → cause: platform_limit. 운영자가 호스팅 요금·한도 문제로 막힌 상태이지 에이전트에게 결제를 받는 서버가 아니다.
 //   L402:    WWW-Authenticate: L402 [version="0",] macaroon|token="<base64>", invoice="<BOLT11>" (bLIP-0026, 옛 이름 LSAT)
 //            인보이스에서 네트워크(접두어)와 금액(HRP)만 읽는다. 토큰·인보이스 원문·결제 해시는 남기지 않는다(2026-11-12).
 
@@ -50,6 +54,13 @@ export interface LightningInvoice {
 export interface PaymentObservation {
   /** 읽은 결과. none = 402 인데 알아볼 수 있는 결제 조건이 없음 */
   parse: PaymentParse;
+  /** 402 의 성격: payment_terms(결제 조건을 밝힘) / platform_limit(호스팅 차단·한도, 결제 아님) / unknown (2026-11-13) */
+  cause: 'payment_terms' | 'platform_limit' | 'unknown';
+  /** cause = platform_limit 일 때 호스팅 플랫폼과 그 플랫폼이 밝힌 사유 */
+  platform?: 'vercel' | 'alpic';
+  platform_reason?: string;
+  /** x402 를 밝혔지만 표준 모양(x402Version + accepts 배열)이 아님 */
+  nonstandard?: boolean;
   /** 어느 단계의 402 였나 */
   stage: 'initialize' | 'tools/list';
   protocol?: 'x402' | 'mpp' | 'l402';
@@ -113,21 +124,46 @@ function x402Option(a: unknown, version: number, c: Counter): PaymentOption | nu
 }
 
 /** x402 PaymentRequired JSON → 관측. x402 모양이 아니면 null */
-function fromX402(j: unknown, source: 'header' | 'body', stage: PaymentObservation['stage']): PaymentObservation | null {
+function fromX402(j: unknown, source: 'header' | 'body', stage: PaymentObservation['stage'], mentionsX402 = false): PaymentObservation | null {
   if (!isObj(j)) return null;
   const v = j.x402Version;
-  if (v !== 1 && v !== 2) return null;
-  if (!Array.isArray(j.accepts)) return null;
+  const standard = (v === 1 || v === 2) && Array.isArray(j.accepts);
+  // 비표준: 버전이 없거나 accepts 가 객체여도, 본문이 x402 를 밝히고 accepts 가 있으면 읽는다
+  if (!standard && !(mentionsX402 && (Array.isArray(j.accepts) || isObj(j.accepts)))) return null;
+  const list: unknown[] = Array.isArray(j.accepts) ? j.accepts : [j.accepts];
   const c: Counter = { dropped: 0 };
   const options: PaymentOption[] = [];
-  for (const a of j.accepts.slice(0, PAYMENT_OPTIONS_MAX)) {
-    const o = x402Option(a, v, c);
+  for (const a of list.slice(0, PAYMENT_OPTIONS_MAX)) {
+    const o = x402Option(a, v === 1 ? 1 : 2, c);
     if (o) options.push(o);
   }
-  const out: PaymentObservation = { parse: options.length ? 'ok' : 'invalid', stage, protocol: 'x402', version: v, source, options };
-  if (j.accepts.length > PAYMENT_OPTIONS_MAX) out.more = true;
+  const out: PaymentObservation = { parse: options.length ? 'ok' : 'invalid', cause: 'payment_terms', stage, protocol: 'x402', source, options };
+  if (v === 1 || v === 2) out.version = v;
+  if (!standard) out.nonstandard = true;
+  if (list.length > PAYMENT_OPTIONS_MAX) out.more = true;
   if (c.dropped) out.dropped = c.dropped;
   return out;
+}
+
+/** 본문 JSON 에서 x402 를 찾는다: 맨 위, 또는 JSON-RPC error.data 안 */
+function fromBodyJson(j: unknown, stage: PaymentObservation['stage'], mentionsX402: boolean): PaymentObservation | null {
+  const top = fromX402(j, 'body', stage, mentionsX402);
+  if (top) return top;
+  if (isObj(j) && isObj(j.error) && isObj(j.error.data)) return fromX402(j.error.data, 'body', stage, mentionsX402);
+  return null;
+}
+
+const PLATFORM_REASON = /^[A-Za-z0-9_.:-]{1,64}$/;
+
+/** 호스팅 플랫폼이 막은 402 인가 (결제 아님) */
+function platformLimit(headers: Record<string, string | string[] | undefined>, j: unknown): { platform: 'vercel' | 'alpic'; platform_reason?: string } | null {
+  const ve = header(headers, 'x-vercel-error');
+  if (ve !== undefined) return PLATFORM_REASON.test(ve) ? { platform: 'vercel', platform_reason: ve } : { platform: 'vercel' };
+  if (isObj(j) && isObj(j.error) && isObj(j.error.data) && j.error.data['alpic/reason'] !== undefined) {
+    const r = j.error.data['alpic/reason'];
+    return typeof r === 'string' && PLATFORM_REASON.test(r) ? { platform: 'alpic', platform_reason: r } : { platform: 'alpic' };
+  }
+  return null;
 }
 
 function decodeBase64Json(s: string): unknown {
@@ -176,7 +212,7 @@ function fromMpp(header: string, stage: PaymentObservation['stage']): PaymentObs
     for (const k of Object.keys(x) as (keyof MppChallenge)[]) if (x[k] === undefined) delete x[k];
     if (Object.keys(x).length) challenges.push(x);
   }
-  const out: PaymentObservation = { parse: challenges.length ? 'ok' : 'invalid', stage, protocol: 'mpp', challenges };
+  const out: PaymentObservation = { parse: challenges.length ? 'ok' : 'invalid', cause: 'payment_terms', stage, protocol: 'mpp', challenges };
   if (chs.length > PAYMENT_OPTIONS_MAX) out.more = true;
   if (c.dropped) out.dropped = c.dropped;
   return out;
@@ -233,7 +269,7 @@ function fromL402(header: string, stage: PaymentObservation['stage']): PaymentOb
     if (s) invoices.push(s);
     else c.dropped++;
   }
-  const out: PaymentObservation = { parse: invoices.length ? 'ok' : 'invalid', stage, protocol: 'l402', invoices };
+  const out: PaymentObservation = { parse: invoices.length ? 'ok' : 'invalid', cause: 'payment_terms', stage, protocol: 'l402', invoices };
   if (version !== undefined) out.version = version;
   if (chs.length > PAYMENT_OPTIONS_MAX) out.more = true;
   if (c.dropped) out.dropped = c.dropped;
@@ -268,16 +304,16 @@ export function parsePaymentRequired(res: {
         if (r) return r;
       }
     }
+    let j: unknown;
     if (typeof res.body === 'string' && res.body.length > 0) {
       if (res.body.length > PAYMENT_BODY_MAX) tooLarge = true;
       else {
-        let j: unknown;
         try {
           j = JSON.parse(res.body);
         } catch {
           j = undefined;
         }
-        const r = fromX402(j, 'body', stage);
+        const r = fromBodyJson(j, stage, /x402(?!version)/i.test(res.body));
         if (r) return r;
       }
     }
@@ -286,8 +322,10 @@ export function parsePaymentRequired(res: {
       const r = fromMpp(wa, stage) ?? fromL402(wa, stage);
       if (r) return r;
     }
-    return { parse: tooLarge ? 'too_large' : 'none', stage };
+    const pl = platformLimit(res.headers, j);
+    if (pl) return { parse: 'none', cause: 'platform_limit', stage, ...pl };
+    return { parse: tooLarge ? 'too_large' : 'none', cause: 'unknown', stage };
   } catch {
-    return { parse: 'invalid', stage };
+    return { parse: 'invalid', cause: 'unknown', stage };
   }
 }
