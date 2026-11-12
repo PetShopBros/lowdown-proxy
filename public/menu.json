@@ -53,7 +53,7 @@
     {
       "menu": "payment",
       "question": "Does it ask for payment when connecting, and on what stated terms (protocol, network, asset, amount, pay-to)?",
-      "contains": "payment.observed (HTTP 402 terms from the latest check; not a check that payment works)",
+      "contains": "payment.observed (HTTP 402 terms from the latest check; not a check that payment works), payment.declared (payment support stated in its card or an ERC-8004 registration file)",
       "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=payment"
     },
     {

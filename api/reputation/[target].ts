@@ -1224,6 +1224,52 @@ export function shapePaymentTerms(p: unknown): Record<string, unknown> | null {
   return out;
 }
 
+// 선언(declared): 서버의 카드나 ERC-8004 등록 파일이 결제 지원을 말한 사실 (supabase/2026-11-13_payment_declarations.sql, 1일 1회 계산).
+// 비공개 원천에서 계산한 공개 요약 표만 읽는다. 읽기 실패·표 없음이면 declared 만 빼고 응답은 막지 않는다(보조 조회).
+export const PAYMENT_DECLARED_BASIS =
+  "declared lists payment support stated by the server's own card (x402 or MPP named in it) or by an ERC-8004 registration file " +
+  "(x402Support: true with an MCP endpoint that this Registry entry also declares). A declaration is not a check and is kept apart from what Lowdown observed.";
+const PAY_DECL_SOURCES = new Set(["server_card", "erc8004"]);
+const PAY_DECL_PROTOCOLS = new Set(["x402", "mpp"]);
+const PAY_DECL_REF = /^(https:\/\/[\x21-\x7e]{1,1990}|eip155:\d{1,12}#\d{1,78})$/;
+const PAY_DECL_MAX = 10;
+
+/** payment_declarations 행 → declared 목록. 형식이 틀린 행은 말하지 않는다. */
+export function shapePaymentDeclarations(rows: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(rows)) return [];
+  const out: Array<Record<string, unknown>> = [];
+  for (const r of rows) {
+    if (!isPlainObj(r)) continue;
+    const source = typeof r.source === "string" && PAY_DECL_SOURCES.has(r.source) ? r.source : null;
+    const ref = typeof r.ref === "string" && PAY_DECL_REF.test(r.ref) ? r.ref : null;
+    const protocols = Array.isArray(r.protocols) ? [...new Set(r.protocols.filter((x): x is string => typeof x === "string" && PAY_DECL_PROTOCOLS.has(x)))].sort() : [];
+    const day = isoDay(r.checked_on);
+    if (!source || !ref || protocols.length === 0 || !day) continue;
+    out.push({
+      source,
+      ...(source === "server_card" ? { card_url: ref } : { agent: ref }),
+      protocols,
+      ...(r.with_service === "mcp" ? { with_service: "mcp" } : {}),
+      checked_on: day,
+    });
+  }
+  return out
+    .sort((a, b) => String(a.source).localeCompare(String(b.source)) || String(a.card_url ?? a.agent).localeCompare(String(b.card_url ?? b.agent)))
+    .slice(0, PAY_DECL_MAX);
+}
+
+async function attachPaymentDeclarations(supabase: any, ev: Evidence, targetId: string): Promise<void> {
+  try {
+    const r = await supabase.from("payment_declarations").select("source,ref,protocols,with_service,checked_on").eq("target_id", targetId).limit(PAY_DECL_MAX * 2);
+    if (r.error) return;
+    const declared = shapePaymentDeclarations(r.data);
+    if (declared.length === 0) return;
+    ev.payment = { ...(ev.payment ?? {}), declared, basis: `${(ev.payment?.basis as string | undefined) ?? PAYMENT_BASIS} ${PAYMENT_DECLARED_BASIS}` };
+  } catch {
+    // 보조 조회: 실패하면 declared 없이 답한다
+  }
+}
+
 /** 30일 관측 행(오래된 순) → payment 블록. 관측이 없으면 null(말하지 않는다). */
 export function shapePayment(rows: ObsRow[]): Record<string, unknown> | null {
   if (rows.length === 0) return null;
@@ -1313,6 +1359,8 @@ async function buildEvidence(supabase: any, target: string, lookup: ScannerLooku
       // 날짜별 기록 실패 → 기존 scanner 요약만
     }
   }
+  // 결제 선언(Payment Facts declared) — 관측 블록 뒤에 붙인다(observed 가 없어도 선언만 실을 수 있다)
+  if (typeof ev.name === "string") await attachPaymentDeclarations(supabase, ev, `mcp:${ev.name}`);
   // 카드(자기 선언)는 Registry 선언 대 관측 블록 안에 붙인다. 실패하면 붙이지 않는다(보조 조회).
   const dvo = (ev.scannerExtra as any)?.declared_vs_observed;
   if (dvo && typeof ev.name === "string") {
@@ -2013,7 +2061,7 @@ export interface MenuItem {
 
 export const DISHES: Record<string, MenuItem> = {
   status: { question: "Does this MCP server answer right now, and does it require authentication?", contains: "status, scanner.latest (latest probe: reach level, HTTP status, latency — one location, once a day)" },
-  payment: { question: "Does it ask for payment when connecting, and on what stated terms (protocol, network, asset, amount, pay-to)?", contains: "payment.observed (HTTP 402 terms from the latest check; not a check that payment works)" },
+  payment: { question: "Does it ask for payment when connecting, and on what stated terms (protocol, network, asset, amount, pay-to)?", contains: "payment.observed (HTTP 402 terms from the latest check; not a check that payment works), payment.declared (payment support stated in its card or an ERC-8004 registration file)" },
   packages: { question: "Are the npm or PyPI packages it declares deprecated, yanked, archived, or gone (404)?", contains: "packages, packages_note" },
   tools: { question: "Did its tool definitions change, when, and with or without a server version change?", contains: "scanner.definition_changes" },
   "declared-vs-observed": { question: "Does what the MCP Registry and the server's own cards declare (version, hosts, endpoints, name) match what is observed?", contains: "scanner.declared_vs_observed" },

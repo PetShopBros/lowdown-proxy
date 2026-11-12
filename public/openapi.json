@@ -100,7 +100,7 @@
                     },
                     "payment": {
                       "type": "object",
-                      "description": "Payment Facts from Lowdown's latest check: whether initialize or tools/list answered HTTP 402, with the payment terms the server stated in that response (x402, MPP or L402). Observed only: Lowdown does not pay, does not call tools and does not check that payment works or that an address is valid. Payment asked only at tool call time is not seen. Hosting-platform blocks are not counted. Present when the server is observed by the Scanner.",
+                      "description": "Payment Facts from Lowdown's latest check: whether initialize or tools/list answered HTTP 402, with the payment terms the server stated in that response (x402, MPP or L402). Observed only: Lowdown does not pay, does not call tools and does not check that payment works or that an address is valid. Payment asked only at tool call time is not seen. Hosting-platform blocks are not counted. `observed` is present when the server is observed by the Scanner; `declared` when its card or an ERC-8004 registration file states payment support.",
                       "properties": {
                         "observed": {
                           "type": "object",
@@ -251,6 +251,49 @@
                                     "description": "More options than the 5 kept."
                                   }
                                 }
+                              }
+                            }
+                          }
+                        },
+                        "declared": {
+                          "type": "array",
+                          "description": "Payment support stated by the server's own card (x402 or MPP named in it; cards of shared hosts excluded) or by an ERC-8004 registration file (x402Support: true with an MCP endpoint that this Registry entry also declares). Recomputed daily. A declaration is not a check.",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "source": {
+                                "type": "string",
+                                "enum": [
+                                  "server_card",
+                                  "erc8004"
+                                ]
+                              },
+                              "card_url": {
+                                "type": "string"
+                              },
+                              "agent": {
+                                "type": "string",
+                                "description": "eip155:{chainId}#{agentId}"
+                              },
+                              "protocols": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "enum": [
+                                    "x402",
+                                    "mpp"
+                                  ]
+                                }
+                              },
+                              "with_service": {
+                                "type": "string",
+                                "enum": [
+                                  "mcp"
+                                ]
+                              },
+                              "checked_on": {
+                                "type": "string",
+                                "format": "date"
                               }
                             }
                           }

@@ -123,6 +123,11 @@ const COHORT_ROWS: Row[] = [
   { target_id: 'mcp:io.github.acme/solo', cohort_version: '2026-10-07-v1', selected_at: '2026-10-07T00:00:00+00:00' },
   { target_id: 'mcp:io.github.acme/solo', cohort_version: '2026-10-19-v2', selected_at: '2026-10-19T00:00:00+00:00' },
 ];
+const PAYMENT_DECL_ROWS: Row[] = [
+  { target_id: 'mcp:io.github.acme/solo', source: 'server_card', ref: 'https://solo.acme.dev/mcp/server-card', protocols: ['x402', 'mpp', 'bogus'], with_service: null, checked_on: '2026-11-10' },
+  { target_id: 'mcp:io.github.acme/solo', source: 'erc8004', ref: 'eip155:8453#1234', protocols: ['x402'], with_service: 'mcp', checked_on: '2026-11-12' },
+  { target_id: 'mcp:io.github.acme/solo', source: 'erc8004', ref: 'javascript:alert(1)', protocols: ['x402'], with_service: 'mcp', checked_on: '2026-11-12' },
+];
 const GAP_ROWS: Row[] = [{ target_id: 'mcp:io.github.acme/solo', observed_at: at(2), reason: 'not_in_registry' }];
 const TOOL_SET_ROWS: Row[] = [{ target_id: 'mcp:io.github.acme/solo', names_hash: NAMES, names: ['get_weather', 'list_items', 'bad name; rm -rf'], partial: false, first_seen_at: at(4) }];
 
@@ -235,6 +240,7 @@ before(async () => {
         pypi_package_state: PYPI_STATE_ROWS,
         pypi_package_changes: PYPI_CHANGE_ROWS,
         target_status_summary: statusRows,
+        payment_declarations: PAYMENT_DECL_ROWS,
       };
       const source = tables[table] ?? [];
       const rows = query(source, url.searchParams);
@@ -1093,5 +1099,20 @@ describe('결제 사실 (payment, 2026-11-13)', () => {
     assert.equal(r.body.scanner, undefined);
     const ic = await call('mcp:io.github.acme/solo', { menu: 'install-check' });
     assert.deepEqual(ic.body.payment, full.body.payment);
+  });
+
+  test('선언(declared): 공개 요약 표에서, 형식 틀린 행·값은 빼고, 관측과 따로', async () => {
+    const full = await call('mcp:io.github.acme/solo');
+    assert.deepEqual(full.body.payment.declared, [
+      { source: 'erc8004', agent: 'eip155:8453#1234', protocols: ['x402'], with_service: 'mcp', checked_on: '2026-11-12' },
+      { source: 'server_card', card_url: 'https://solo.acme.dev/mcp/server-card', protocols: ['mpp', 'x402'], checked_on: '2026-11-10' },
+    ]);
+    assert.equal(full.body.payment.observed.payment_required, false);
+    assert.match(full.body.payment.basis, /A declaration is not a check/);
+    failTables = new Set(['payment_declarations']);
+    const failed = await call('mcp:io.github.acme/solo');
+    assert.equal(failed.status, 200);
+    assert.equal(failed.body.payment.declared, undefined);
+    assert.ok(failed.body.payment.observed);
   });
 });
