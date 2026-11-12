@@ -57,6 +57,7 @@
               "type": "string",
               "enum": [
                 "status",
+                "payment",
                 "packages",
                 "tools",
                 "declared-vs-observed",
@@ -70,7 +71,7 @@
                 "full"
               ]
             },
-            "description": "Return only the part of the record that answers one question (see https://lowdown-proxy.vercel.app/menu.json). Sets: install-check (before installing: status, packages, declared-vs-observed, content-flags), change-watch (recent changes). Dishes: status, packages, tools, declared-vs-observed, content-flags, tool-list, registry, history, agent-reports. Omit (or 'full') for the full record. 'stdio', 'radar', 'watch' and 'bulk-history' are not available yet and return 400 with their status."
+            "description": "Return only the part of the record that answers one question (see https://lowdown-proxy.vercel.app/menu.json). Sets: install-check (before installing: status, payment, packages, declared-vs-observed, content-flags), change-watch (recent changes). Dishes: status, payment, packages, tools, declared-vs-observed, content-flags, tool-list, registry, history, agent-reports. Omit (or 'full') for the full record. 'stdio', 'radar', 'watch' and 'bulk-history' are not available yet and return 400 with their status."
           }
         ],
         "responses": {
@@ -96,6 +97,168 @@
                     "message": {
                       "type": "string",
                       "description": "One factual sentence: whether a Registry record, Scanner observations, and reported interactions exist, and, for observed servers, when tool definitions last changed. When a declared npm package is marked deprecated on its latest version, a declared PyPI package's latest version is yanked or the project is archived, quarantined or deprecated, or npm or PyPI answers 404 for it (for PyPI, saying whether the project exists without releases or does not exist), that fact comes first. If the target contains a literal escape sequence such as \\n, a final sentence says so; the target is not changed."
+                    },
+                    "payment": {
+                      "type": "object",
+                      "description": "Payment Facts from Lowdown's latest check: whether initialize or tools/list answered HTTP 402, with the payment terms the server stated in that response (x402, MPP or L402). Observed only: Lowdown does not pay, does not call tools and does not check that payment works or that an address is valid. Payment asked only at tool call time is not seen. Hosting-platform blocks are not counted. Present when the server is observed by the Scanner.",
+                      "properties": {
+                        "observed": {
+                          "type": "object",
+                          "properties": {
+                            "latest_check": {
+                              "type": "string",
+                              "format": "date"
+                            },
+                            "payment_required": {
+                              "type": "boolean",
+                              "description": "true when at least one remote answered with HTTP 402 asking for payment on the latest check."
+                            },
+                            "remotes": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "remote_host": {
+                                    "type": "string"
+                                  },
+                                  "observed_at": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                  },
+                                  "parse": {
+                                    "type": "string",
+                                    "enum": [
+                                      "ok",
+                                      "none",
+                                      "too_large",
+                                      "invalid"
+                                    ],
+                                    "description": "none = the 402 carried no readable terms."
+                                  },
+                                  "stage": {
+                                    "type": "string",
+                                    "enum": [
+                                      "initialize",
+                                      "tools/list"
+                                    ]
+                                  },
+                                  "protocol": {
+                                    "type": "string",
+                                    "enum": [
+                                      "x402",
+                                      "mpp",
+                                      "l402"
+                                    ]
+                                  },
+                                  "version": {
+                                    "type": "integer"
+                                  },
+                                  "cause": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ],
+                                    "enum": [
+                                      "payment_terms",
+                                      "unknown",
+                                      null
+                                    ],
+                                    "description": "null for checks before 2026-11-13 (scanner 0.6.2), when hosting-platform blocks were not yet told apart."
+                                  },
+                                  "nonstandard": {
+                                    "type": "boolean"
+                                  },
+                                  "options": {
+                                    "type": "array",
+                                    "description": "x402 options as stated (at most 5); amount in the asset's smallest unit.",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "scheme": {
+                                          "type": "string"
+                                        },
+                                        "network": {
+                                          "type": "string"
+                                        },
+                                        "asset": {
+                                          "type": "string"
+                                        },
+                                        "amount": {
+                                          "type": "string"
+                                        },
+                                        "pay_to": {
+                                          "type": "string"
+                                        },
+                                        "max_timeout_s": {
+                                          "type": "integer"
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "challenges": {
+                                    "type": "array",
+                                    "description": "MPP challenges as stated (at most 5).",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "method": {
+                                          "type": "string"
+                                        },
+                                        "intent": {
+                                          "type": "string"
+                                        },
+                                        "amount": {
+                                          "type": "string"
+                                        },
+                                        "currency": {
+                                          "type": "string"
+                                        },
+                                        "recipient": {
+                                          "type": "string"
+                                        },
+                                        "realm": {
+                                          "type": "string"
+                                        },
+                                        "deposit_url": {
+                                          "type": "boolean"
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "invoices": {
+                                    "type": "array",
+                                    "description": "L402: Lightning network from the invoice prefix and the invoice amount; the token and invoice are not stored.",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "network": {
+                                          "type": "string",
+                                          "enum": [
+                                            "bitcoin",
+                                            "testnet",
+                                            "signet",
+                                            "regtest"
+                                          ]
+                                        },
+                                        "amount_msat": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "more": {
+                                    "type": "boolean",
+                                    "description": "More options than the 5 kept."
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "basis": {
+                          "type": "string"
+                        }
+                      }
                     },
                     "registry": {
                       "type": "object",

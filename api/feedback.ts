@@ -8,7 +8,7 @@ import { createClient } from "@supabase/supabase-js";
 //   API 함수 파일끼리는 import 하지 않는다 → 목록을 이 파일에 둔다.
 
 export const MENU_NAMES = [
-  "status", "packages", "tools", "declared-vs-observed", "content-flags", "tool-list", "registry", "history", "agent-reports",
+  "status", "payment", "packages", "tools", "declared-vs-observed", "content-flags", "tool-list", "registry", "history", "agent-reports",
   "install-check", "change-watch", "full",
   "stdio", "radar", "watch", "bulk-history",
 ] as const;

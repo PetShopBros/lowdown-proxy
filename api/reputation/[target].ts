@@ -643,6 +643,8 @@ interface Evidence {
   statusLead?: string;
   /** 연결 상태 요약 조회가 DB 오류로 실패함 → 503 */
   statusFailed?: boolean;
+  /** 결제 사실(Payment Facts) — 최신 점검의 402 결제 조건 (2026-11-13) */
+  payment?: Record<string, unknown>;
 }
 
 // ── 서버 기록 페이지 (lowdown-pages, scanner/pages.ts 가 매일 만든다) ─────────
@@ -776,6 +778,7 @@ interface ObsRow {
   desc_hash?: unknown;
   server_version?: unknown;
   tool_set_hash?: unknown;
+  payment?: unknown;
 }
 
 // ── 도구 정의 변경 이력 ───────────────────────────────────────────
@@ -1080,12 +1083,12 @@ export function missingDays(observedDays: Set<string>, startDay: string, now: nu
   return out.slice(-WINDOW_DAYS);
 }
 
-async function scannerHistory(supabase: any, targetId: string, registryRow: any | null, latestVersion: unknown, now: number): Promise<{ extra: Record<string, unknown>; since: string | null }> {
+async function scannerHistory(supabase: any, targetId: string, registryRow: any | null, latestVersion: unknown, now: number): Promise<{ extra: Record<string, unknown>; since: string | null; payment: Record<string, unknown> | null }> {
   const sinceIso = new Date(now - WINDOW_DAYS * DAY_MS).toISOString();
   const [obs, first, cohort, gaps] = await Promise.all([
     supabase
       .from("scanner_observations")
-      .select("observed_at,source,rotation_days:metadata->rotation->>days,reached_level,http_status,error_type,tool_count:metadata->>tool_count,schema_hash:metadata->>schema_hash,desc_hash:metadata->>desc_hash,server_version:metadata->>server_version,names_hash:metadata->>names_hash,remote_url:metadata->>remote_url,retry_level:metadata->retry->>reached_level,tool_set_hash:metadata->>tool_set_hash")
+      .select("observed_at,source,rotation_days:metadata->rotation->>days,reached_level,http_status,error_type,tool_count:metadata->>tool_count,schema_hash:metadata->>schema_hash,desc_hash:metadata->>desc_hash,server_version:metadata->>server_version,names_hash:metadata->>names_hash,remote_url:metadata->>remote_url,retry_level:metadata->retry->>reached_level,tool_set_hash:metadata->>tool_set_hash,payment:metadata->payment")
       .eq("target_id", targetId)
       .gte("observed_at", sinceIso)
       .order("observed_at", { ascending: true })
@@ -1126,6 +1129,7 @@ async function scannerHistory(supabase: any, targetId: string, registryRow: any 
 
   return {
     since: firstObservedAt,
+    payment: shapePayment(rows),
     extra: {
       in_sample: cohorts === null ? null : cohorts.length > 0,
       // 고정 코호트(fixed_cohort)는 매일 같은 대상을 본 표본. on_request 는 누군가 조회한 뒤부터 관찰하기 시작한 대상이라 표본이 아니다 — 추세를 표본 통계와 합쳐 읽지 말 것
@@ -1148,6 +1152,96 @@ async function scannerHistory(supabase: any, targetId: string, registryRow: any 
         : {}),
       method: METHOD,
     },
+  };
+}
+
+// ── 결제 사실 (Payment Facts, 2026-11-13) ─────────────────────────────
+// 최신 점검일의 HTTP 402 응답에 서버가 밝힌 결제 조건(scanner 0.6.0~, metadata.payment)을 그대로 싣는다.
+// 관측만: 결제하지 않고, 결제가 되는지·주소가 유효한지 확인하지 않는다. 점수·판정 없음.
+// 호스팅 차단(cause = platform_limit, 0.6.2~)은 결제가 아니라서 넣지 않는다(target_status v4 와 같은 기준).
+// 기록 쪽(scanner/payment-lib.ts)이 이미 형식을 검사했지만, 여기서도 모양·형식이 맞는 값만 다시 고른다(형식이 틀리면 말하지 않는다).
+export const PAYMENT_BASIS =
+  "HTTP 402 answers to initialize or tools/list on Lowdown's latest check, with the payment terms the server stated in that same response. " +
+  "Lowdown does not pay, does not call tools and does not check that payment works or that an address is valid. " +
+  "Payment asked only when a tool is called is not seen here. Answers where the hosting platform blocked the request (for example a disabled deployment) are not counted as payment.";
+const PAY_RE = {
+  scheme: /^[A-Za-z0-9_:.-]{1,32}$/,
+  network: /^[A-Za-z0-9_:.-]{1,64}$/,
+  token: /^[A-Za-z0-9_:.-]{1,128}$/,
+  amount: /^\d{1,40}$/,
+  word: /^[A-Za-z0-9_.-]{1,32}$/,
+  domain: /^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/,
+};
+const PAY_PARSE = new Set(["ok", "none", "too_large", "invalid"]);
+const PAY_STAGE = new Set(["initialize", "tools/list"]);
+const PAY_PROTOCOL = new Set(["x402", "mpp", "l402"]);
+const PAY_CAUSE = new Set(["payment_terms", "unknown"]);
+const PAY_LN = new Set(["bitcoin", "testnet", "signet", "regtest"]);
+const PAY_MAX = 5;
+const isPlainObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+function pickFields(src: unknown, spec: Record<string, RegExp | Set<string> | "timeout" | "true">): Record<string, unknown> | null {
+  if (!isPlainObj(src)) return null;
+  const out: Record<string, unknown> = {};
+  for (const [k, rule] of Object.entries(spec)) {
+    const v = src[k];
+    if (v === undefined || v === null) continue;
+    if (rule === "timeout") {
+      if (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 7 * 86_400) out[k] = v;
+    } else if (rule === "true") {
+      if (v === true) out[k] = true;
+    } else if (rule instanceof Set) {
+      if (typeof v === "string" && rule.has(v)) out[k] = v;
+    } else if (typeof v === "string" && rule.test(v)) out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function pickList(v: unknown, spec: Parameters<typeof pickFields>[1]): Array<Record<string, unknown>> {
+  if (!Array.isArray(v)) return [];
+  return v.slice(0, PAY_MAX).map((x) => pickFields(x, spec)).filter((x): x is Record<string, unknown> => x !== null);
+}
+
+/** metadata.payment 한 개 → 응답 모양. 결제가 아니거나(platform_limit) 모양이 틀리면 null */
+export function shapePaymentTerms(p: unknown): Record<string, unknown> | null {
+  if (!isPlainObj(p)) return null;
+  if (p.cause === "platform_limit") return null;
+  if (typeof p.parse !== "string" || !PAY_PARSE.has(p.parse)) return null;
+  const out: Record<string, unknown> = { parse: p.parse };
+  if (typeof p.stage === "string" && PAY_STAGE.has(p.stage)) out.stage = p.stage;
+  if (typeof p.protocol === "string" && PAY_PROTOCOL.has(p.protocol)) out.protocol = p.protocol;
+  if (typeof p.version === "number" && Number.isInteger(p.version) && p.version >= 0 && p.version <= 999) out.version = p.version;
+  // 0.6.2 이전 관측에는 cause 가 없다 → null (호스팅 차단인지 구분되지 않음)
+  out.cause = typeof p.cause === "string" && PAY_CAUSE.has(p.cause) ? p.cause : null;
+  if (p.nonstandard === true) out.nonstandard = true;
+  const options = pickList(p.options, { scheme: PAY_RE.scheme, network: PAY_RE.network, asset: PAY_RE.token, amount: PAY_RE.amount, pay_to: PAY_RE.token, max_timeout_s: "timeout" });
+  if (options.length) out.options = options;
+  const challenges = pickList(p.challenges, { method: PAY_RE.word, intent: PAY_RE.word, amount: PAY_RE.amount, currency: PAY_RE.token, recipient: PAY_RE.token, realm: PAY_RE.domain, deposit_url: "true" });
+  if (challenges.length) out.challenges = challenges;
+  const invoices = pickList(p.invoices, { network: PAY_LN, amount_msat: PAY_RE.amount });
+  if (invoices.length) out.invoices = invoices;
+  if (p.more === true) out.more = true;
+  return out;
+}
+
+/** 30일 관측 행(오래된 순) → payment 블록. 관측이 없으면 null(말하지 않는다). */
+export function shapePayment(rows: ObsRow[]): Record<string, unknown> | null {
+  if (rows.length === 0) return null;
+  const lastDay = String(rows[rows.length - 1]!.observed_at).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(lastDay)) return null;
+  // 같은 원격 주소는 그날 마지막 관측만
+  const byRemote = new Map<string, Record<string, unknown>>();
+  for (const r of rows) {
+    if (!String(r.observed_at).startsWith(lastDay) || r.http_status !== 402) continue;
+    const terms = shapePaymentTerms(r.payment);
+    if (!terms) continue;
+    const host = hostOfUrl(r.remote_url);
+    byRemote.set(typeof r.remote_url === "string" ? r.remote_url : `#${byRemote.size}`, { ...(host ? { remote_host: host } : {}), observed_at: r.observed_at, ...terms });
+  }
+  const remotes = [...byRemote.values()].slice(0, PAY_MAX);
+  return {
+    observed: { latest_check: lastDay, payment_required: remotes.length > 0, remotes },
+    basis: PAYMENT_BASIS,
   };
 }
 
@@ -1213,6 +1307,7 @@ async function buildEvidence(supabase: any, target: string, lookup: ScannerLooku
       const h = await scannerHistory(supabase, targetId, registryRow, (lookup!.summary!.latest as any)?.server_version, now);
       ev.scannerExtra = h.extra;
       ev.scannerSince = h.since;
+      if (h.payment) ev.payment = h.payment;
       ev.changeFacts = changeFactsFrom(h.extra.definition_changes, now);
     } catch {
       // 날짜별 기록 실패 → 기존 scanner 요약만
@@ -1474,6 +1569,7 @@ export function shapeStatus(row: Record<string, unknown>, now: number): { block:
 function evidenceFields(ev: Evidence | null, lookup: ScannerLookup | null): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (ev?.status) out.status = ev.status;
+  if (ev?.payment) out.payment = ev.payment;
   if (ev?.registry) out.registry = ev.registry;
   if (ev?.registryCandidates) out.registry_candidates = ev.registryCandidates;
   if (ev?.packages && ev.packages.length > 0) {
@@ -1917,6 +2013,7 @@ export interface MenuItem {
 
 export const DISHES: Record<string, MenuItem> = {
   status: { question: "Does this MCP server answer right now, and does it require authentication?", contains: "status, scanner.latest (latest probe: reach level, HTTP status, latency — one location, once a day)" },
+  payment: { question: "Does it ask for payment when connecting, and on what stated terms (protocol, network, asset, amount, pay-to)?", contains: "payment.observed (HTTP 402 terms from the latest check; not a check that payment works)" },
   packages: { question: "Are the npm or PyPI packages it declares deprecated, yanked, archived, or gone (404)?", contains: "packages, packages_note" },
   tools: { question: "Did its tool definitions change, when, and with or without a server version change?", contains: "scanner.definition_changes" },
   "declared-vs-observed": { question: "Does what the MCP Registry and the server's own cards declare (version, hosts, endpoints, name) match what is observed?", contains: "scanner.declared_vs_observed" },
@@ -1930,8 +2027,8 @@ export const DISHES: Record<string, MenuItem> = {
 export const SETS: Record<string, MenuItem & { includes: string[] }> = {
   "install-check": {
     question: "Should I install or connect this MCP server? Facts to decide before installing.",
-    contains: "status, packages, declared-vs-observed, content-flags",
-    includes: ["status", "packages", "declared-vs-observed", "content-flags"],
+    contains: "status, payment, packages, declared-vs-observed, content-flags",
+    includes: ["status", "payment", "packages", "declared-vs-observed", "content-flags"],
   },
   "change-watch": {
     question: "What changed recently on this server?",
@@ -2006,6 +2103,10 @@ function addDish(out: Body, b: Body, dish: string): void {
     case "status":
       if (b.status !== undefined) out.status = b.status;
       mergeScanner(scannerPart(sc, ["latest", "last_observed_at", "observation_basis"]));
+      break;
+    case "payment":
+      if (b.payment !== undefined) out.payment = b.payment;
+      else mergeScanner(scannerPart(sc, [])); // 관찰 표본 밖이면 observed: false 를 그대로
       break;
     case "packages":
       out.packages = b.packages ?? [];

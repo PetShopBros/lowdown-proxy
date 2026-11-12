@@ -1038,3 +1038,60 @@ describe('메뉴 (?menu=)', () => {
     assert.equal(r.body.source.feedback, 'https://lowdown-proxy.vercel.app/api/feedback');
   });
 });
+
+describe('결제 사실 (payment, 2026-11-13)', () => {
+  const repPath = '../api/reputation/[target].ts';
+  const x402 = { parse: 'ok', cause: 'payment_terms', stage: 'initialize', protocol: 'x402', version: 2, source: 'header', options: [{ scheme: 'exact', network: 'eip155:8453', asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', amount: '10000', pay_to: '0xabc', max_timeout_s: 60 }], dropped: 0 };
+
+  test('조건 모양: 형식 맞는 값만, 원문 필드·dropped·source 는 싣지 않음', async () => {
+    const m = (await import(repPath)) as any;
+    const t = m.shapePaymentTerms({ ...x402, options: [{ ...x402.options[0], amount: '1e5', pay_to: 'bad addr"', extra: 'x' }], raw: '<html>' });
+    assert.deepEqual(t, { parse: 'ok', stage: 'initialize', protocol: 'x402', version: 2, cause: 'payment_terms', options: [{ scheme: 'exact', network: 'eip155:8453', asset: x402.options[0]!.asset, max_timeout_s: 60 }] });
+    assert.equal(m.shapePaymentTerms({ parse: 'none', cause: 'platform_limit', platform: 'vercel', stage: 'initialize' }), null);
+    assert.equal(m.shapePaymentTerms({ parse: 'weird' }), null);
+    assert.equal(m.shapePaymentTerms('x'), null);
+    // 0.6.2 이전 관측: cause 없음 → null
+    assert.equal(m.shapePaymentTerms({ parse: 'none', stage: 'initialize' }).cause, null);
+    const mpp = m.shapePaymentTerms({ parse: 'ok', cause: 'payment_terms', stage: 'initialize', protocol: 'mpp', nonstandard: true, challenges: [{ realm: 'tendergap.com', deposit_url: true }] });
+    assert.deepEqual(mpp.challenges, [{ realm: 'tendergap.com', deposit_url: true }]);
+    assert.equal(mpp.nonstandard, true);
+    const l402 = m.shapePaymentTerms({ parse: 'ok', cause: 'payment_terms', stage: 'initialize', protocol: 'l402', invoices: [{ network: 'bitcoin', amount_msat: '1000' }, { network: 'mars' }], more: true });
+    assert.deepEqual(l402.invoices, [{ network: 'bitcoin', amount_msat: '1000' }]);
+    assert.equal(l402.more, true);
+  });
+
+  test('최신 점검일만, 원격 주소별 마지막 관측, 호스팅 차단은 빼고 payment_required 판단', async () => {
+    const m = (await import(repPath)) as any;
+    const rows = [
+      { observed_at: at(2), reached_level: 0, http_status: 402, error_type: null, remote_url: 'https://a.example/mcp', payment: x402 },
+      { observed_at: at(1), reached_level: 0, http_status: 402, error_type: null, remote_url: 'https://a.example/mcp', payment: { ...x402, options: [{ ...x402.options[0], amount: '1' }] } },
+      { observed_at: at(1, '07'), reached_level: 0, http_status: 402, error_type: null, remote_url: 'https://a.example/mcp', payment: x402 },
+      { observed_at: at(1, '08'), reached_level: 0, http_status: 402, error_type: null, remote_url: 'https://b.example/mcp', payment: { parse: 'none', cause: 'platform_limit', platform: 'vercel', stage: 'initialize' } },
+    ];
+    const p = m.shapePayment(rows);
+    assert.equal(p.observed.latest_check, at(1).slice(0, 10));
+    assert.equal(p.observed.payment_required, true);
+    assert.equal(p.observed.remotes.length, 1);
+    assert.equal(p.observed.remotes[0].remote_host, 'a.example');
+    assert.equal(p.observed.remotes[0].observed_at, at(1, '07'));
+    assert.equal(p.observed.remotes[0].options[0].amount, '10000');
+    assert.match(p.basis, /does not pay/);
+    const blocked = m.shapePayment([rows[3]]);
+    assert.equal(blocked.observed.payment_required, false);
+    assert.deepEqual(blocked.observed.remotes, []);
+    assert.equal(m.shapePayment([]), null);
+  });
+
+  test('조회 응답·메뉴: 관찰 대상이면 payment 블록, install-check 에 포함', async () => {
+    const full = await call('mcp:io.github.acme/solo');
+    assert.equal(full.body.payment.observed.payment_required, false);
+    assert.equal(full.body.payment.observed.latest_check, at(1).slice(0, 10));
+    assert.match(full.body.payment.basis, /does not check that payment works/);
+    const r = await call('mcp:io.github.acme/solo', { menu: 'payment' });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.payment, full.body.payment);
+    assert.equal(r.body.scanner, undefined);
+    const ic = await call('mcp:io.github.acme/solo', { menu: 'install-check' });
+    assert.deepEqual(ic.body.payment, full.body.payment);
+  });
+});

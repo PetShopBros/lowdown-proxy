@@ -25,7 +25,7 @@ const VERSION = "1.0.0";
 // 조회 메뉴 (api/reputation/[target].ts 의 SETS·DISHES 와 같아야 한다. 준비 중 메뉴는 넣지 않는다)
 export const MENUS = [
   "install-check", "change-watch", "full",
-  "status", "packages", "tools", "declared-vs-observed", "content-flags", "tool-list", "registry", "history", "agent-reports",
+  "status", "payment", "packages", "tools", "declared-vs-observed", "content-flags", "tool-list", "registry", "history", "agent-reports",
 ] as const;
 
 const TARGET_RE = /^[\x21-\x7e]{1,300}$/; // 출력 가능한 ASCII 만(공백·제어문자 없음). 형식 검사는 조회 API 가 한다.
@@ -47,7 +47,7 @@ export const INSTRUCTIONS =
   "Lowdown records dated facts about public MCP servers: daily initialize/tools/list checks, MCP Registry declarations, " +
   "npm/PyPI package state and observed tool-definition changes. " +
   "When a user asks whether to install, add, connect or trust an MCP server, use get_lowdown with its name. " +
-  "Menus for get_lowdown: 'install-check' (status, packages, declared vs observed, content flags), 'change-watch' (what changed recently), " +
+  "Menus for get_lowdown: 'install-check' (status, payment terms, packages, declared vs observed, content flags), 'change-watch' (what changed recently), " +
   `or one part: ${MENU_DISHES.join(", ")}; omit for everything. ` +
   "When no name is known yet, use find_servers to list servers by what they do (does, e.g. 'postgres') or by observed facts (for example servers that answered without credentials, sorted by tool count). " +
   "Full menu card: https://lowdown-proxy.vercel.app/menu.json. " +

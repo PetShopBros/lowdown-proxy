@@ -147,8 +147,8 @@ describe('402 결제 조건', () => {
     assert.equal(r?.nonstandard, true);
     assert.equal(r?.version, undefined);
     assert.equal(r?.options?.length, 1);
-    assert.equal(r?.options?.[0].scheme, 'exact');
-    assert.equal(r?.options?.[0].amount, undefined);
+    assert.equal(r?.options?.[0]?.scheme, 'exact');
+    assert.equal(r?.options?.[0]?.amount, undefined);
     // x402 언급이 없으면 읽지 않는다
     assert.equal(parse({ body: JSON.stringify({ accepts: { scheme: 'exact' } }) })?.parse, 'none');
   });
@@ -160,7 +160,7 @@ describe('402 결제 조건', () => {
     assert.equal(r?.cause, 'payment_terms');
     assert.equal(r?.version, 2);
     assert.equal(r?.nonstandard, undefined);
-    assert.equal(r?.options?.[0].amount, '10000');
+    assert.equal(r?.options?.[0]?.amount, '10000');
   });
 
   test('비표준 MPP: realm·depositUrl 만 → nonstandard, 주소는 저장 안 함 (tendergap 실측)', () => {

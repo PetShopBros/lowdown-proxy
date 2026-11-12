@@ -13,10 +13,11 @@
     {
       "menu": "install-check",
       "question": "Should I install or connect this MCP server? Facts to decide before installing.",
-      "contains": "status, packages, declared-vs-observed, content-flags",
+      "contains": "status, payment, packages, declared-vs-observed, content-flags",
       "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=install-check",
       "includes": [
         "status",
+        "payment",
         "packages",
         "declared-vs-observed",
         "content-flags"
@@ -48,6 +49,12 @@
       "question": "Does this MCP server answer right now, and does it require authentication?",
       "contains": "status, scanner.latest (latest probe: reach level, HTTP status, latency — one location, once a day)",
       "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=status"
+    },
+    {
+      "menu": "payment",
+      "question": "Does it ask for payment when connecting, and on what stated terms (protocol, network, asset, amount, pay-to)?",
+      "contains": "payment.observed (HTTP 402 terms from the latest check; not a check that payment works)",
+      "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=payment"
     },
     {
       "menu": "packages",

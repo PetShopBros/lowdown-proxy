@@ -22,9 +22,10 @@ Lowdown keeps two kinds of data apart:
 
 Ask for only the part that answers your question: `GET https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu={menu}`. Without `menu` you get the full record. No authentication. The full list with questions and examples is in [menu.json](https://lowdown-proxy.vercel.app/menu.json).
 
-- `install-check` (set): before installing or connecting a server — `status`, `packages`, `declared-vs-observed`, `content-flags`.
+- `install-check` (set): before installing or connecting a server — `status`, `payment`, `packages`, `declared-vs-observed`, `content-flags`.
 - `change-watch` (set): what changed recently — `tools`, `content-flags`, `declared-vs-observed`, Registry changes in 30 days.
 - `status`: does it answer now, does it require authentication (latest check: daily for most servers; servers checked in rotation show `observation_basis: rotating` and `check_interval_days`).
+- `payment`: does it answer `initialize` or `tools/list` with HTTP 402, and the payment terms it stated there (x402, MPP or L402: network, asset, amount, pay-to) on the latest check. Lowdown does not pay and does not check that payment works; payment asked only at tool call time is not seen; hosting-platform blocks are not counted.
 - `packages`: are the declared npm or PyPI packages deprecated, yanked, archived, or gone (404).
 - `tools`: when its tool definitions changed, and whether the server version changed with them.
 - `declared-vs-observed`: does what the Registry declares (version, hosts) match what is observed.

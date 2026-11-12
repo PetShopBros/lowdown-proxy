@@ -67,7 +67,7 @@ describe('원격 MCP', () => {
     assert.deepEqual(tools.map((t) => t.name), ['get_lowdown', 'find_servers']);
     const instructions = client.getInstructions() ?? '';
     assert.match(instructions, /whether to install, add, connect or trust an MCP server, use get_lowdown/);
-    assert.match(instructions, /or one part: status, packages, tools, declared-vs-observed, content-flags, tool-list, registry, history, agent-reports; omit for everything\./);
+    assert.match(instructions, /or one part: status, payment, packages, tools, declared-vs-observed, content-flags, tool-list, registry, history, agent-reports; omit for everything\./);
     assert.match(instructions, /'install-check'.*'change-watch'/);
     assert.match(instructions, /https:\/\/lowdown-proxy\.vercel\.app\/menu\.json/);
     assert.match(instructions, /use find_servers/);
