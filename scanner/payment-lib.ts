@@ -42,6 +42,9 @@ export interface MppChallenge {
   amount?: string;
   currency?: string;
   recipient?: string;
+  /** 비표준(2026-11-13 실측): method·intent·request 없이 realm·depositUrl 만. realm 은 도메인 형식만, 주소 자체는 저장 안 함 */
+  realm?: string;
+  deposit_url?: true;
 }
 
 export interface LightningInvoice {
@@ -84,6 +87,7 @@ const RE = {
   token: /^[A-Za-z0-9_:.-]{1,128}$/, // asset·payTo·recipient·currency: 주소·식별자 (공백·따옴표·제어문자 없음)
   amount: /^\d{1,40}$/, // 최소 단위 정수 문자열
   word: /^[A-Za-z0-9_.-]{1,32}$/, // MPP method·intent
+  domain: /^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/, // MPP 비표준 realm
 };
 
 type Counter = { dropped: number };
@@ -198,6 +202,7 @@ function fromMpp(header: string, stage: PaymentObservation['stage']): PaymentObs
   if (!chs.length) return null;
   const c: Counter = { dropped: 0 };
   const challenges: MppChallenge[] = [];
+  let nonstandard = false;
   for (const ch of chs.slice(0, PAYMENT_OPTIONS_MAX)) {
     const p = authParams(ch.replace(/^Payment\s+/i, ''));
     const x: MppChallenge = { method: pick(p.method, RE.word, c), intent: pick(p.intent, RE.word, c) };
@@ -210,9 +215,17 @@ function fromMpp(header: string, stage: PaymentObservation['stage']): PaymentObs
       } else c.dropped++;
     }
     for (const k of Object.keys(x) as (keyof MppChallenge)[]) if (x[k] === undefined) delete x[k];
+    // 표준 파라미터가 하나도 없으면 비표준 모양(realm·depositUrl)을 본다
+    if (!Object.keys(x).length && p.method === undefined && p.intent === undefined && p.request === undefined) {
+      const realm = pick(p.realm, RE.domain, c);
+      if (realm) x.realm = realm;
+      if (typeof p.depositurl === 'string') x.deposit_url = true; // authParams 는 키를 소문자로
+      if (Object.keys(x).length) nonstandard = true;
+    }
     if (Object.keys(x).length) challenges.push(x);
   }
   const out: PaymentObservation = { parse: challenges.length ? 'ok' : 'invalid', cause: 'payment_terms', stage, protocol: 'mpp', challenges };
+  if (nonstandard) out.nonstandard = true;
   if (chs.length > PAYMENT_OPTIONS_MAX) out.more = true;
   if (c.dropped) out.dropped = c.dropped;
   return out;

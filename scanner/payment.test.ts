@@ -163,6 +163,15 @@ describe('402 결제 조건', () => {
     assert.equal(r?.options?.[0].amount, '10000');
   });
 
+  test('비표준 MPP: realm·depositUrl 만 → nonstandard, 주소는 저장 안 함 (tendergap 실측)', () => {
+    const wa = 'Payment realm="edufacturing.com", depositUrl="https://tendergap.com/api/mpp/v1/deposit"';
+    const r = parse({ headers: { 'www-authenticate': wa } });
+    assert.deepEqual(r, { parse: 'ok', cause: 'payment_terms', stage: 'initialize', protocol: 'mpp', challenges: [{ realm: 'edufacturing.com', deposit_url: true }], nonstandard: true });
+    assert.ok(!JSON.stringify(r).includes('tendergap.com/api'));
+    // 아무것도 없으면 여전히 invalid
+    assert.equal(parse({ headers: { 'www-authenticate': 'Payment foo="bar"' } })?.parse, 'invalid');
+  });
+
   test('어떤 입력에도 예외를 던지지 않는다', () => {
     const weird: unknown[] = [null, 1, [], '{', '{"x402Version":1,"accepts":null}', '{"x402Version":2,"accepts":[null,1,"a",[]]}'];
     for (const body of weird) {
