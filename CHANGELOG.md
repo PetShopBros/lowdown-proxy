@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added (2026-11-13, internal)
+- Payment declaration history (`supabase/2026-11-13_payment_declarations_history.sql`): the daily refresh now compares the new result with the previous table instead of rewriting it, and appends `added`, `removed` and `changed` (protocols) events to `payment_declaration_events` (not published; never deleted). `payment_declarations` gains `first_seen_on` and `baseline` (declarations already present when history started, recorded without an `added` event). A card declaration missing because its check failed (timeout, network, HTTP error, unusable card) is kept as it was; only `not_found` or a found card without the payment mention or the attribution counts as `removed`.
+
 ### Changed (2026-11-13, package 0.1.20 / Registry entry 0.1.21)
 - Descriptions agents read now mention payment: the remote `get_lowdown` tool and its `menu` parameter list `payment` and the new `install-check` contents; the MCP Registry description and the server card read "Dated facts on MCP servers: daily checks, Registry and card declarations, packages, payment terms."
 - npm package (stdio) 0.1.20: `get_lowdown` takes the optional `menu` (same values as the remote server) and accepts `pypi:` names; its description matches the remote one. `zod` 3 → 4.6.7 (fixes GHSA-mrhx-c7xc-m3w5); `npm audit fix` for the rest. A moderate `ajv` advisory remains inside `ajv-formats` under the MCP SDK (the `$data` option it concerns is not used).
