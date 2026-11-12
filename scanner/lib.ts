@@ -16,7 +16,7 @@ import type { LookupFunction } from 'node:net';
 //   0.3.0 — 2026-10-19 메인 probe 호스트당 동시 1건 / 0.4.0 — capabilities·names_hash 기록, 도구 이름 목록 별도 저장
 //   0.5.0 — 2026-10-21 metadata.tool_set_hash 기록, 도구 정의 원문 비공개 저장(scanner_tool_defs)
 //   (0.1.0 기간에도 재시도·대체·사유 분리가 추가됐으므로 그 기간 행의 정확한 코드는 알 수 없다)
-export const SCANNER_VERSION = '0.6.0'; // 0.6.0 (2026-11-12): 402 응답의 결제 조건을 metadata.payment 로
+export const SCANNER_VERSION = '0.6.1'; // 0.6.0 (2026-11-12): 402 응답의 결제 조건을 metadata.payment 로. 0.6.1: L402 추가
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
 export const USER_AGENT = `lowdown-scanner/${SCANNER_VERSION}`;
 export const DEFAULT_REGISTRY_URL = 'https://registry.modelcontextprotocol.io';
