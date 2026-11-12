@@ -11,6 +11,8 @@
 //            본문에 같은 JSON 을 그대로 두는 구현도 있다.
 //   x402 v1: 본문 JSON {x402Version:1, accepts[{scheme, network, maxAmountRequired, asset, payTo, maxTimeoutSeconds}]}
 //   MPP:     WWW-Authenticate: Payment id="…", realm="…", method="…", intent="…", request="<base64url JSON>"
+//   L402:    WWW-Authenticate: L402 [version="0",] macaroon|token="<base64>", invoice="<BOLT11>" (bLIP-0026, 옛 이름 LSAT)
+//            인보이스에서 네트워크(접두어)와 금액(HRP)만 읽는다. 토큰·인보이스 원문·결제 해시는 남기지 않는다(2026-11-12).
 
 /** 402 본문을 이만큼까지만 읽는다(httpsPost). 넘으면 본문은 읽지 않은 것으로 친다. */
 export const PAYMENT_BODY_MAX = 16 * 1024;
@@ -38,18 +40,27 @@ export interface MppChallenge {
   recipient?: string;
 }
 
+export interface LightningInvoice {
+  /** BOLT11 접두어: bitcoin(lnbc) / testnet(lntb) / signet(lntbs) / regtest(lnbcrt) */
+  network?: 'bitcoin' | 'testnet' | 'signet' | 'regtest';
+  /** 인보이스에 적힌 금액(밀리사토시, 정수 문자열). 금액 없는 인보이스면 없음 */
+  amount_msat?: string;
+}
+
 export interface PaymentObservation {
   /** 읽은 결과. none = 402 인데 알아볼 수 있는 결제 조건이 없음 */
   parse: PaymentParse;
   /** 어느 단계의 402 였나 */
   stage: 'initialize' | 'tools/list';
-  protocol?: 'x402' | 'mpp';
-  /** x402 버전(1·2). MPP 는 없음 */
+  protocol?: 'x402' | 'mpp' | 'l402';
+  /** x402 버전(1·2), L402 는 version 파라미터(없으면 없음). MPP 는 없음 */
   version?: number;
   /** x402 를 어디서 읽었나 */
   source?: 'header' | 'body';
   options?: PaymentOption[];
   challenges?: MppChallenge[];
+  /** L402 도전의 인보이스(파생값만) */
+  invoices?: LightningInvoice[];
   /** 남긴 수보다 선택지가 많았음 */
   more?: boolean;
   /** 형식이 맞지 않아 버린 필드 수 */
@@ -171,6 +182,64 @@ function fromMpp(header: string, stage: PaymentObservation['stage']): PaymentObs
   return out;
 }
 
+/** BOLT11 HRP → 네트워크·금액. 형식이 아니면 null (2026-11-12) */
+export function bolt11Summary(invoice: string): LightningInvoice | null {
+  const inv = invoice.trim().toLowerCase().replace(/^lightning:/, '');
+  if (inv.length < 20 || inv.length > 4096 || !/^ln[a-z0-9]+$/.test(inv)) return null;
+  const sep = inv.lastIndexOf('1');
+  if (sep < 4) return null;
+  const hrp = inv.slice(2, sep);
+  const m = /^(bcrt|bc|tbs|tb)(\d*)([munp]?)$/.exec(hrp);
+  if (!m) return null;
+  const network = ({ bc: 'bitcoin', tb: 'testnet', tbs: 'signet', bcrt: 'regtest' } as const)[m[1] as 'bc' | 'tb' | 'tbs' | 'bcrt'];
+  const out: LightningInvoice = { network };
+  if (m[2]) {
+    if (m[2].length > 20 || (m[2].length > 1 && m[2].startsWith('0'))) return null;
+    const n = BigInt(m[2]);
+    // 1 BTC = 10^11 msat. m=10^-3, u=10^-6, n=10^-9, p=10^-12 BTC
+    let msat: bigint | null;
+    switch (m[3]) {
+      case 'm': msat = n * 100_000_000n; break;
+      case 'u': msat = n * 100_000n; break;
+      case 'n': msat = n * 100n; break;
+      case 'p': msat = n % 10n === 0n ? n / 10n : null; break;
+      default: msat = n * 100_000_000_000n;
+    }
+    if (msat === null || msat <= 0n) return null;
+    out.amount_msat = msat.toString();
+  } else if (m[3]) return null;
+  return out;
+}
+
+/** WWW-Authenticate 값에서 L402(옛 LSAT) 도전들을 뽑는다 */
+export function l402Challenges(header: string): string[] {
+  return header.split(/(?:^|,)\s*(?=(?:L402|LSAT)\s)/i).map((p) => p.trim()).filter((p) => /^(?:L402|LSAT)\s/i.test(p));
+}
+
+function fromL402(header: string, stage: PaymentObservation['stage']): PaymentObservation | null {
+  const chs = l402Challenges(header);
+  if (!chs.length) return null;
+  const c: Counter = { dropped: 0 };
+  const invoices: LightningInvoice[] = [];
+  let version: number | undefined;
+  for (const ch of chs.slice(0, PAYMENT_OPTIONS_MAX)) {
+    const p = authParams(ch.replace(/^(?:L402|LSAT)\s+/i, ''));
+    if (version === undefined && p.version !== undefined) {
+      if (/^\d{1,3}$/.test(p.version)) version = Number(p.version);
+      else c.dropped++;
+    }
+    if (p.invoice === undefined) continue;
+    const s = bolt11Summary(p.invoice);
+    if (s) invoices.push(s);
+    else c.dropped++;
+  }
+  const out: PaymentObservation = { parse: invoices.length ? 'ok' : 'invalid', stage, protocol: 'l402', invoices };
+  if (version !== undefined) out.version = version;
+  if (chs.length > PAYMENT_OPTIONS_MAX) out.more = true;
+  if (c.dropped) out.dropped = c.dropped;
+  return out;
+}
+
 function header(h: Record<string, string | string[] | undefined>, name: string): string | undefined {
   const v = h[name];
   return Array.isArray(v) ? v.join(', ') : v;
@@ -178,7 +247,7 @@ function header(h: Record<string, string | string[] | undefined>, name: string):
 
 /**
  * 402 응답 → 결제 조건 관측. 402 가 아니면 null. 어떤 입력에도 예외를 던지지 않는다.
- * 순서: x402 헤더(PAYMENT-REQUIRED) → 본문 JSON(x402 v1·v2) → MPP(WWW-Authenticate: Payment). 처음 읽힌 것 하나만 남긴다.
+ * 순서: x402 헤더(PAYMENT-REQUIRED) → 본문 JSON(x402 v1·v2) → MPP(WWW-Authenticate: Payment) → L402. 처음 읽힌 것 하나만 남긴다.
  */
 export function parsePaymentRequired(res: {
   status: number;
@@ -214,7 +283,7 @@ export function parsePaymentRequired(res: {
     }
     const wa = header(res.headers, 'www-authenticate');
     if (wa !== undefined && wa.length <= PAYMENT_HEADER_MAX * 2) {
-      const r = fromMpp(wa, stage);
+      const r = fromMpp(wa, stage) ?? fromL402(wa, stage);
       if (r) return r;
     }
     return { parse: tooLarge ? 'too_large' : 'none', stage };

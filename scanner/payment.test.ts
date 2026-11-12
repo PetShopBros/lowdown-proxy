@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { PAYMENT_BODY_MAX, PAYMENT_HEADER_MAX, PAYMENT_OPTIONS_MAX, mppChallenges, parsePaymentRequired } from './payment-lib.ts';
+import { PAYMENT_BODY_MAX, PAYMENT_HEADER_MAX, PAYMENT_OPTIONS_MAX, bolt11Summary, mppChallenges, parsePaymentRequired } from './payment-lib.ts';
 
 // 402 결제 조건 읽기 (2026-11-12): 관측만, 원문 저장 없음, 형식이 맞는 필드만, 예외 없음
 const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64');
@@ -89,6 +89,41 @@ describe('402 결제 조건', () => {
 
   test('Bearer 만 있는 402 는 none', () => {
     assert.deepEqual(parse({ headers: { 'www-authenticate': 'Bearer realm="x"' } }), { parse: 'none', stage: 'initialize' });
+  });
+
+  test('L402: 인보이스에서 네트워크·금액만, 토큰·인보이스 원문은 남기지 않음 (bLIP-0026)', () => {
+    // bLIP-0026 예시 인보이스 (lnbc1500n = 1500 nano-BTC = 150,000 msat)
+    const inv = 'lnbc1500n1pw5kjhmpp5fu6xhthlt2vucmzkx6c7wtlh2r625r30cyjsfqhu8rsx4xpz5lwqdpa2fjkzep6yptksct5yp5hxgrrv96hx6twvusycn3qv9jx7ur5d9hkugr5dusx6cqzpgxqr23s79ruapxc4j5uskt4htly2salw4d';
+    const h = `L402 version="0", macaroon="AGIAJEemVQUTEyNCR0exk7ek90Cg==", invoice="${inv}"`;
+    const r = parse({ headers: { 'www-authenticate': h } })!;
+    assert.deepEqual(r, { parse: 'ok', stage: 'initialize', protocol: 'l402', version: 0, invoices: [{ network: 'bitcoin', amount_msat: '150000' }] });
+    assert.ok(!JSON.stringify(r).includes('AGIA') && !JSON.stringify(r).includes('pw5kjhm'));
+  });
+
+  test('L402: token 이름·옛 LSAT·Bearer 와 섞임·금액 없는 인보이스', () => {
+    const r = parse({ headers: { 'www-authenticate': 'Bearer realm="x", LSAT macaroon="abc", invoice="lntb20m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqq"' } })!;
+    assert.deepEqual([r.protocol, r.invoices], ['l402', [{ network: 'testnet', amount_msat: '2000000000' }]]);
+    const t = parse({ headers: { 'www-authenticate': 'L402 token="abc", invoice="lnbcrt1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqq"' } })!;
+    assert.deepEqual(t.invoices, [{ network: 'regtest' }]);
+  });
+
+  test('L402: 인보이스가 이상하면 invalid + dropped, MPP 가 있으면 MPP 우선', () => {
+    const r = parse({ headers: { 'www-authenticate': 'L402 macaroon="abc", invoice="not-an-invoice"' } })!;
+    assert.deepEqual([r.parse, r.protocol, r.dropped], ['invalid', 'l402', 1]);
+    const m = parse({ headers: { 'www-authenticate': 'Payment id="a", method="tempo", intent="charge", L402 macaroon="x", invoice="lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqq"' } })!;
+    assert.equal(m.protocol, 'mpp');
+  });
+
+  test('BOLT11 금액 단위', () => {
+    const tail = '1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqq';
+    assert.deepEqual(bolt11Summary(`lnbc2500u${tail}`), { network: 'bitcoin', amount_msat: '250000000' });
+    assert.deepEqual(bolt11Summary(`lnbc10p${tail}`), { network: 'bitcoin', amount_msat: '1' });
+    assert.equal(bolt11Summary(`lnbc11p${tail}`), null); // p 는 10의 배수만
+    assert.deepEqual(bolt11Summary(`lntbs5m${tail}`), { network: 'signet', amount_msat: '500000000' });
+    assert.deepEqual(bolt11Summary(`lnbc2${tail}`), { network: 'bitcoin', amount_msat: '200000000000' });
+    assert.deepEqual(bolt11Summary(`LIGHTNING:LNBC1500N${tail.toUpperCase()}`), { network: 'bitcoin', amount_msat: '150000' });
+    assert.equal(bolt11Summary('lnxx1500n1abcdefghijklmnopqrst'), null);
+    assert.equal(bolt11Summary('lnbc01500n1abcdefghijklmnopqrst'), null);
   });
 
   test('어떤 입력에도 예외를 던지지 않는다', () => {
