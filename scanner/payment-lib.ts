@@ -17,6 +17,9 @@
 //            → cause: platform_limit. 운영자가 호스팅 요금·한도 문제로 막힌 상태이지 에이전트에게 결제를 받는 서버가 아니다.
 //   L402:    WWW-Authenticate: L402 [version="0",] macaroon|token="<base64>", invoice="<BOLT11>" (bLIP-0026, 옛 이름 LSAT)
 //            인보이스에서 네트워크(접두어)와 금액(HRP)만 읽는다. 토큰·인보이스 원문·결제 해시는 남기지 않는다(2026-11-12).
+//   호스팅 차단 Supabase(2026-11-13 실측): 헤더 sb-project-ref + 본문 message "Service for this project is restricted due to the following violations: …"
+//   자체 형식(2026-11-13 실측, tubetranscript): 본문 JSON payment_protocols_supported[] · invoice{amount, currency, payment_url}
+//            → protocol: other, nonstandard: true. 방식 이름·금액·통화만 남기고 설명문·결제 주소는 남기지 않는다(주소는 있었다는 표시만).
 
 /** 402 본문을 이만큼까지만 읽는다(httpsPost). 넘으면 본문은 읽지 않은 것으로 친다. */
 export const PAYMENT_BODY_MAX = 16 * 1024;
@@ -54,19 +57,29 @@ export interface LightningInvoice {
   amount_msat?: string;
 }
 
+export interface OtherOffer {
+  /** 서버가 밝힌 결제 방식 이름(예: stripe_checkout), 최대 5개 */
+  protocols?: string[];
+  /** 서버가 밝힌 금액(소수 허용, 문자열) */
+  amount?: string;
+  currency?: string;
+  /** 결제 페이지 주소를 밝힘(주소 자체는 저장 안 함) */
+  payment_url?: true;
+}
+
 export interface PaymentObservation {
   /** 읽은 결과. none = 402 인데 알아볼 수 있는 결제 조건이 없음 */
   parse: PaymentParse;
   /** 402 의 성격: payment_terms(결제 조건을 밝힘) / platform_limit(호스팅 차단·한도, 결제 아님) / unknown (2026-11-13) */
   cause: 'payment_terms' | 'platform_limit' | 'unknown';
   /** cause = platform_limit 일 때 호스팅 플랫폼과 그 플랫폼이 밝힌 사유 */
-  platform?: 'vercel' | 'alpic';
+  platform?: 'vercel' | 'alpic' | 'supabase';
   platform_reason?: string;
   /** x402 를 밝혔지만 표준 모양(x402Version + accepts 배열)이 아님 */
   nonstandard?: boolean;
   /** 어느 단계의 402 였나 */
   stage: 'initialize' | 'tools/list';
-  protocol?: 'x402' | 'mpp' | 'l402';
+  protocol?: 'x402' | 'mpp' | 'l402' | 'other';
   /** x402 버전(1·2), L402 는 version 파라미터(없으면 없음). MPP 는 없음 */
   version?: number;
   /** x402 를 어디서 읽었나 */
@@ -75,6 +88,8 @@ export interface PaymentObservation {
   challenges?: MppChallenge[];
   /** L402 도전의 인보이스(파생값만) */
   invoices?: LightningInvoice[];
+  /** protocol = other: 자체 형식 결제 안내(파생값만) */
+  offers?: OtherOffer[];
   /** 남긴 수보다 선택지가 많았음 */
   more?: boolean;
   /** 형식이 맞지 않아 버린 필드 수 */
@@ -88,6 +103,8 @@ const RE = {
   amount: /^\d{1,40}$/, // 최소 단위 정수 문자열
   word: /^[A-Za-z0-9_.-]{1,32}$/, // MPP method·intent
   domain: /^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/, // MPP 비표준 realm
+  decimal: /^\d{1,20}(?:\.\d{1,8})?$/, // 자체 형식 금액(표시 단위, 소수 허용)
+  currency: /^[A-Za-z]{3,8}$/, // 자체 형식 통화 코드
 };
 
 type Counter = { dropped: number };
@@ -157,15 +174,59 @@ function fromBodyJson(j: unknown, stage: PaymentObservation['stage'], mentionsX4
   return null;
 }
 
+function pickDecimal(v: unknown, c: Counter): string | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v === 'number' && Number.isFinite(v) && v >= 0) v = String(v);
+  if (typeof v === 'string' && RE.decimal.test(v)) return v;
+  c.dropped++;
+  return undefined;
+}
+
+/** 자체 형식 결제 안내(payment_protocols_supported · invoice) → 관측. 모양이 아니면 null (2026-11-13) */
+function fromCustom(j: unknown, stage: PaymentObservation['stage']): PaymentObservation | null {
+  if (!isObj(j)) return null;
+  const pp = j.payment_protocols_supported;
+  const inv = j.invoice;
+  if (!Array.isArray(pp) && !isObj(inv)) return null;
+  const c: Counter = { dropped: 0 };
+  const o: OtherOffer = {};
+  if (Array.isArray(pp)) {
+    const ps: string[] = [];
+    for (const x of pp.slice(0, PAYMENT_OPTIONS_MAX)) {
+      const s = pick(x, RE.word, c);
+      if (s) ps.push(s);
+    }
+    if (ps.length) o.protocols = ps;
+  }
+  if (isObj(inv)) {
+    const a = pickDecimal(inv.amount, c);
+    if (a) o.amount = a;
+    const cur = pick(inv.currency, RE.currency, c);
+    if (cur) o.currency = cur.toUpperCase();
+    if (typeof inv.payment_url === 'string' && /^https:\/\/\S{1,2000}$/.test(inv.payment_url)) o.payment_url = true;
+    else if (inv.payment_url !== undefined) c.dropped++;
+  }
+  const ok = Object.keys(o).length > 0;
+  const out: PaymentObservation = { parse: ok ? 'ok' : 'invalid', cause: 'payment_terms', stage, protocol: 'other', source: 'body', nonstandard: true, offers: ok ? [o] : [] };
+  if (Array.isArray(pp) && pp.length > PAYMENT_OPTIONS_MAX) out.more = true;
+  if (c.dropped) out.dropped = c.dropped;
+  return out;
+}
+
 const PLATFORM_REASON = /^[A-Za-z0-9_.:-]{1,64}$/;
 
 /** 호스팅 플랫폼이 막은 402 인가 (결제 아님) */
-function platformLimit(headers: Record<string, string | string[] | undefined>, j: unknown): { platform: 'vercel' | 'alpic'; platform_reason?: string } | null {
+function platformLimit(headers: Record<string, string | string[] | undefined>, j: unknown): { platform: NonNullable<PaymentObservation['platform']>; platform_reason?: string } | null {
   const ve = header(headers, 'x-vercel-error');
   if (ve !== undefined) return PLATFORM_REASON.test(ve) ? { platform: 'vercel', platform_reason: ve } : { platform: 'vercel' };
   if (isObj(j) && isObj(j.error) && isObj(j.error.data) && j.error.data['alpic/reason'] !== undefined) {
     const r = j.error.data['alpic/reason'];
     return typeof r === 'string' && PLATFORM_REASON.test(r) ? { platform: 'alpic', platform_reason: r } : { platform: 'alpic' };
+  }
+  // Supabase: 프로젝트 사용량 초과 등으로 막힘 (2026-11-13)
+  if (header(headers, 'sb-project-ref') !== undefined && isObj(j) && typeof j.message === 'string' && /restricted due to the following violations/i.test(j.message)) {
+    const m = /violations:\s*([A-Za-z0-9_-]{1,64})/.exec(j.message);
+    return m ? { platform: 'supabase', platform_reason: m[1]! } : { platform: 'supabase' };
   }
   return null;
 }
@@ -296,7 +357,7 @@ function header(h: Record<string, string | string[] | undefined>, name: string):
 
 /**
  * 402 응답 → 결제 조건 관측. 402 가 아니면 null. 어떤 입력에도 예외를 던지지 않는다.
- * 순서: x402 헤더(PAYMENT-REQUIRED) → 본문 JSON(x402 v1·v2) → MPP(WWW-Authenticate: Payment) → L402. 처음 읽힌 것 하나만 남긴다.
+ * 순서: x402 헤더(PAYMENT-REQUIRED) → 본문 JSON(x402 v1·v2) → MPP(WWW-Authenticate: Payment) → L402 → 자체 형식 → 호스팅 차단. 처음 읽힌 것 하나만 남긴다.
  */
 export function parsePaymentRequired(res: {
   status: number;
@@ -335,6 +396,8 @@ export function parsePaymentRequired(res: {
       const r = fromMpp(wa, stage) ?? fromL402(wa, stage);
       if (r) return r;
     }
+    const cu = fromCustom(j, stage);
+    if (cu) return cu;
     const pl = platformLimit(res.headers, j);
     if (pl) return { parse: 'none', cause: 'platform_limit', stage, ...pl };
     return { parse: tooLarge ? 'too_large' : 'none', cause: 'unknown', stage };

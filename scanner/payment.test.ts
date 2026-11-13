@@ -179,3 +179,29 @@ describe('402 결제 조건', () => {
     }
   });
 });
+
+describe('0.6.3 자체 형식·Supabase (2026-11-13 실측)', () => {
+  test('자체 형식: payment_protocols_supported·invoice → protocol other, 설명문·주소는 남기지 않음', () => {
+    const body = JSON.stringify({ error: 'Payment Required', code: 'M2M_INSUFFICIENT_FUNDS', reason: 'MISSING_API_KEY', payment_protocols_supported: ['stripe_checkout'], invoice: { amount: 4.99, currency: 'usd', description: 'Pro - 100 requests', payment_url: 'https://example.com/pricing' } });
+    assert.deepEqual(parse({ headers: { 'www-authenticate': 'Bearer' }, body }), {
+      parse: 'ok', cause: 'payment_terms', stage: 'initialize', protocol: 'other', source: 'body', nonstandard: true,
+      offers: [{ protocols: ['stripe_checkout'], amount: '4.99', currency: 'USD', payment_url: true }],
+    });
+  });
+
+  test('자체 형식: 형식이 틀린 값은 버리고 센다', () => {
+    const r = parse({ body: JSON.stringify({ invoice: { amount: '-1', currency: 'U$D', payment_url: 'javascript:alert(1)' }, payment_protocols_supported: ['bad value', 'card'] }) })!;
+    assert.deepEqual([r.parse, r.protocol, r.offers, r.dropped], ['ok', 'other', [{ protocols: ['card'] }], 4]);
+  });
+
+  test('x402 가 자체 형식보다 먼저', () => {
+    const body = JSON.stringify({ x402Version: 1, accepts: [{ maxAmountRequired: '5', payTo: '0xa' }], invoice: { amount: 1 } });
+    assert.equal(parse({ body })!.protocol, 'x402');
+  });
+
+  test('호스팅 차단: Supabase sb-project-ref + restricted → platform_limit', () => {
+    const body = JSON.stringify({ message: 'Service for this project is restricted due to the following violations: exceed_egress_quota. The project owner must upgrade their plan or remove spend caps to restore service.' });
+    assert.deepEqual(parse({ headers: { 'sb-project-ref': 'abcdefghijklmnopqrst' }, body }), { parse: 'none', cause: 'platform_limit', stage: 'initialize', platform: 'supabase', platform_reason: 'exceed_egress_quota' });
+    assert.deepEqual(parse({ body }), { parse: 'none', cause: 'unknown', stage: 'initialize' });
+  });
+});

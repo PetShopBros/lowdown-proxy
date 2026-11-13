@@ -1174,7 +1174,7 @@ const PAY_RE = {
 };
 const PAY_PARSE = new Set(["ok", "none", "too_large", "invalid"]);
 const PAY_STAGE = new Set(["initialize", "tools/list"]);
-const PAY_PROTOCOL = new Set(["x402", "mpp", "l402"]);
+const PAY_PROTOCOL = new Set(["x402", "mpp", "l402", "other"]);
 const PAY_CAUSE = new Set(["payment_terms", "unknown"]);
 const PAY_LN = new Set(["bitcoin", "testnet", "signet", "regtest"]);
 const PAY_MAX = 5;
@@ -1203,6 +1203,28 @@ function pickList(v: unknown, spec: Parameters<typeof pickFields>[1]): Array<Rec
 }
 
 /** metadata.payment 한 개 → 응답 모양. 결제가 아니거나(platform_limit) 모양이 틀리면 null */
+// 자체 형식 결제 안내(protocol = other, scanner 0.6.3~): 방식 이름·금액·통화, 결제 페이지 주소는 있었다는 표시만
+const PAY_OFFER_WORD = /^[A-Za-z0-9_.-]{1,32}$/;
+const PAY_OFFER_AMOUNT = /^\d{1,20}(?:\.\d{1,8})?$/;
+const PAY_OFFER_CURRENCY = /^[A-Z]{3,8}$/;
+export function shapeOffers(v: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(v)) return [];
+  const out: Array<Record<string, unknown>> = [];
+  for (const o of v.slice(0, 5)) {
+    if (!isPlainObj(o)) continue;
+    const x: Record<string, unknown> = {};
+    if (Array.isArray(o.protocols)) {
+      const ps = o.protocols.filter((s): s is string => typeof s === "string" && PAY_OFFER_WORD.test(s)).slice(0, 5);
+      if (ps.length) x.protocols = ps;
+    }
+    if (typeof o.amount === "string" && PAY_OFFER_AMOUNT.test(o.amount)) x.amount = o.amount;
+    if (typeof o.currency === "string" && PAY_OFFER_CURRENCY.test(o.currency)) x.currency = o.currency;
+    if (o.payment_url === true) x.payment_url = true;
+    if (Object.keys(x).length) out.push(x);
+  }
+  return out;
+}
+
 export function shapePaymentTerms(p: unknown): Record<string, unknown> | null {
   if (!isPlainObj(p)) return null;
   if (p.cause === "platform_limit") return null;
@@ -1220,6 +1242,8 @@ export function shapePaymentTerms(p: unknown): Record<string, unknown> | null {
   if (challenges.length) out.challenges = challenges;
   const invoices = pickList(p.invoices, { network: PAY_LN, amount_msat: PAY_RE.amount });
   if (invoices.length) out.invoices = invoices;
+  const offers = shapeOffers(p.offers);
+  if (offers.length) out.offers = offers;
   if (p.more === true) out.more = true;
   return out;
 }
