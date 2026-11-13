@@ -97,6 +97,15 @@ ${o.body}
 }
 
 /** GET /api/reputation 응답(JSON) → 서버 기록 페이지. 응답이 페이지를 만들 만하지 않으면 null(404). */
+// 인용 문구(2026-11-14): 조회 응답의 source.cite 가 이 서버 페이지의 ?ref=cite 주소를 담고 있을 때만 글자로 보여 준다.
+//   링크(<a>)로 걸지 않는다 — 크롤러가 따라가 인용 링크 접근이 부풀지 않게. 옛 형식(카드가 다시 만들어지기 전)이면 줄을 넣지 않는다.
+export function citeLine(name: string, j: Record<string, any>): string {
+  const cite = j.source && typeof j.source === "object" ? j.source.cite : null;
+  const prefix = `Lowdown, ${SITE}${pagePath(name)}?ref=cite, retrieved `;
+  if (typeof cite !== "string" || !cite.startsWith(prefix) || cite.length > 400) return "";
+  return `<p class="muted">Cite this record: <code>${esc(cite)}</code></p>`;
+}
+
 export function renderServerPage(name: string, j: Record<string, any>): { html: string; noindex: boolean } | null {
   const st = j.status && typeof j.status === "object" ? j.status : null;
   const reg = j.registry && typeof j.registry === "object" ? j.registry : null;
@@ -204,7 +213,9 @@ export function renderServerPage(name: string, j: Record<string, any>): { html: 
     `<footer class="muted"><p>This page is Lowdown's record of observations, not the official page of this server. ` +
       `Lowdown checks a sample of MCP Registry servers once a day from one network location (POST initialize, then tools/list; no tool calls, no credentials). ` +
       `Each line is a recorded fact with a date, not a score or a judgment. A day without a check is not counted as a failure.</p>` +
-      `<p>Data: <a href="${esc(lookup)}">JSON for this server</a> · <a href="https://github.com/PetShopBros/lowdown-data">daily dataset (CC BY 4.0)</a> · <a href="${SITE}/llms.txt">llms.txt</a></p></footer>`,
+      `<p>Data: <a href="${esc(lookup)}">JSON for this server</a> · <a href="https://github.com/PetShopBros/lowdown-data">daily dataset (CC BY 4.0)</a> · <a href="${SITE}/llms.txt">llms.txt</a></p>` +
+      citeLine(name, j) +
+      `</footer>`,
   );
 
   const html = shell({

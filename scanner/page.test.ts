@@ -181,3 +181,17 @@ describe('페이지 핸들러', () => {
     assert.equal(called, false);
   });
 });
+
+describe('인용 문구 (2026-11-14)', () => {
+  test('새 형식 cite 는 글자로만 보이고 ?ref=cite 링크는 걸지 않는다, 옛 형식·다른 서버 주소는 줄을 넣지 않는다', async () => {
+    const { renderServerPage } = await load();
+    const cite = 'Lowdown, https://lowdown-proxy.vercel.app/servers/ai.trendsmcp/google-trends?ref=cite, retrieved 2026-11-14 (dataset: https://github.com/PetShopBros/lowdown-data, CC BY 4.0)';
+    const p = renderServerPage('ai.trendsmcp/google-trends', api({ source: { cite } }))!;
+    assert.match(p.html, /Cite this record: <code>Lowdown, https:\/\/lowdown-proxy\.vercel\.app\/servers\/ai\.trendsmcp\/google-trends\?ref=cite, retrieved 2026-11-14/);
+    assert.doesNotMatch(p.html, /href="[^"]*ref=cite/);
+    const old = renderServerPage('ai.trendsmcp/google-trends', api({ source: { cite: 'Lowdown (https://github.com/PetShopBros/lowdown-data), retrieved 2026-11-14, CC BY 4.0' } }))!;
+    assert.doesNotMatch(old.html, /Cite this record/);
+    const other = renderServerPage('ai.trendsmcp/google-trends', api({ source: { cite: cite.replace('google-trends', 'other') } }))!;
+    assert.doesNotMatch(other.html, /Cite this record/);
+  });
+});

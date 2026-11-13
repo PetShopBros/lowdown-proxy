@@ -281,6 +281,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
  */
 export function lookupSource(ev: Evidence | null, now: number): Record<string, unknown> {
   const day = new Date(now).toISOString().slice(0, 10);
+  // 인용 링크(2026-11-14): 확인된 Registry 이름(ns/name)이면 그 서버 페이지 + ?ref=cite. 이 주소로 들어온 요청은 접근 집계에서
+  //   citation(인용 링크 접근)으로 따로 센다 — AI 가 답변에 인용했다는 증거는 아님. 크롤러·점검기 요청은 citation 에서 뺀다(SQL 쪽).
+  const citeUrl = ev?.name && SAFE_NAME.test(ev.name) && /^[^/]+\/[^/]+$/.test(ev.name) ? `https://lowdown-proxy.vercel.app/servers/${ev.name}?ref=cite` : null;
   return {
     name: "Lowdown",
     ...(ev?.name && SAFE_NAME.test(ev.name) ? { lookup: `https://lowdown-proxy.vercel.app/api/reputation/mcp:${ev.name}` } : {}),
@@ -291,7 +294,10 @@ export function lookupSource(ev: Evidence | null, now: number): Record<string, u
     license_applies_to: "registry and scanner blocks (MCP Registry records and Lowdown Scanner observations)",
     retrieved_at: new Date(now).toISOString(),
     freshness: "Lowdown observes servers daily, so this record changes from day to day. A copy older than 1 day may be outdated: query the lookup URL for the current record before relying on it.",
-    cite: `Lowdown (https://github.com/PetShopBros/lowdown-data), retrieved ${day}, CC BY 4.0`,
+    ...(citeUrl ? { cite_url: citeUrl } : {}),
+    cite: citeUrl
+      ? `Lowdown, ${citeUrl}, retrieved ${day} (dataset: https://github.com/PetShopBros/lowdown-data, CC BY 4.0)`
+      : `Lowdown (https://github.com/PetShopBros/lowdown-data), retrieved ${day}, CC BY 4.0`,
     menu_card: MENU_CARD_URL,
     feedback: FEEDBACK_URL,
   };

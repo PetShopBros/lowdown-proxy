@@ -308,7 +308,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         retrieved_at: new Date(now).toISOString(),
         license: "CC BY 4.0",
         license_url: "https://creativecommons.org/licenses/by/4.0/",
-        cite: `Lowdown (https://github.com/PetShopBros/lowdown-data), retrieved ${utcDay(now)}, CC BY 4.0`,
+        cite: `Lowdown, https://lowdown-proxy.vercel.app/servers?ref=cite, retrieved ${utcDay(now)} (dataset: https://github.com/PetShopBros/lowdown-data, CC BY 4.0)`,
       },
     });
   } catch {
