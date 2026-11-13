@@ -1,8 +1,8 @@
 {
   "name": "lowdown-proxy",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "mcpName": "io.github.PetShopBros/lowdown-proxy",
-  "description": "Record and query AI agent/tool/service interactions. Shared interaction history for the multi-agent ecosystem.",
+  "description": "Check an MCP server before you install it: dated facts from daily initialize/tools/list checks of public MCP servers, MCP Registry declarations, npm/PyPI package state, tool-definition changes and payment terms (x402, MPP, L402). Remote MCP and stdio. No scores.",
   "type": "module",
   "bin": {
     "lowdown-proxy": "dist/cli.js",
@@ -26,11 +26,19 @@
   },
   "keywords": [
     "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "mcp-registry",
+    "mcp-security",
+    "supply-chain-security",
+    "tool-definition-changes",
+    "rug-pull",
+    "install-check",
+    "observability",
+    "x402",
     "ai-agent",
-    "reputation",
-    "interaction",
+    "agent-tools",
     "proxy",
-    "trust",
     "lowdown"
   ],
   "license": "MIT",

@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed (2026-11-14, package 0.1.21)
+- npm description and keywords now say what the package is for today: checking an MCP server before installing it (daily `initialize`/`tools/list` checks, MCP Registry declarations, npm/PyPI package state, tool-definition changes, payment terms). The old text described only the 0.1 interaction recorder. No code change; the MCP Registry entry still points to 0.1.20.
+
 ### Added (2026-11-13)
 - Signed, timestamped archive attestations (`scanner/attest-lib.ts`, `scanner/attest.ts`, backup workflow). Once a day the backup run writes `attest/YYYY/YYYY-MM-DD.json` to lowdown-data: the SHA-256 of the public archive's `MANIFEST.csv` (every archived file with path, rows, bytes and SHA-256) with the entries added since the previous attestation, the SHA-256 and entry count of the private archive's manifest (digests only), and the SHA-256 of the previous attestation, so the files form a chain. Each file is signed with Ed25519 (`.json.sig`, public key in `attest/PUBLIC_KEY.pem`) and its SHA-256 is sent to public OpenTimestamps calendars (`.json.ots`), which anchor it in Bitcoin; pending proofs are upgraded on later runs. The first attestation is a baseline covering everything archived before it. It shows that the files existed in that form at that time, not that the observations are correct. The signing key is the GitHub secret `LOWDOWN_ATTEST_KEY` (`node scanner/attest-keygen.ts <dir>` makes one); without it the step is skipped.
 
