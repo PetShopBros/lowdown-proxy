@@ -124,6 +124,15 @@ C:\Users\you\AppData\Local\MyApp\app.log: 1 new line(s)
 | `--watch-log` | App log file to watch; repeat for several files (see [App logs in tool results](#app-logs-in-tool-results)) | none |
 | `--log-pattern` | Regular expression for log lines to report | error, exception, fatal, uncaught, unhandled, failed |
 
+## Check at connect time
+
+From 0.1.22 the proxy looks up the server it wraps in Lowdown's records (`install-check`) while the server starts, and adds what it finds to the server's `initialize` response:
+
+- one line at the end of `result.instructions`: the dated observations Lowdown has for that server and the link to its record, for example `Lowdown install-check for mcp:io.github.user/server (dated observations, not a score): Answered initialize and tools/list on all 12 daily checks … Record: https://lowdown-proxy.vercel.app/servers/io.github.user/server?ref=cite`
+- the same facts as structured values in `result._meta["io.github.petshopbros.lowdown/install-check"]` (`resolved_target`, `summary`, `payment_required`, `packages`, `evidence_levels`, `record_url`, `retrieved_at`; `null` means not observed or not known)
+
+The server is found from the wrapped command (`npx`/`bunx`/`pnpx`/`npm exec`/`pnpm dlx` → `npm:<package>`, `uvx`/`uv tool run`/`pipx run` → `pypi:<package>`) or from `--target mcp:…` / `npm:…` / `pypi:…`. Only the package name is sent, never the rest of the command line. Nothing is added when Lowdown has no record for it, and the proxy waits at most 0.8 s: a slow or failed lookup leaves the response unchanged. Tool descriptions and tool results are not changed and nothing is blocked. `LOWDOWN_LOOKUP=0` turns the lookup off.
+
 ## Recording
 
 From 0.1.17 the proxy records through the public API (`POST /api/interactions`). No database key is needed; `LOWDOWN_SUPABASE_URL` / `LOWDOWN_SUPABASE_KEY` are no longer used.
@@ -131,6 +140,7 @@ From 0.1.17 the proxy records through the public API (`POST /api/interactions`).
 | Variable | Effect |
 |---|---|
 | `LOWDOWN_RECORD=0` | Pass-through only, nothing is recorded |
+| `LOWDOWN_LOOKUP=0` | No connect-time lookup (see [Check at connect time](#check-at-connect-time)) |
 | `LOWDOWN_API_URL` | Record to (and query) another Lowdown deployment |
 
 What one record contains: actor, target label, tool name (or protocol method), outcome, latency, node id, and — when the server reported them — `server_version` (from `initialize`) and `schema_hash` (same hash as the Scanner's, from `tools/list`). Arguments and results are never recorded.
@@ -309,6 +319,10 @@ PyPI 패키지도 같은 `packages` 블록에 `pypi` 상태로 옵니다. PyPI �
 ### 앱 로그를 도구 결과에 붙이기
 
 도구 호출은 성공했는데 그 뒤의 앱(씬, 게임, 개발 서버)이 실패하는 경우가 있습니다. 진짜 에러는 앱의 로그 파일에만 찍혀서 에이전트는 모릅니다. `--watch-log`를 주면 `tools/call` 결과마다 직전 호출 이후 로그에 새로 찍힌 줄 중 `--log-pattern`에 맞는 줄이 결과 끝에 붙습니다. 에이전트가 따로 호출할 것은 없습니다. 로그 내용은 로컬에만 머물고 Lowdown에 기록되지 않습니다.
+
+### 연결 시점 확인 (0.1.22~)
+
+프록시는 감싼 서버가 시작되는 동안 Lowdown 기록(`install-check`)에서 그 서버를 찾아, 서버의 `initialize` 응답에 붙입니다. `result.instructions` 끝에 날짜가 붙은 관측 사실과 기록 주소 한 줄, `result._meta["io.github.petshopbros.lowdown/install-check"]`에 같은 사실의 구조화된 값(`null`은 관측 안 됨·모름)이 들어갑니다. 대상은 감싼 명령(`npx`·`bunx`·`pnpx`·`npm exec`·`pnpm dlx` → `npm:<패키지>`, `uvx`·`uv tool run`·`pipx run` → `pypi:<패키지>`) 또는 `--target mcp:…`/`npm:…`/`pypi:…`에서 정합니다. 패키지 이름만 보내고 나머지 명령줄은 보내지 않습니다. 기록이 없으면 아무것도 붙이지 않고, 최대 0.8초만 기다립니다(늦거나 실패하면 응답 그대로). 도구 설명·도구 결과는 바꾸지 않고 아무것도 막지 않습니다. `LOWDOWN_LOOKUP=0`이면 조회하지 않습니다.
 
 ### 기록 방식 (0.1.17~)
 

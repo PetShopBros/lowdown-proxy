@@ -1,6 +1,6 @@
 {
   "name": "lowdown-proxy",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "mcpName": "io.github.PetShopBros/lowdown-proxy",
   "description": "Check an MCP server before you install it: dated facts from daily initialize/tools/list checks of public MCP servers, MCP Registry declarations, npm/PyPI package state, tool-definition changes and payment terms (x402, MPP, L402). Remote MCP and stdio. No scores.",
   "type": "module",
@@ -20,7 +20,7 @@
     "sql:check": "node scanner/migrations.ts check",
     "scanner:test": "node --test scanner/lib.test.ts scanner/registry-diff.test.ts scanner/first-seen.test.ts scanner/archive.test.ts scanner/reputation.test.ts scanner/report.test.ts scanner/tool-defs.test.ts scanner/market.test.ts scanner/private-archive.test.ts scanner/requested.test.ts scanner/sandbox-public.test.ts scanner/npm.test.ts scanner/pypi.test.ts scanner/pages.test.ts scanner/unavailable.test.ts scanner/target-status.test.ts scanner/content-flags.test.ts scanner/page.test.ts scanner/cards.test.ts scanner/mcp-remote.test.ts scanner/find.test.ts scanner/no-bom.test.ts scanner/status.test.ts scanner/sitemap.test.ts scanner/schema.test.ts scanner/agents.test.ts scanner/server-card.test.ts scanner/declared.test.ts scanner/erc8004.test.ts scanner/card-discovery.test.ts scanner/rotating.test.ts scanner/smoke.test.ts scanner/migrations.test.ts scanner/ops.test.ts scanner/monthly.test.ts scanner/payment.test.ts scanner/attest.test.ts",
     "scanner:dry": "node scanner/scan.ts --dry-run --limit=30",
-    "test": "npm run build && node --test test/p0.test.ts",
+    "test": "npm run build && node --test test/p0.test.ts test/lookup.test.ts",
     "sandbox:test": "node --test sandbox/sandbox.test.ts sandbox/observe.test.ts",
     "sandbox:typecheck": "tsc -p sandbox"
   },

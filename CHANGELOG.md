@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added (2026-11-14, package 0.1.22)
+- Check at connect time (`src/lookup.ts`): the stdio proxy looks up the wrapped server in Lowdown (`install-check`) while the server starts and adds the result to the server's `initialize` response — one line at the end of `result.instructions` (the lookup's dated `message` and the record link, `?ref=cite`) and structured values in `result._meta["io.github.petshopbros.lowdown/install-check"]` (`resolved_target`, `summary`, `payment_required`, `packages`, `evidence_levels`, `record_url`, `lookup_url`, `retrieved_at`; `null` = not observed or not known). The target comes from the wrapped command (`npx`/`bunx`/`pnpx`/`npm exec`/`pnpm dlx` → `npm:`, `uvx`/`uv tool run`/`pipx run` → `pypi:`, version suffixes and options removed) or from `--target mcp:`/`npm:`/`pypi:`; other commands are not guessed. Only the package name is sent, with User-Agent `lowdown-proxy/<version> (connect-check)`. Nothing is added when there is no resolved Registry record. The proxy waits at most 0.8 s from start; a slow or failed lookup leaves the response unchanged, and the order of server messages is kept. Tool descriptions and results are not changed and nothing is blocked. `LOWDOWN_LOOKUP=0` turns it off. Tests: `test/lookup.test.ts` (including a real proxy run against a fake stdio server and a fake API).
+
 ### Changed (2026-11-14, package 0.1.21)
 - npm description and keywords now say what the package is for today: checking an MCP server before installing it (daily `initialize`/`tools/list` checks, MCP Registry declarations, npm/PyPI package state, tool-definition changes, payment terms). The old text described only the 0.1 interaction recorder. No code change; the MCP Registry entry still points to 0.1.20.
 

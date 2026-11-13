@@ -4,6 +4,7 @@ import { recordInteraction, type InteractionRecord } from "./record.js";
 import { getNodeId } from "./node-identity.js";
 import { annotateToolResult, type LogWatcher } from "./log-watch.js";
 import { classifyResponse, schemaHash, serverVersionOf } from "./classify.js";
+import { addBundleToInitialize, fetchBundle, lookupEnabled, type Bundle } from "./lookup.js";
 
 interface PendingCall {
   method: string;
@@ -19,6 +20,8 @@ interface ProxyOptions {
   targetLabel: string; // 이 프록시가 감싸는 MCP 서버를 식별할 라벨 (target)
   source: "organic" | "seeded" | "synthetic";
   logWatcher?: LogWatcher;
+  lookupTarget?: string | null; // 연결 시점 확인 대상(mcp:/npm:/pypi:). null 이면 조회하지 않음
+  lookup?: (target: string) => Promise<Bundle | null>; // 테스트용 주입
   record?: (r: InteractionRecord) => void | Promise<void>; // 테스트용 주입
 }
 
@@ -31,6 +34,9 @@ interface ProxyOptions {
  * - 판정 기준은 classify.ts: tools/call 의 isError 는 실패, 잘못된 요청(-32602 등)은 서버 실패와 분리,
  *   tools/call 이 아닌 요청은 protocol 로 남기고 성공률에 넣지 않는다.
  * - 각 행에 그 시점의 server_version(initialize)·schema_hash(tools/list)를 찍는다.
+ * - 연결 시점 확인(0.1.22, lookup.ts): 서버 시작과 동시에 install-check 를 조회해 initialize 응답의
+ *   instructions 끝 한 줄·_meta 에 붙인다. 최대 0.8초만 기다리고, 실패하면 원래 응답 그대로. 도구는 막지 않는다.
+ *   서버 → 클라이언트 줄 순서는 바뀌지 않는다(initialize 응답을 기다리는 동안 뒤 줄도 그 뒤에 나간다).
  */
 export function runProxy(opts: ProxyOptions): void {
   const nodeId = getNodeId();
@@ -42,6 +48,10 @@ export function runProxy(opts: ProxyOptions): void {
 
   const pending = new Map<string | number, PendingCall>();
   const state: { serverVersion?: string; schemaHash?: string } = {};
+  const lookup = opts.lookup ?? ((t: string) => fetchBundle(t));
+  const bundleP: Promise<Bundle | null> =
+    opts.lookupTarget && lookupEnabled() ? lookup(opts.lookupTarget).catch(() => null) : Promise.resolve(null);
+  let outChain: Promise<void> = Promise.resolve();
 
   // ── Client(부모 프로세스의 stdin) → Server(child.stdin) ──
   const clientReader = createInterface({ input: process.stdin });
@@ -55,25 +65,32 @@ export function runProxy(opts: ProxyOptions): void {
   const serverReader = createInterface({ input: child.stdout });
   serverReader.on("line", (line) => {
     let out = line;
-    if (opts.logWatcher) {
-      try {
-        const m = JSON.parse(line);
-        if (m?.id !== undefined && pending.get(m.id)?.method === "tools/call") {
-          const annotated = annotateToolResult(m, opts.logWatcher);
-          if (annotated) out = JSON.stringify(annotated);
-        }
-      } catch {
-        // passthrough
+    let isInitialize = false;
+    try {
+      const m = JSON.parse(line);
+      const method = m?.id !== undefined ? pending.get(m.id)?.method : undefined;
+      if (opts.logWatcher && method === "tools/call") {
+        const annotated = annotateToolResult(m, opts.logWatcher);
+        if (annotated) out = JSON.stringify(annotated);
       }
+      isInitialize = method === "initialize" && !!m.result;
+    } catch {
+      // passthrough
     }
-    process.stdout.write(out + "\n");
+    const ready = out;
+    outChain = outChain.then(async () => {
+      const text = isInitialize ? addBundleToInitialize(ready, await bundleP) : ready;
+      process.stdout.write(text + "\n");
+    }).catch(() => {
+      process.stdout.write(ready + "\n");
+    });
 
     const rec = buildRecord(pending, state, line, { ...opts, nodeId });
     if (rec) void Promise.resolve(record(rec)).catch(() => {}); // fire-and-forget
   });
 
   child.on("exit", (code) => {
-    process.exit(code ?? 0);
+    void outChain.finally(() => process.exit(code ?? 0));
   });
 
   process.on("SIGINT", () => child.kill("SIGINT"));

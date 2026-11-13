@@ -2,6 +2,7 @@
 import { runProxy } from "./proxy.js";
 import { LogWatcher } from "./log-watch.js";
 import { defaultTargetLabel } from "./classify.js";
+import { inferLookupTarget } from "./lookup.js";
 
 // 사용법:
 //   npx lowdown-proxy                      → 인자 없음: Lowdown 조회용 MCP 서버(stdio) 시작 (Registry 설치 경로)
@@ -9,6 +10,8 @@ import { defaultTargetLabel } from "./classify.js";
 //                                          → MCP 서버를 감싸는 기록 프록시
 //   --test : 이 세션의 기록을 synthetic 으로 남긴다(일부러 실패시키는 테스트가 서버 실패로 집계되지 않게).
 //   --target 이 없으면 명령줄 전체가 아니라 패키지/파일 이름 하나만 라벨로 쓴다(인자의 키·경로가 공개 기록에 남지 않게).
+//   연결 시점 확인(0.1.22): npx/uvx 등으로 실행한 패키지(또는 --target mcp:…/npm:…/pypi:…)를 Lowdown 에서 찾아
+//   initialize 응답에 한 줄을 붙인다. LOWDOWN_LOOKUP=0 이면 하지 않는다.
 function parseArgs(argv: string[]) {
   const dashIndex = argv.indexOf("--");
   if (dashIndex === -1) {
@@ -43,12 +46,14 @@ function parseArgs(argv: string[]) {
   }
   const source = (flags.includes("--test") ? "synthetic" : sourceFlag) as "organic" | "seeded" | "synthetic";
 
+  const explicitTarget = getFlag("--target", "");
   return {
     actor: getFlag("--actor", "anonymous"),
     targetLabel: getFlag("--target", defaultTargetLabel(commandParts[0], commandParts.slice(1))),
     source,
     command: commandParts[0],
     args: commandParts.slice(1),
+    lookupTarget: inferLookupTarget(commandParts[0], commandParts.slice(1), explicitTarget || undefined),
     logWatcher: watchLogs.length ? new LogWatcher(watchLogs, getFlag("--log-pattern", "")) : undefined,
   };
 }
