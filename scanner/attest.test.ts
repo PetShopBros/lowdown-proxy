@@ -5,6 +5,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 import {
   attestPath,
@@ -102,7 +103,7 @@ describe('관측 서명 — 실행 (scanner/attest.ts)', () => {
     return { data, priv };
   }
   const run = (data: string, priv: string, env: Record<string, string>) =>
-    execFileSync(process.execPath, [new URL('./attest.ts', import.meta.url).pathname, data, priv], { env: { ...process.env, ...env, GITHUB_OUTPUT: '' }, encoding: 'utf8' });
+    execFileSync(process.execPath, [fileURLToPath(new URL('./attest.ts', import.meta.url)), data, priv], { env: { ...process.env, ...env, GITHUB_OUTPUT: '' }, encoding: 'utf8' });
 
   test('키 없으면 건너뜀(실패 아님), 있으면 오늘 파일·서명·공개키·README, 다시 실행하면 그대로', () => {
     const { data, priv } = setup();
