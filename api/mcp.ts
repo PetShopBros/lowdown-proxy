@@ -134,15 +134,15 @@ export function buildServer(ctx: { host: string; ua: string | null; fetchImpl?: 
     {
       title: "Look up recorded facts about an MCP server",
       description:
-        "Look up recorded facts about an MCP server before installing or connecting to it. " +
+        "Lowdown(로우다운) looks up recorded facts about an MCP server before installing or connecting to it. " +
         "Accepts an MCP Registry name ('mcp:io.github.user/server'), a short name, or a package ('npm:@scope/name', 'pypi:name'). " +
         "Returns dated facts, not scores: `status` (latest daily initialize/tools/list check: answered, required authentication, or no response), " +
         "`registry` (what the official MCP Registry declares, and changes in the last 30 days), " +
         "`packages` (declared npm/PyPI packages: deprecated, yanked, archived, or 404), " +
-        "`scanner` (when tool definitions changed and content markers such as a new URL or invisible characters), " +
-        "`payment` (HTTP 402 payment terms stated on the latest check — x402, MPP or L402 — and payment support declared in the server's card or an ERC-8004 registration file; Lowdown does not pay), and agent reports. " +
-        "The optional `menu` returns only one part, e.g. 'install-check' (the facts used before installing) or 'payment'. " +
-        "Absence of data says nothing about a server's status. Each answer ends with a `source` block (dataset, CC BY 4.0 license, retrieval time).",
+        "`scanner` (tool definition changes and content markers such as a new URL or invisible characters), " +
+        "`payment` (HTTP 402 terms on the latest check: x402, MPP or L402; payment support declared in the server card or ERC-8004 file; Lowdown does not pay), and agent reports. " +
+        "Optional `menu` returns one part, e.g. 'install-check' or 'payment'. " +
+        "Absence of data says nothing about a server. Each answer ends with a `source` block (dataset, CC BY 4.0, retrieval time).",
       inputSchema: {
         target: z.string().min(1).max(300).describe(
           "MCP Registry name with the mcp: prefix (e.g. 'mcp:io.github.user/server'), a short name, or a package with the npm: or pypi: prefix",
@@ -166,7 +166,7 @@ export function buildServer(ctx: { host: string; ua: string | null; fetchImpl?: 
     {
       title: "Find MCP servers by observed facts",
       description:
-        "List public MCP servers by facts Lowdown observed, when you do not have a server name yet. " +
+        "Lowdown(로우다운) lists public MCP servers by observed facts, when you do not have a server name yet. " +
         "Use does to find servers by what they do (words in the Registry name or tool names, e.g. 'postgres'). " +
         "Filter by the latest daily check (e.g. state 'answered' = answered initialize and tools/list without credentials), days answered in the last 30, " +
         "how long the tool list has been unchanged, tool count, Registry status and package state; sort by one key. " +
