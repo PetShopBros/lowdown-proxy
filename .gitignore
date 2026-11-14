@@ -12,3 +12,6 @@ registry-count.*
 
 *.zip
 .github/workflows/*.json
+
+out/
+pack.sql
