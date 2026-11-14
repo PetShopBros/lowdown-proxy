@@ -383,6 +383,22 @@ export function discoverResult(id: unknown): Record<string, unknown> {
     },
   };
 }
+// 없는 도구 (2026-11-15): MCP 스펙은 없는 도구를 JSON-RPC 프로토콜 오류(-32602, "Unknown tool: …")로 알리라고 한다.
+//   SDK(1.32.2)는 McpError 를 잡아 result.isError 로 감싸 버리므로, 단일 tools/call 메시지에서 이름이 KNOWN_TOOLS 밖이면 여기서 먼저 답한다.
+//   이름을 다른 도구로 바꿔 부르지 않는다(점검기는 없는 이름에 성공으로 답하는 서버를 결함으로 본다, 예: mcp-index __mcp_index_nonexistent__).
+//   인자 오류(target 누락 등)는 SDK 대로 isError 결과 — 모델이 고쳐 다시 부를 수 있게. 배치는 SDK 가 답하던 그대로.
+export function unknownToolError(body: unknown): Record<string, unknown> | null {
+  if (!isObj(body) || body.method !== "tools/call" || !("id" in body) || body.id === undefined || body.id === null) return null;
+  const params = isObj(body.params) ? body.params : null;
+  const name = params && typeof params.name === "string" ? params.name : null;
+  if (name === null || KNOWN_TOOLS.has(name)) return null;
+  return {
+    jsonrpc: "2.0",
+    id: body.id,
+    error: { code: -32602, message: `Unknown tool: ${name.slice(0, 100)}`, data: { available_tools: [...KNOWN_TOOLS] } },
+  };
+}
+
 export function isDiscover(body: unknown): body is { id: unknown } {
   return isObj(body) && body.method === "server/discover" && "id" in body && body.id !== undefined && body.id !== null;
 }
@@ -466,6 +482,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   obs.setMessages(body);
   if (isDiscover(body)) return res.status(200).json(discoverResult(body.id));
+  const unknownTool = unknownToolError(body);
+  if (unknownTool) return res.status(200).json(unknownTool);
   const host = header(req, "host", 200) ?? "lowdown-proxy.vercel.app";
   const server = buildServer({ host, ua: header(req, "user-agent", 300) });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });

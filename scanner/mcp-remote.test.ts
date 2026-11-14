@@ -178,6 +178,32 @@ describe('원격 MCP 메시지별 기록', () => {
     assert.notEqual(n.status, 200);
   });
 
+  test('없는 도구: JSON-RPC 오류 -32602 (isError 결과가 아님), 다른 도구로 바꿔 부르지 않음, rpc_error 로 기록', async () => {
+    on(); rows.length = 0; seen.length = 0;
+    const r = await post({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: '__mcp_index_nonexistent__', arguments: {} } });
+    assert.equal(r.status, 200);
+    const j = JSON.parse(r.text);
+    assert.equal(j.id, 9);
+    assert.equal(j.result, undefined);
+    assert.equal(j.error.code, -32602);
+    assert.equal(j.error.message, 'Unknown tool: __mcp_index_nonexistent__');
+    assert.deepEqual(j.error.data.available_tools, ['get_lowdown', 'find_servers']);
+    assert.equal(seen.length, 0, '조회 API 를 부르지 않음');
+    await settle(1);
+    const c = rows.find((x) => x.rpc_method === 'tools/call');
+    assert.equal(c.tool_name, 'unknown');
+    assert.equal(c.outcome, 'rpc_error');
+    assert.equal(c.error_code, -32602);
+    // 있는 도구의 인자 오류는 그대로 isError 결과 (모델이 고쳐 다시 부를 수 있게)
+    const bad = await post({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'get_lowdown', arguments: {} } });
+    const b = JSON.parse(bad.text);
+    assert.equal(b.error, undefined);
+    assert.equal(b.result.isError, true);
+    // 알림(id 없음)은 이 경로를 타지 않는다
+    const n = await post({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'nope' } });
+    assert.ok(!n.text.includes('Unknown tool: nope'));
+  });
+
   const init = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'probe-client', version: '9.1' } } };
 
   test('initialize · 알림 · tools/list · tools/call 을 메시지별로 기록 (인자 값은 저장하지 않음)', async () => {
