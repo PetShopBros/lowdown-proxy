@@ -513,7 +513,9 @@ export function renderMonthly(d: MonthlyData): string {
   const c = d.counts;
   const radar = (c.notable.R1_first_change_after_stable ?? 0) + (c.notable.R2_changed_same_server_version ?? 0) + (c.notable.R3_tool_removed ?? 0);
   const out: string[] = [
-    `# Lowdown MCP Report — ${d.month}`,
+    `# Lowdown Ecosystem Observation Report — ${d.month}`,
+    '',
+    'What MCP Registry servers declared and what Lowdown observed about them. How Lowdown\'s own records were read and used is in the separate Data Access Report.',
     '',
     d.partial ? `> DRAFT: generated ${d.generated_at} before the month closed. Numbers will change.` : `> Generated ${d.generated_at} from the database. Period: ${d.period.start} to ${d.period.end} (UTC, end excluded).`,
     '',

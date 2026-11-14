@@ -179,7 +179,7 @@ describe('buildMonthly / renderMonthly', () => {
 
   test('달이 끝나기 전이면 초안 표시', () => {
     assert.equal(data.partial, true);
-    assert.match(md, /^# Lowdown MCP Report — 2026-11\n\n> DRAFT/);
+    assert.match(md, /^# Lowdown Ecosystem Observation Report — 2026-11\n\nWhat MCP Registry servers declared[^\n]*Data Access Report\.\n\n> DRAFT/);
     const closed = buildMonthly(built(), new Map(), COUNTS, NOV, { version: 'v1', size: 3, from: '2026-10-07' }, new Date('2026-12-01T03:00:00Z'));
     assert.equal(closed.partial, false);
   });
