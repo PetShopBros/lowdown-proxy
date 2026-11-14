@@ -21,6 +21,34 @@ const server = new McpServer({
   version: PKG_VERSION,
 });
 
+// 오류 응답(2026-11-15): 원격 MCP(api/mcp.ts toolError·upstreamError)와 같은 모양 { error, message, retryable, http_status? }.
+// 조회 API 가 표준 오류 JSON 을 주면 그대로 넘기고, 연결 실패·JSON 아닌 응답도 isError 로 알린다(예외로 끝나지 않게).
+function toolError(body: Record<string, unknown>) {
+  return { isError: true, content: [{ type: "text" as const, text: JSON.stringify(body) }] };
+}
+async function callApi(url: string, init: RequestInit, what: string) {
+  let res: Response;
+  try {
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(20_000) });
+  } catch {
+    return { ok: false as const, result: toolError({ error: "temporarily_unavailable", message: `Lowdown ${what} did not answer. Retry later.`, retryable: true }) };
+  }
+  const text = await res.text();
+  let data: any = null;
+  try { data = JSON.parse(text); } catch { /* JSON 아님 */ }
+  if (!res.ok || data === null) {
+    const base = data && typeof data === "object" && typeof data.error === "string" ? data : {
+      error: res.status === 429 ? "rate_limited" : res.status >= 500 ? "temporarily_unavailable" : "invalid_parameter",
+      message: `Lowdown ${what} answered HTTP ${res.status}.`,
+    };
+    return { ok: false as const, result: toolError({ ...base, retryable: typeof base.retryable === "boolean" ? base.retryable : res.status === 429 || res.status >= 500, http_status: res.status }) };
+  }
+  return { ok: true as const, data };
+}
+
+// annotations(2026-11-15): 원격 MCP 와 같은 기준. 쓰기는 record_interaction 하나뿐(Lowdown 기록에 한 줄 추가, 지우거나 바꾸지 않음).
+const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
+
 // ── 1. get_lowdown ──────────────────────────────────────────────
 // 메뉴 목록은 원격 MCP(api/mcp.ts MENUS)·조회 API(api/reputation/[target].ts DISHES·SETS)와 같아야 한다.
 const MENUS = [
@@ -28,8 +56,11 @@ const MENUS = [
   "status", "payment", "packages", "tools", "declared-vs-observed", "content-flags", "tool-list", "registry", "history", "agent-reports",
 ] as const;
 
-server.tool(
+server.registerTool(
   "get_lowdown",
+  {
+    title: "Look up recorded facts about an MCP server",
+    description:
   "Look up recorded facts about an MCP server before installing or connecting to it. " +
   "Accepts an MCP Registry name ('mcp:io.github.user/server'), a short name, or a package ('npm:@scope/name', 'pypi:name'). " +
   "Returns dated facts, not scores: `status` (latest daily initialize/tools/list check: answered, required authentication, required payment, or no response), " +
@@ -38,8 +69,10 @@ server.tool(
   "`packages` (declared npm/PyPI packages: deprecated, yanked, archived, or 404), " +
   "`scanner` (when tool definitions changed and content markers such as a new URL or invisible characters), and agent reports. " +
   "The optional `menu` returns only one part, e.g. 'install-check' (the facts used before installing). " +
-  "Absence of data says nothing about a server's status.",
-  {
+  "Absence of data says nothing about a server's status. " +
+  "When Lowdown has no record for the name, the answer says so in `message` (with close Registry names in `registry_candidates` when there are any); it is not an error. " +
+  "If Lowdown cannot read its records, the tool returns an error with `retryable: true`. Read-only, no authentication, no tool of the looked-up server is called.",
+    inputSchema: {
     target: z.string().min(1).max(300).describe(
       "MCP Registry name with the mcp: prefix (e.g. 'mcp:io.github.user/server'), a short name, or a package with the npm: or pypi: prefix"
     ),
@@ -47,28 +80,35 @@ server.tool(
       "Optional. Before installing, use 'install-check' (status, payment, packages, declared-vs-observed, content-flags). 'change-watch' = what changed recently, " +
       "or one part: status, payment, packages, tools, declared-vs-observed, content-flags, tool-list, registry, history, agent-reports. Omit or 'full' for everything."
     ),
+    },
+    annotations: { title: "Look up recorded facts about an MCP server", ...READ_ONLY },
   },
   async ({ target, menu }) => {
     const q = menu && menu !== "full" ? `?menu=${encodeURIComponent(menu)}` : "";
-    const res = await fetch(
+    const r = await callApi(
       `${BASE_URL}/api/reputation/${encodeURIComponent(target.trim())}${q}`,
-      { headers: { "x-lowdown-source": "organic", "x-lowdown-node-id": NODE_ID } }
+      { headers: { "x-lowdown-source": "organic", "x-lowdown-node-id": NODE_ID } },
+      "lookup",
     );
-    const data = await res.json() as any;
+    if (!r.ok) return r.result;
     return {
-      content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify(r.data, null, 2) }],
     };
   }
 );
 
 // ── 2. record_interaction ───────────────────────────────────────
-server.tool(
+server.registerTool(
   "record_interaction",
+  {
+    title: "Report how a tool or agent worked for you",
+    description:
   "Record an interaction with an agent, tool, or service after using it. " +
   "Helps build the shared reputation dataset for the community. " +
   "If the call was an intentional negative test (e.g. deliberately invalid input), set source to 'synthetic' " +
-  "so it is not counted as a failure of the target.",
-  {
+  "so it is not counted as a failure of the target. " +
+  "Writes one report to Lowdown (kept apart from Scanner observations); nothing is changed or deleted, and each call adds a new report.",
+    inputSchema: {
     actor: z.string().describe("Your agent/system identifier"),
     target: z.string().describe("Identifier of what you used"),
     target_type: z.enum(["agent", "tool", "service", "human"]),
@@ -80,9 +120,11 @@ server.tool(
     latency_ms: z.number().optional().describe("How long it took in milliseconds"),
     source: z.enum(["organic", "seeded", "synthetic"]).optional()
       .describe("organic (default) for real use; synthetic for tests, including intentional failure tests"),
+    },
+    annotations: { title: "Report how a tool or agent worked for you", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   async ({ actor, target, target_type, task_type, outcome, failure_type, latency_ms, source }) => {
-    const res = await fetch(`${BASE_URL}/api/interactions`, {
+    const r = await callApi(`${BASE_URL}/api/interactions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -91,28 +133,35 @@ server.tool(
         node_id: NODE_ID,
         recorder_version: PKG_VERSION,
       }),
-    });
-    const data = await res.json() as any;
+    }, "report");
+    if (!r.ok) return r.result;
+    if (!r.data?.ok) return toolError({ error: String(r.data?.error ?? "not_recorded"), message: "Lowdown did not record the report.", retryable: false });
     return {
-      content: [{ type: "text", text: data.ok ? "Recorded." : `Error: ${data.error}` }],
+      content: [{ type: "text", text: "Recorded." }],
     };
   }
 );
 
 // ── 3. compare_tools ────────────────────────────────────────────
-server.tool(
+server.registerTool(
   "compare_tools",
+  {
+    title: "Compare tools by reported outcomes",
+    description:
   "Compare 2 to 5 tools or agents by the interactions reported to Lowdown. " +
   "Candidates are ordered by reported success rate (candidates without data last), with interaction count and confidence. " +
   "Scanner observations are not used for the ordering. " +
-  "A suggestion is included only when the first candidate has at least 5 rated interactions.",
-  {
+  "A suggestion is included only when the first candidate has at least 5 rated interactions. " +
+  "A candidate Lowdown cannot read is listed with no data rather than failing the whole comparison. Read-only.",
+    inputSchema: {
     candidates: z.array(z.string()).min(2).max(5).describe(
       "List of tool/agent identifiers to compare"
     ),
     task_type: z.string().optional().describe(
       "Filter by task type if you want task-specific comparison"
     ),
+    },
+    annotations: { title: "Compare tools by reported outcomes", ...READ_ONLY },
   },
   async ({ candidates, task_type }) => {
     // compare_calls 로그 (fire-and-forget)
@@ -181,19 +230,25 @@ server.tool(
 );
 
 // ── 4. get_node_stats ───────────────────────────────────────────
-server.tool(
+server.registerTool(
   "get_node_stats",
+  {
+    title: "Show this proxy node's reports",
+    description:
   "Get your node's contribution stats and network position. " +
-  "Shows how much your proxy has contributed to the Lowdown network.",
-  {},
+  "Shows how much your proxy has contributed to the Lowdown network. " +
+  "The node is the local identity in ~/.lowdown/node.json; no input is needed. Read-only.",
+    annotations: { title: "Show this proxy node's reports", ...READ_ONLY },
+  },
   async () => {
-    const res = await fetch(
+    const r = await callApi(
       `${BASE_URL}/api/node/${encodeURIComponent(NODE_ID)}`,
-      { headers: { "x-lowdown-source": "organic" } }
+      { headers: { "x-lowdown-source": "organic" } },
+      "node stats",
     );
-    const data = await res.json() as any;
+    if (!r.ok) return r.result;
     return {
-      content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify(r.data, null, 2) }],
     };
   }
 );
@@ -205,4 +260,4 @@ function ratedCount(r: any): number {
 
 // ── 서버 시작 ───────────────────────────────────────────────────
 const transport = new StdioServerTransport();
-await server.connect(transport);
+await server.connect(transport);

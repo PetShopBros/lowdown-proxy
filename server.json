@@ -6,12 +6,12 @@
     "url": "https://github.com/PetShopBros/lowdown-proxy",
     "source": "github"
   },
-  "version": "0.1.22",
+  "version": "0.1.23",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "lowdown-proxy",
-      "version": "0.1.22",
+      "version": "0.1.23",
       "transport": {
         "type": "stdio"
       }

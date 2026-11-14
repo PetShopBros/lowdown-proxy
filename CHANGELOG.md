@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed (2026-11-15, package and Registry entry 0.1.23)
+- stdio MCP server (`lowdown-mcp`, `src/mcp-server.ts`): every tool now has a title and annotations. `get_lowdown`, `compare_tools` and `get_node_stats` are read-only (`readOnlyHint: true`, `idempotentHint: true`); `record_interaction` is the only tool that writes (`readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: false`: each call adds one report, nothing is changed or deleted).
+- `get_lowdown` (stdio) says what happens when there is no record (an answer, not an error; close names in `registry_candidates`) and when Lowdown cannot read its records (an error with `retryable: true`). Failed lookups, connection failures and non-JSON answers now return a tool error in the same shape as the remote server (`error`, `message`, `retryable`, `http_status`) instead of ending in an exception. Tests: `test/mcp-server.test.ts` (runs the built server over stdio against a fake API).
+- Version 0.1.23 in `package.json`, `server.json` and the remote server's `serverInfo`.
+
 ### Changed (2026-11-15, Registry entry 0.1.22)
 - One version everywhere: the remote MCP server's `serverInfo.version` (also in `server/discover` and the server card) was a separate `1.0.0`; it is now the release version, `0.1.22`, the same as `package.json` and `server.json`. `server.json` now declares entry and npm package `0.1.22` (it declared 0.1.21 with package 0.1.20, so Lowdown's own record showed a declared/observed version mismatch and `declared_is_latest: false`). `scanner/server-card.test.ts` checks that the three stay equal.
 - Remote MCP: calling a tool that does not exist now answers with a JSON-RPC error (`-32602`, `Unknown tool: <name>`, `data.available_tools`) as the MCP specification describes, instead of a `result.isError` tool result. The name is not mapped to another tool. Wrong arguments to an existing tool still return a tool result with `isError`, so a model can correct and retry.
