@@ -714,10 +714,13 @@ export async function fetchRegistryDecls(cfg: SupabaseConfig, deps: MonthlyDeps 
     );
     const page = (await res.json()) as Array<{ name: string; version: string | null; hosts: string[] | null }>;
     if (!Array.isArray(page)) throw new Error('registry_state read: unexpected response shape');
+    // 진행 판정은 "새 이름이 들어왔는가"로 한다. DB 정렬(콜레이션)과 JS 문자열 비교는 대소문자·기호 순서가 달라서
+    // last <= after 로 비교하면 실제로는 넘어간 페이지를 멈춘 것으로 잘못 판정한다(2026-11-15 시험 실행에서 발생).
+    const before = out.size;
     for (const r of page) out.set(r.name, { version: r.version ?? '', hosts: Array.isArray(r.hosts) ? r.hosts : [] });
     if (page.length < pageSize) break;
     const last = page[page.length - 1]!.name;
-    if (after !== null && last <= after) throw new Error('registry_state read: keyset did not advance');
+    if (out.size === before || last === after) throw new Error('registry_state read: keyset did not advance');
     after = last;
   }
   return out;

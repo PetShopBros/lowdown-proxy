@@ -5,6 +5,7 @@ import {
   buildMonthly,
   countRows,
   declaredVsObserved,
+  fetchRegistryDecls,
   newState,
   normVersion,
   parseMonth,
@@ -244,5 +245,33 @@ describe('DB 읽기', () => {
     assert.equal((init?.headers as Record<string, string>).Prefer, 'count=exact');
     assert.match(url, /\/rest\/v1\/registry_changes\?select=\*&kind=eq\.new$/);
     await assert.rejects(countRows(cfg, 'bad;table', {}, { fetchImpl }));
+  });
+});
+
+// registry_state 키셋 (2026-11-15): DB 정렬(콜레이션)과 JS 문자열 순서가 달라도 새 이름이 들어오면 계속 읽는다
+describe('fetchRegistryDecls', () => {
+  const cfg = { url: 'https://db.example', key: 'k' };
+  const respond = (pages: Array<Array<{ name: string }>>) => {
+    const urls: string[] = [];
+    const fetchImpl = (async (u: string) => {
+      urls.push(decodeURIComponent(u));
+      const p = (pages.shift() ?? []).map((r) => ({ ...r, version: '1.0.0', hosts: [] }));
+      return new Response(JSON.stringify(p), { status: 200 });
+    }) as typeof fetch;
+    return { urls, fetchImpl };
+  };
+
+  test('DB 순서로는 넘어갔지만 JS 비교로는 작아 보이는 마지막 이름도 진행으로 본다', async () => {
+    // 대소문자 무시 정렬: io.x/b < IO.y/a 이지만 JS 에서는 'IO.y/a' < 'io.x/b'
+    const { urls, fetchImpl } = respond([[{ name: 'io.a/a' }, { name: 'io.x/b' }], [{ name: 'IO.y/a' }, { name: 'IO.z/c' }], [{ name: 'zz/last' }]]);
+    const out = await fetchRegistryDecls(cfg, { fetchImpl, pageSize: 2 });
+    assert.equal(out.size, 5);
+    assert.match(urls[1]!, /name=gt\.io\.x\/b/);
+    assert.match(urls[2]!, /name=gt\.IO\.z\/c/);
+  });
+
+  test('같은 페이지가 다시 오면 멈춘다', async () => {
+    const { fetchImpl } = respond([[{ name: 'a/a' }, { name: 'a/b' }], [{ name: 'a/a' }, { name: 'a/b' }]]);
+    await assert.rejects(fetchRegistryDecls(cfg, { fetchImpl, pageSize: 2 }), /keyset did not advance/);
   });
 });
