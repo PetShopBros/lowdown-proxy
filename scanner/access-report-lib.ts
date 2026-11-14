@@ -173,6 +173,7 @@ const sum2 = (m: Record<string, number>) => Object.values(m).reduce((a, b) => a 
 // ── 출력 ─────────────────────────────────────────────
 const n = (v: number) => v.toLocaleString('en-US');
 const daysText = (v: number) => `${n(v)} ${v === 1 ? 'day' : 'days'}`;
+const serversText = (v: number) => `${n(v)} distinct ${v === 1 ? 'server' : 'servers'}`;
 const pct = (a: number, b: number) => (b > 0 ? `${((a / b) * 100).toFixed(1)}%` : '—');
 const kv = (m: Record<string, number>, limit = TOP) => {
   const e = Object.entries(m).slice(0, limit);
@@ -209,14 +210,14 @@ export function renderAccess(d: AccessData): string {
     c.issued
       ? `- Links issued: ${n(c.issued.total)} lookup responses carried a cite link since ${c.issued.counted_from.slice(0, 10)} (direct ${n(c.issued.direct)}, via server pages ${n(c.issued.page)}, via remote MCP ${n(c.issued.mcp)}, other ${n(c.issued.other_ref)}; of all, ${n(c.issued.crawler)} to crawlers). Responses served from cache are not recorded, so this undercounts.`
       : '- Links issued: not counted for this period (cite links started on 2026-11-13).',
-    `- Link accesses: ${n(c.link_access.total)} (${kv(c.link_access.by_evidence)}), ${n(c.link_access.distinct_targets)} distinct servers, ${daysText(c.link_access.days)}. Crawler and checker requests to these links are counted as reads, not here.`,
+    `- Link accesses: ${n(c.link_access.total)} (${kv(c.link_access.by_evidence)}), ${serversText(c.link_access.distinct_targets)}, ${daysText(c.link_access.days)}. Crawler and checker requests to these links are counted as reads, not here.`,
     `- Citations confirmed (checked by hand in a published answer): ${c.confirmed === null ? 'none recorded' : n(c.confirmed)}`,
     '',
     '_A link access means a request arrived through the link. It does not show that an AI answer cited Lowdown._',
     '',
     '## 3. AI-labeled client requests',
     '',
-    `- Server pages and lookups opened by clients that declare an AI assistant (for example ChatGPT-User, Claude-User): ${n(d.ai_labeled.total)}, ${n(d.ai_labeled.distinct_targets)} distinct servers, ${daysText(d.ai_labeled.days)}`,
+    `- Server pages and lookups opened by clients that declare an AI assistant (for example ChatGPT-User, Claude-User): ${n(d.ai_labeled.total)}, ${serversText(d.ai_labeled.distinct_targets)}, ${daysText(d.ai_labeled.days)}`,
     `- By declared name: ${kv(d.ai_labeled.by_ua)}`,
     `- By path kind: ${kv(d.ai_labeled.by_path_kind)}`,
     `- Requests to the remote MCP endpoint from the same kind of clients (connection handshakes included, counted apart): ${n(d.ai_mcp.total)}`,
