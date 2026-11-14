@@ -143,11 +143,13 @@ describe('관찰 읽기', () => {
     const u0 = new URL(urls[0]!);
     assert.equal(u0.searchParams.get('order'), 'observed_at.asc,id.asc');
     assert.equal(u0.searchParams.get('or'), null);
+    assert.equal(u0.searchParams.get('observed_at'), 'gte.2026-10-08T00:00:00.000Z');
     const u = new URL(urls[1]!);
     assert.equal(u.searchParams.get('id'), null);
     assert.equal(u.searchParams.get('or'), '(observed_at.gt."2026-10-09T00:00:01Z",and(observed_at.eq."2026-10-09T00:00:01Z",id.gt.1))');
     assert.equal(u.searchParams.get('source'), 'eq.scanner');
     assert.equal(u.searchParams.get('reached_level'), 'eq.2');
-    assert.equal(u.searchParams.get('observed_at'), 'gte.2026-10-08T00:00:00.000Z');
+    // 둘째 페이지부터 하한을 마지막 행 시각으로 올린다(인덱스 범위를 좁힘, or 조건과 함께 같은 결과)
+    assert.equal(u.searchParams.get('observed_at'), 'gte.2026-10-09T00:00:01Z');
   });
 });
