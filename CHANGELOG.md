@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added (2026-11-15, lookup API)
+- `payment.observed.history_30d`: changes in the HTTP 402 payment terms Lowdown read on its own checks in the last 30 days, per remote and summarized — `terms_first_seen`, `changes`, and `last_change` (`day`, `kinds`, `previous_check`, `remote_host`). Kinds: `amount_changed`, `pay_to_changed`, `asset_changed`, `network_changed`, `protocol_changed`, `payment_stopped` (a later check answered without 402), `payment_resumed`. Computed from the 30 days of observations the lookup already reads (no new query). Checks without an answer, server errors, hosting-platform blocks and 402 answers whose terms could not be read are not counted. Before and after values are not listed. Terms are recorded since 2026-11-12 (`terms_recorded_since`). Shown in `install-check`, the `payment` menu and the server pages' Evidence Snapshot. A pay_to change is a recorded fact, not a judgment.
+
 ### Changed (2026-11-15, package and Registry entry 0.1.23)
 - stdio MCP server (`lowdown-mcp`, `src/mcp-server.ts`): every tool now has a title and annotations. `get_lowdown`, `compare_tools` and `get_node_stats` are read-only (`readOnlyHint: true`, `idempotentHint: true`); `record_interaction` is the only tool that writes (`readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: false`: each call adds one report, nothing is changed or deleted).
 - `get_lowdown` (stdio) says what happens when there is no record (an answer, not an error; close names in `registry_candidates`) and when Lowdown cannot read its records (an error with `retryable: true`). Failed lookups, connection failures and non-JSON answers now return a tool error in the same shape as the remote server (`error`, `message`, `retryable`, `http_status`) instead of ending in an exception. Tests: `test/mcp-server.test.ts` (runs the built server over stdio against a fake API).

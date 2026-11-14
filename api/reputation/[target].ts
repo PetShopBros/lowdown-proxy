@@ -1315,9 +1315,96 @@ export function shapePayment(rows: ObsRow[]): Record<string, unknown> | null {
     byRemote.set(typeof r.remote_url === "string" ? r.remote_url : `#${byRemote.size}`, { ...(host ? { remote_host: host } : {}), observed_at: r.observed_at, ...terms });
   }
   const remotes = [...byRemote.values()].slice(0, PAY_MAX);
+  const history = paymentHistory(rows);
   return {
-    observed: { latest_check: lastDay, payment_required: remotes.length > 0, remotes },
-    basis: PAYMENT_BASIS,
+    observed: { latest_check: lastDay, payment_required: remotes.length > 0, remotes, ...(history ? { history_30d: history } : {}) },
+    basis: history ? `${PAYMENT_BASIS} ${PAYMENT_HISTORY_BASIS}` : PAYMENT_BASIS,
+  };
+}
+
+// ── 결제 조건 변경 이력 (2026-11-15, 이반 승인: 공개는 요약만 — A안) ─────────────
+// 30일 관측 행(이미 읽은 것)에서 원격 주소별로 조건이 바뀐 날을 센다. 새 쿼리·새 표 없음.
+// 공개: 처음 조건을 읽은 날, 마지막 변경(날짜·종류), 변경 횟수. 변경 전후 값의 목록은 싣지 않는다(전체 이력은 유료 후보, 11/12 결정).
+// 세지 않는 것: 응답 없음·네트워크 오류(모름), 5xx, 호스팅 차단(platform_limit), 조건을 못 읽은 402(parse ≠ ok).
+// 받는 주소 변경은 사실로만 적는다(사기 신호로 해석하지 않음, 11/12 원칙).
+export const PAYMENT_TERMS_RECORDED_SINCE = "2026-11-12"; // scanner 0.6.0 (11/12 10:17 UTC 스캔부터 조건 기록)
+export const PAYMENT_HISTORY_BASIS =
+  "history_30d counts changes in the payment terms Lowdown read on its own checks in the last 30 days, per remote: " +
+  "amount, pay_to (x402 payTo or MPP recipient), asset, network or protocol changed; payment_stopped = a later check answered without HTTP 402; " +
+  "payment_resumed = HTTP 402 with terms again after that. A change is dated on the first check that saw it (servers checked every few days " +
+  "show previous_check). Checks without an answer, server errors, hosting-platform blocks and 402 answers whose terms could not be read are not counted. " +
+  `Terms are recorded since ${PAYMENT_TERMS_RECORDED_SINCE}; earlier 402 answers have no terms. Only the latest change is listed; a change is a recorded fact, not a judgment.`;
+const PAY_HISTORY_KINDS = ["protocol_changed", "network_changed", "asset_changed", "amount_changed", "pay_to_changed"] as const;
+
+/** 조건 → 비교용 값(정렬된 집합 문자열). 원문은 응답에 싣지 않는다. */
+function paymentSignature(t: Record<string, unknown>): Record<(typeof PAY_HISTORY_KINDS)[number], string> {
+  const vals = (key: string, lists: unknown[]) => {
+    const out = new Set<string>();
+    for (const l of lists) if (Array.isArray(l)) for (const x of l) if (isPlainObj(x) && typeof x[key] === "string") out.add(String(x[key]));
+    return [...out].sort().join("|");
+  };
+  const lists = [t.options, t.challenges, t.invoices, t.offers];
+  return {
+    protocol_changed: typeof t.protocol === "string" ? t.protocol : "",
+    network_changed: vals("network", lists),
+    asset_changed: [vals("asset", lists), vals("currency", lists)].join("/"),
+    amount_changed: [vals("amount", lists), vals("amount_msat", lists)].join("/"),
+    pay_to_changed: [vals("pay_to", lists), vals("recipient", lists)].join("/"),
+  };
+}
+
+type PayState = { kind: "terms"; sig: Record<string, string> } | { kind: "no402" };
+
+/** 30일 관측 행(오래된 순) → history_30d. 조건을 한 번도 읽지 못했으면 null(말하지 않는다). */
+export function paymentHistory(rows: ObsRow[]): Record<string, unknown> | null {
+  // 원격 주소별 · 날짜별 마지막 상태
+  const byRemote = new Map<string, { host: string | null; days: Map<string, PayState> }>();
+  for (const r of rows) {
+    const day = typeof r.observed_at === "string" && /^\d{4}-\d{2}-\d{2}/.test(r.observed_at) ? r.observed_at.slice(0, 10) : null;
+    if (!day) continue;
+    let st: PayState | null = null;
+    if (r.http_status === 402) {
+      const t = shapePaymentTerms(r.payment);
+      if (t && t.parse === "ok") st = { kind: "terms", sig: paymentSignature(t) };
+    } else if (typeof r.http_status === "number" && r.http_status >= 200 && r.http_status < 500) {
+      st = { kind: "no402" };
+    }
+    if (!st) continue;
+    const key = typeof r.remote_url === "string" ? r.remote_url : "#";
+    const e = byRemote.get(key) ?? { host: hostOfUrl(r.remote_url), days: new Map<string, PayState>() };
+    e.days.set(day, st);
+    byRemote.set(key, e);
+  }
+  let first: string | null = null;
+  let changes = 0;
+  let last: { day: string; kinds: string[]; previous_check: string; remote_host?: string } | null = null;
+  for (const { host, days } of byRemote.values()) {
+    const seq = [...days.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    let prev: [string, PayState] | null = null;
+    let lastTerms: Record<string, string> | null = null;
+    for (const [day, st] of seq) {
+      if (st.kind === "terms" && (first === null || day < first)) first = day;
+      const kinds: string[] = [];
+      if (prev) {
+        if (st.kind === "no402" && prev[1].kind === "terms") kinds.push("payment_stopped");
+        else if (st.kind === "terms" && prev[1].kind === "no402" && lastTerms) kinds.push("payment_resumed");
+        if (st.kind === "terms" && lastTerms) for (const k of PAY_HISTORY_KINDS) if (st.sig[k] !== lastTerms[k]) kinds.push(k);
+      }
+      if (kinds.length) {
+        changes += kinds.length;
+        if (!last || day >= last.day) last = { day, kinds, previous_check: prev![0], ...(host ? { remote_host: host } : {}) };
+      }
+      if (st.kind === "terms") lastTerms = st.sig;
+      prev = [day, st];
+    }
+  }
+  if (first === null) return null;
+  return {
+    window_days: 30,
+    terms_recorded_since: PAYMENT_TERMS_RECORDED_SINCE,
+    terms_first_seen: first,
+    changes,
+    last_change: last,
   };
 }
 
@@ -2091,7 +2178,7 @@ export interface MenuItem {
 
 export const DISHES: Record<string, MenuItem> = {
   status: { question: "Does this MCP server answer right now, and does it require authentication?", contains: "status, scanner.latest (latest probe: reach level, HTTP status, latency — one location, once a day)" },
-  payment: { question: "Does it ask for payment when connecting, and on what stated terms (protocol, network, asset, amount, pay-to)?", contains: "payment.observed (HTTP 402 terms from the latest check; not a check that payment works), payment.declared (payment support stated in its card or an ERC-8004 registration file)" },
+  payment: { question: "Does it ask for payment when connecting, and on what stated terms (protocol, network, asset, amount, pay-to)?", contains: "payment.observed (HTTP 402 terms from the latest check; not a check that payment works; history_30d: when the terms changed in 30 days, summarized), payment.declared (payment support stated in its card or an ERC-8004 registration file)" },
   packages: { question: "Are the npm or PyPI packages it declares deprecated, yanked, archived, or gone (404)?", contains: "packages, packages_note" },
   tools: { question: "Did its tool definitions change, when, and with or without a server version change?", contains: "scanner.definition_changes" },
   "declared-vs-observed": { question: "Does what the MCP Registry and the server's own cards declare (version, hosts, endpoints, name) match what is observed?", contains: "scanner.declared_vs_observed" },

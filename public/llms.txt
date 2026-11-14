@@ -25,7 +25,7 @@ Ask for only the part that answers your question: `GET https://lowdown-proxy.ver
 - `install-check` (set): before installing or connecting a server — `status`, `payment`, `packages`, `declared-vs-observed`, `content-flags`.
 - `change-watch` (set): what changed recently — `tools`, `content-flags`, `declared-vs-observed`, Registry changes in 30 days.
 - `status`: does it answer now, does it require authentication (latest check: daily for most servers; servers checked in rotation show `observation_basis: rotating` and `check_interval_days`).
-- `payment`: does it answer `initialize` or `tools/list` with HTTP 402, and the payment terms it stated there (x402, MPP or L402: network, asset, amount, pay-to) on the latest check. Lowdown does not pay and does not check that payment works; payment asked only at tool call time is not seen; hosting-platform blocks are not counted. `payment.declared` lists payment support stated in the server's own card (x402 or MPP named) or in an ERC-8004 registration file (`x402Support: true` with an MCP endpoint the Registry entry also declares), checked daily; a declaration is not a check.
+- `payment`: does it answer `initialize` or `tools/list` with HTTP 402, and the payment terms it stated there (x402, MPP or L402: network, asset, amount, pay-to) on the latest check. Lowdown does not pay and does not check that payment works; payment asked only at tool call time is not seen; hosting-platform blocks are not counted. `payment.observed.history_30d` summarizes changes in those terms over 30 days per remote (first day terms were read, number of changes, and the latest change with its day and kinds: amount, pay_to, asset, network, protocol, payment_stopped, payment_resumed); before and after values are not listed. `payment.declared` lists payment support stated in the server's own card (x402 or MPP named) or in an ERC-8004 registration file (`x402Support: true` with an MCP endpoint the Registry entry also declares), checked daily; a declaration is not a check.
 - `packages`: are the declared npm or PyPI packages deprecated, yanked, archived, or gone (404).
 - `tools`: when its tool definitions changed, and whether the server version changed with them.
 - `declared-vs-observed`: does what the Registry declares (version, hosts) match what is observed.
@@ -85,4 +85,4 @@ An unknown server is not an error: the lookup answers 200 with what is (not) rec
 
 ## Source
 
-- [lowdown-proxy](https://github.com/PetShopBros/lowdown-proxy): proxy, API, and Scanner code.
+- [lowdown-proxy](https://github.com/PetShopBros/lowdown-proxy): proxy, API, and Scanner code.

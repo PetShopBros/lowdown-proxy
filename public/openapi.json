@@ -252,6 +252,60 @@
                                   }
                                 }
                               }
+                            },
+                            "history_30d": {
+                              "type": "object",
+                              "nullable": true,
+                              "description": "Changes in the payment terms Lowdown read on its own checks in the last 30 days, summarized: the first day terms were read, the number of changes and the latest change (day and kinds). Before and after values are not listed. Present when terms were read at least once in the window. Terms are recorded since 2026-11-12.",
+                              "properties": {
+                                "window_days": {
+                                  "type": "integer"
+                                },
+                                "terms_recorded_since": {
+                                  "type": "string",
+                                  "format": "date"
+                                },
+                                "terms_first_seen": {
+                                  "type": "string",
+                                  "format": "date"
+                                },
+                                "changes": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "last_change": {
+                                  "type": "object",
+                                  "nullable": true,
+                                  "properties": {
+                                    "day": {
+                                      "type": "string",
+                                      "format": "date"
+                                    },
+                                    "kinds": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string",
+                                        "enum": [
+                                          "payment_stopped",
+                                          "payment_resumed",
+                                          "protocol_changed",
+                                          "network_changed",
+                                          "asset_changed",
+                                          "amount_changed",
+                                          "pay_to_changed"
+                                        ]
+                                      }
+                                    },
+                                    "previous_check": {
+                                      "type": "string",
+                                      "format": "date"
+                                    },
+                                    "remote_host": {
+                                      "type": "string"
+                                    }
+                                  }
+                                }
+                              }
                             }
                           }
                         },

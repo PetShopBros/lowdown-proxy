@@ -1091,6 +1091,49 @@ describe('결제 사실 (payment, 2026-11-13)', () => {
     assert.equal(m.shapePayment([]), null);
   });
 
+  test('변경 이력(history_30d): 요약만, 원격별, 모름·호스팅 차단·읽지 못한 402 는 세지 않음', async () => {
+    const m = (await import(repPath)) as any;
+    const A = 'https://a.example/mcp';
+    const row = (n: number, status: number | null, payment?: unknown, hh = '06', url = A) => ({ observed_at: at(n, hh), reached_level: status === 200 ? 2 : 0, http_status: status, error_type: status === null ? 'timeout' : null, remote_url: url, payment });
+    const amt = (a: string) => ({ ...x402, options: [{ ...x402.options[0], amount: a }] });
+    const rows = [
+      row(9, 402, x402),                                   // 처음 조건
+      row(8, null),                                        // 응답 없음 → 모름
+      row(7, 402, { parse: 'none', cause: 'payment_terms', stage: 'initialize' }), // 읽지 못함 → 세지 않음
+      row(6, 503),                                         // 서버 오류 → 세지 않음
+      row(5, 402, amt('20000')),                           // 금액 변경
+      row(4, 402, { parse: 'none', cause: 'platform_limit', platform: 'vercel', stage: 'initialize' }), // 호스팅 차단 → 세지 않음
+      row(3, 402, { ...amt('20000'), options: [{ ...amt('20000').options[0], pay_to: '0xdef' }] }), // 받는 주소 변경
+      row(2, 200),                                         // 402 없이 응답 → 중단
+      row(1, 402, { ...amt('20000'), options: [{ ...amt('20000').options[0], pay_to: '0xdef' }] }), // 다시 → 재개(조건 같음)
+    ];
+    const h = m.paymentHistory(rows);
+    assert.equal(h.terms_first_seen, at(9).slice(0, 10));
+    assert.equal(h.terms_recorded_since, '2026-11-12');
+    assert.equal(h.window_days, 30);
+    assert.equal(h.changes, 4); // amount, pay_to, stopped, resumed
+    assert.deepEqual(h.last_change, { day: at(1).slice(0, 10), kinds: ['payment_resumed'], previous_check: at(2).slice(0, 10), remote_host: 'a.example' });
+    // 전후 값은 싣지 않는다
+    const text = JSON.stringify(h);
+    assert.ok(!text.includes('0xdef') && !text.includes('20000') && !text.includes('0xabc'));
+    // 같은 날 마지막 관측만, 여러 종류가 한 번에 바뀌면 kinds 여럿
+    const both = m.paymentHistory([row(3, 402, x402), row(2, 402, x402, '05'), row(2, 402, { ...x402, protocol: 'x402', options: [{ ...x402.options[0], amount: '5', network: 'eip155:1' }] }, '09')]);
+    assert.equal(both.changes, 2);
+    assert.deepEqual(both.last_change.kinds, ['network_changed', 'amount_changed']);
+    // 조건을 한 번도 못 읽었으면 null, 결제 없는 서버도 null
+    assert.equal(m.paymentHistory([row(1, 402, { parse: 'none', cause: 'payment_terms' })]), null);
+    assert.equal(m.paymentHistory([row(1, 200)]), null);
+    // 다른 원격은 따로 비교 (원격 b 가 다른 금액이어도 변경 아님)
+    const two = m.paymentHistory([row(2, 402, x402), row(2, 402, amt('7'), '07', 'https://b.example/mcp'), row(1, 402, x402), row(1, 402, amt('7'), '07', 'https://b.example/mcp')]);
+    assert.equal(two.changes, 0);
+    assert.equal(two.last_change, null);
+    // shapePayment 에 붙는다(조건 읽힌 적 있으면), basis 에 설명
+    const p = m.shapePayment(rows);
+    assert.equal(p.observed.history_30d.changes, 4);
+    assert.match(p.basis, /history_30d counts changes/);
+    assert.equal(m.shapePayment([row(1, 200)]).observed.history_30d, undefined);
+  });
+
   test('조회 응답·메뉴: 관찰 대상이면 payment 블록, install-check 에 포함', async () => {
     const full = await call('mcp:io.github.acme/solo');
     assert.equal(full.body.payment.observed.payment_required, false);
