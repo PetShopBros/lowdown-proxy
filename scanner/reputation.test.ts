@@ -536,8 +536,11 @@ describe('증거 블록 — Registry 선언 + Scanner 날짜별 기록', () => {
     assert.match(r.body.message, new RegExp(`tool definitions last changed on ${dayAgo(1)} after 3 days without change`));
     assert.deepEqual(sc.tools.names, ['get_weather', 'list_items']); // 형식에 맞지 않는 이름은 빠짐
     assert.equal(sc.tools.count, 2);
-    const { cards, ...dvo } = sc.declared_vs_observed;
+    const { cards, since, ...dvo } = sc.declared_vs_observed;
     assert.deepEqual(dvo, { declared_version: '1.2.0', observed_server_version: '1.2.3', declared_hosts: ['solo.acme.dev'], observed_hosts: ['solo.acme.dev'] });
+    // since (2026-11-15): 조회 응답에도 붙는다
+    assert.equal(since.window_days, 30);
+    assert.equal(since.hosts.match, true);
     assert.equal(cards.checked, false); // 카드 확인 행이 아직 없으면 "확인 전"으로 (표가 없거나 읽기 실패면 cards 자체를 붙이지 않는다)
     assert.match(sc.method.requests, /No tool calls/);
     assert.match(sc.note, /Not included in success_rate/);
@@ -1045,6 +1048,41 @@ describe('메뉴 (?menu=)', () => {
     const r = await call('mcp:io.github.acme/solo');
     assert.equal(r.body.source.menu_card, 'https://lowdown-proxy.vercel.app/menu.json');
     assert.equal(r.body.source.feedback, 'https://lowdown-proxy.vercel.app/api/feedback');
+  });
+});
+
+describe('선언 대 관측: 언제부터 (declared_vs_observed.since, 2026-11-15)', () => {
+  const repPath = '../api/reputation/[target].ts';
+  const R = (n: number, version: string | null, url = 'https://a.example/mcp', level = 2) => ({ observed_at: at(n), reached_level: level, http_status: 200, error_type: null, server_version: version, remote_url: url });
+  const reg = { version: '1.2.0', hosts: ['a.example'] };
+
+  test('버전: Registry 를 그날 값으로 되돌려 비교, 지금 상태가 시작된 날', async () => {
+    const m = (await import(repPath)) as any;
+    // Registry 는 4일 전에 1.1.0 → 1.2.0. 서버는 계속 1.1.0 → 4일 전부터 불일치
+    const rows = [R(6, '1.1.0'), R(5, 'v1.1.0'), R(4, '1.1.0'), R(2, '1.1.0'), R(1, '1.1.0')];
+    const s = m.declaredObservedSince(rows, reg, [{ on: at(4).slice(0, 10), kind: 'version', old: '1.1.0', new: '1.2.0' }]);
+    assert.deepEqual(s.version, { match: false, last_compared: at(1).slice(0, 10), state_since: at(4).slice(0, 10) });
+    assert.deepEqual(s.hosts, { match: true, last_compared: at(1).slice(0, 10), state_since: null, throughout_window: true });
+    assert.equal(s.window_days, 30);
+    assert.match(s.basis, /leading v ignored/);
+  });
+
+  test('내내 같으면 state_since null + throughout_window, 버전 없는 날은 건너뜀', async () => {
+    const m = (await import(repPath)) as any;
+    const s = m.declaredObservedSince([R(3, '1.2.0'), R(2, null, 'https://a.example/mcp', 0), R(1, 'v1.2.0')], reg, []);
+    assert.deepEqual(s.version, { match: true, last_compared: at(1).slice(0, 10), state_since: null, throughout_window: true });
+  });
+
+  test('호스트: 선언 밖 호스트가 보이면 불일치, remotes 변경 전 날은 비교 안 함', async () => {
+    const m = (await import(repPath)) as any;
+    const rows = [R(5, '1.2.0', 'https://old.example/mcp'), R(3, '1.2.0'), R(2, '1.2.0', 'https://b.example/mcp'), R(1, '1.2.0', 'https://b.example/mcp')];
+    const s = m.declaredObservedSince(rows, reg, []);
+    assert.equal(s.hosts.match, false);
+    assert.equal(s.hosts.state_since, at(2).slice(0, 10));
+    const s2 = m.declaredObservedSince(rows, reg, [{ on: at(3).slice(0, 10), kind: 'remotes' }]);
+    assert.equal(s2.hosts.state_since, at(2).slice(0, 10)); // 5일 전(old.example)은 비교하지 않음
+    assert.equal(m.declaredObservedSince(rows, null, []), null);
+    assert.equal(m.declaredObservedSince([], reg, []), null);
   });
 });
 

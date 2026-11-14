@@ -1109,6 +1109,62 @@
                               "items": {
                                 "type": "string"
                               }
+                            },
+                            "since": {
+                              "type": "object",
+                              "description": "Since when the current match or mismatch has held within the last 30 days, for version and hosts. state_since is the first check of the current run; null with throughout_window when every comparable check in the window had the same state. Summary only.",
+                              "properties": {
+                                "window_days": {
+                                  "type": "integer"
+                                },
+                                "version": {
+                                  "type": "object",
+                                  "properties": {
+                                    "match": {
+                                      "type": "boolean"
+                                    },
+                                    "last_compared": {
+                                      "type": "string",
+                                      "format": "date"
+                                    },
+                                    "state_since": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ],
+                                      "format": "date"
+                                    },
+                                    "throughout_window": {
+                                      "type": "boolean"
+                                    }
+                                  }
+                                },
+                                "hosts": {
+                                  "type": "object",
+                                  "properties": {
+                                    "match": {
+                                      "type": "boolean"
+                                    },
+                                    "last_compared": {
+                                      "type": "string",
+                                      "format": "date"
+                                    },
+                                    "state_since": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ],
+                                      "format": "date"
+                                    },
+                                    "throughout_window": {
+                                      "type": "boolean"
+                                    }
+                                  }
+                                },
+                                "basis": {
+                                  "type": "string"
+                                }
+                              }
                             }
                           }
                         },

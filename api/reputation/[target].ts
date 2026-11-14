@@ -1089,7 +1089,7 @@ export function missingDays(observedDays: Set<string>, startDay: string, now: nu
   return out.slice(-WINDOW_DAYS);
 }
 
-async function scannerHistory(supabase: any, targetId: string, registryRow: any | null, latestVersion: unknown, now: number): Promise<{ extra: Record<string, unknown>; since: string | null; payment: Record<string, unknown> | null }> {
+async function scannerHistory(supabase: any, targetId: string, registryRow: any | null, latestVersion: unknown, now: number, registryChanges: unknown = []): Promise<{ extra: Record<string, unknown>; since: string | null; payment: Record<string, unknown> | null }> {
   const sinceIso = new Date(now - WINDOW_DAYS * DAY_MS).toISOString();
   const [obs, first, cohort, gaps] = await Promise.all([
     supabase
@@ -1153,12 +1153,77 @@ async function scannerHistory(supabase: any, targetId: string, registryRow: any 
               observed_server_version: safeVersion(latestVersion),
               declared_hosts: safeHosts(registryRow.hosts),
               observed_hosts: observedHosts,
+              ...((): Record<string, unknown> => {
+                const since = declaredObservedSince(rows, registryRow, registryChanges);
+                return since ? { since } : {};
+              })(),
             },
           }
         : {}),
       method: METHOD,
     },
   };
+}
+
+// ── 선언 대 관측: 언제부터 (2026-11-15, 이반 승인) ─────────────────────
+// 지금의 일치·불일치 상태가 30일 창 안에서 언제 시작됐는지. 조회가 이미 읽은 30일 관측 행 + Registry 30일 변경에서 계산(새 쿼리 없음).
+// 버전: Registry version(그날 기준으로 되돌린 값) ↔ 그날 관측된 serverInfo.version, 앞의 v 는 무시(월간 보고서 Q7 과 같은 정의).
+// 호스트: 그날 관측한 원격 호스트 중 Registry 가 선언하지 않은 것이 있으면 불일치(Q7 과 같은 정의). Registry 의 remotes 변경은 이전 값을
+//   기록하지 않으므로, 창 안에 remotes 변경이 있으면 그 날 이전은 비교하지 않는다.
+// state_since: 지금 상태가 시작된 첫 관측일. 비교할 수 있는 날 내내 같으면 null + throughout_window(창 밖에서 언제 시작됐는지는 말하지 않음).
+// 공개는 요약만(결제 이력과 같은 선) — 날짜별 목록은 싣지 않는다.
+export const DVO_SINCE_BASIS =
+  "since tells, for version and hosts, whether the Registry declaration matches what Lowdown observed on its latest comparable check, " +
+  "and the first check of the current run of that state within the last 30 days (state_since). throughout_window means every comparable check in the window had the same state; " +
+  "when it began is not known. Version: the Registry version in effect on that day vs the serverInfo.version the server sent, a leading v ignored. " +
+  "Hosts: a mismatch when an observed remote host is not among the declared hosts; checks before a Registry remotes change in the window are not compared.";
+const normVer = (v: string) => v.trim().replace(/^v(?=\d)/i, "");
+
+export function declaredObservedSince(rows: ObsRow[], registryRow: any, changes: unknown): Record<string, unknown> | null {
+  if (!registryRow) return null;
+  const ch = (Array.isArray(changes) ? changes : []).filter((c: any) => c && typeof c.on === "string" && /^\d{4}-\d{2}-\d{2}$/.test(c.on));
+  const versionChanges = ch.filter((c: any) => c.kind === "version").sort((a: any, b: any) => b.on.localeCompare(a.on)); // 최근 먼저
+  const remotesChangedOn = ch.filter((c: any) => c.kind === "remotes").map((c: any) => String(c.on)).sort().pop() ?? null;
+  const current = safeVersion(registryRow.version);
+  const declaredOn = (day: string): string | null => {
+    let v: string | null = current;
+    for (const c of versionChanges) if (c.on > day) v = typeof c.old === "string" ? c.old : null; // 그 변경 전 값으로 되돌린다
+    return v;
+  };
+  const declaredHosts = new Set(safeHosts(registryRow.hosts).map((h: string) => h.toLowerCase().replace(/\.+$/, "")));
+  // 날짜별 관측
+  const byDay = new Map<string, { version: string | null; hosts: Set<string> }>();
+  for (const r of rows) {
+    const day = typeof r.observed_at === "string" && /^\d{4}-\d{2}-\d{2}/.test(r.observed_at) ? r.observed_at.slice(0, 10) : null;
+    if (!day) continue;
+    const e = byDay.get(day) ?? { version: null, hosts: new Set<string>() };
+    const sv = safeVersion(r.server_version);
+    if (sv && (r.reached_level ?? 0) >= 1) e.version = sv;
+    const h = hostOfUrl(r.remote_url);
+    if (h) e.hosts.add(h.toLowerCase().replace(/\.+$/, ""));
+    byDay.set(day, e);
+  }
+  const days = [...byDay.keys()].sort();
+  const run = (states: Array<[string, boolean]>): Record<string, unknown> | null => {
+    if (states.length === 0) return null;
+    const last = states[states.length - 1]!;
+    let i = states.length - 1;
+    while (i > 0 && states[i - 1]![1] === last[1]) i--;
+    const throughout = i === 0;
+    return { match: last[1], last_compared: last[0], state_since: throughout ? null : states[i]![0], ...(throughout ? { throughout_window: true } : {}) };
+  };
+  const vStates: Array<[string, boolean]> = [];
+  const hStates: Array<[string, boolean]> = [];
+  for (const d of days) {
+    const o = byDay.get(d)!;
+    const dv = declaredOn(d);
+    if (dv && dv.trim() && o.version) vStates.push([d, normVer(dv) === normVer(o.version)]);
+    if (declaredHosts.size > 0 && o.hosts.size > 0 && (!remotesChangedOn || d >= remotesChangedOn)) hStates.push([d, [...o.hosts].every((h) => declaredHosts.has(h))]);
+  }
+  const version = run(vStates);
+  const hosts = run(hStates);
+  if (!version && !hosts) return null;
+  return { window_days: WINDOW_DAYS, ...(version ? { version } : {}), ...(hosts ? { hosts } : {}), basis: DVO_SINCE_BASIS };
 }
 
 // ── 결제 사실 (Payment Facts, 2026-11-13) ─────────────────────────────
@@ -1467,7 +1532,7 @@ async function buildEvidence(supabase: any, target: string, lookup: ScannerLooku
   const targetId = lookup?.summary?.target;
   if (typeof targetId === "string") {
     try {
-      const h = await scannerHistory(supabase, targetId, registryRow, (lookup!.summary!.latest as any)?.server_version, now);
+      const h = await scannerHistory(supabase, targetId, registryRow, (lookup!.summary!.latest as any)?.server_version, now, (ev.registry as any)?.changes_30d ?? []);
       ev.scannerExtra = h.extra;
       ev.scannerSince = h.since;
       if (h.payment) ev.payment = h.payment;
@@ -2181,7 +2246,7 @@ export const DISHES: Record<string, MenuItem> = {
   payment: { question: "Does it ask for payment when connecting, and on what stated terms (protocol, network, asset, amount, pay-to)?", contains: "payment.observed (HTTP 402 terms from the latest check; not a check that payment works; history_30d: when the terms changed in 30 days, summarized), payment.declared (payment support stated in its card or an ERC-8004 registration file)" },
   packages: { question: "Are the npm or PyPI packages it declares deprecated, yanked, archived, or gone (404)?", contains: "packages, packages_note" },
   tools: { question: "Did its tool definitions change, when, and with or without a server version change?", contains: "scanner.definition_changes" },
-  "declared-vs-observed": { question: "Does what the MCP Registry and the server's own cards declare (version, hosts, endpoints, name) match what is observed?", contains: "scanner.declared_vs_observed" },
+  "declared-vs-observed": { question: "Does what the MCP Registry and the server's own cards declare (version, hosts, endpoints, name) match what is observed?", contains: "scanner.declared_vs_observed (since: since when the current match or mismatch has held, 30 days)" },
   "content-flags": { question: "Did a tool definition change add a URL or invisible characters?", contains: "content_flags (from scanner.definition_changes events with new_flags)" },
   "tool-list": { question: "Which tools does it expose, without connecting to it?", contains: "scanner.tools" },
   registry: { question: "What does the official MCP Registry declare, and what changed there in 30 days?", contains: "registry" },

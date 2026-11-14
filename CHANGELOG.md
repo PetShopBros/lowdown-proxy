@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added (2026-11-15, lookup API: declared vs observed since)
+- `scanner.declared_vs_observed.since`: for `version` and `hosts`, whether the Registry declaration matches what Lowdown observed on its latest comparable check (`match`, `last_compared`) and the first check of the current run of that state within 30 days (`state_since`; `null` with `throughout_window: true` when every comparable check in the window had the same state). Version compares the Registry version in effect on that day (rolled back through Registry version changes) with the `serverInfo.version` the server sent, a leading `v` ignored; hosts use the same definition as the monthly report. Checks before a Registry remotes change in the window are not compared for hosts. Computed from data the lookup already reads; summary only. Shown in `install-check`, the `declared-vs-observed` menu and the server pages' Evidence Snapshot.
+
 ### Added (2026-11-15, lookup API)
 - `payment.observed.history_30d`: changes in the HTTP 402 payment terms Lowdown read on its own checks in the last 30 days, per remote and summarized — `terms_first_seen`, `changes`, and `last_change` (`day`, `kinds`, `previous_check`, `remote_host`). Kinds: `amount_changed`, `pay_to_changed`, `asset_changed`, `network_changed`, `protocol_changed`, `payment_stopped` (a later check answered without 402), `payment_resumed`. Computed from the 30 days of observations the lookup already reads (no new query). Checks without an answer, server errors, hosting-platform blocks and 402 answers whose terms could not be read are not counted. Before and after values are not listed. Terms are recorded since 2026-11-12 (`terms_recorded_since`). Shown in `install-check`, the `payment` menu and the server pages' Evidence Snapshot. A pay_to change is a recorded fact, not a judgment.
 

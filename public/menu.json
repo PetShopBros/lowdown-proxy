@@ -71,7 +71,7 @@
     {
       "menu": "declared-vs-observed",
       "question": "Does what the MCP Registry and the server's own cards declare (version, hosts, endpoints, name) match what is observed?",
-      "contains": "scanner.declared_vs_observed",
+      "contains": "scanner.declared_vs_observed (since: since when the current match or mismatch has held, 30 days)",
       "example": "https://lowdown-proxy.vercel.app/api/reputation/mcp:{namespace}/{name}?menu=declared-vs-observed"
     },
     {
