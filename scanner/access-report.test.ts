@@ -61,6 +61,8 @@ describe('Data Access Report', () => {
     assert.match(md, /not demand or interest/);
     assert.match(md, /Ecosystem Observation Report/);
     assert.match(md, /Links issued: not counted/);
+    assert.match(md, /Link accesses: 3 .*2 distinct servers, 2 days\./);
+    assert.match(md, /: 3, 1 distinct servers, 2 days\n/);
     assert.match(md, /Citations confirmed .*none recorded/);
     assert.match(md, /2026-11-14: Server pages start to carry the Evidence Snapshot/);
     assert.ok(!/verified crawler|demand score|interest score/i.test(md));
@@ -72,6 +74,12 @@ describe('Data Access Report', () => {
     assert.match(md, /Links issued: 50 lookup responses carried a cite link since 2026-11-14 \(direct 20, via server pages 25, via remote MCP 4, other 1; of all, 30 to crawlers\)/);
     assert.match(md, /undercounts/);
     assert.match(md, /Citations confirmed .*: 2/);
+  });
+
+  test('날 수가 1이면 day, 2 이상이면 days', () => {
+    const one = renderAccess(buildAccess([row({ category: 'citation', ua_name: '-', target: 'mcp:a/b', evidence: 'ref_cite', hits: 6, day: '2026-11-13' })], null, nov, new Date('2026-12-01T00:00:00Z')));
+    assert.match(one, /1 distinct servers, 1 day\./);
+    assert.ok(!one.includes('1 days'));
   });
 
   test('도구:결과 나누기', () => {
