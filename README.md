@@ -2,13 +2,14 @@
 
 [![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/petshopbros/lowdown-proxy)
 
-Agents should not have to trust anyone they've never interacted with.
+Lowdown records dated facts about public MCP servers before you install or connect them:
+whether each server answered `initialize` and `tools/list` on daily checks, what the official
+MCP Registry and the server's own cards declare, the state of its npm and PyPI packages,
+when its tool definitions changed, and the payment terms it states. Facts, not scores.
 
-`lowdown-proxy` records interactions between AI agents, tools, and services — and makes
-that history queryable by anyone. Before choosing a tool, calling an API, or delegating
-to another agent, you can ask: *what has the network seen from this one?*
-
-A transparent stdio proxy for MCP servers is the first entry point. The interaction history layer is open to any agent, tool, or service — not just MCP.
+Ask it three ways: the remote MCP server at `https://lowdown-proxy.vercel.app/mcp`
+(`get_lowdown`, `find_servers`), the HTTP API, or the open daily dataset (CC BY 4.0).
+`lowdown-proxy` also wraps a stdio MCP server and adds this record to its `initialize` response.
 
 See [DESIGN.md](./DESIGN.md) for background and design principles.
 
