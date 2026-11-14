@@ -195,3 +195,74 @@ describe('인용 문구 (2026-11-14)', () => {
     assert.doesNotMatch(other.html, /Cite this record/);
   });
 });
+
+// Evidence Snapshot (2026-11-14): install-check 값을 표준 JSON 블록으로, 원래 값 그대로, 기록 없으면 not_checked
+describe('Evidence Snapshot', () => {
+  type EvMod = Mod & {
+    evidenceSnapshot: (name: string, j: Record<string, unknown>) => Record<string, any>;
+    responseResult: (st: Record<string, unknown> | null) => string;
+  };
+  const block = (html: string) => {
+    const m = html.match(/<script type="application\/json" id="lowdown-evidence">([\s\S]*?)<\/script>/);
+    assert.ok(m, 'evidence block');
+    return JSON.parse(m![1]!) as Record<string, any>;
+  };
+
+  test('블록이 있고 파싱되며 원래 값이 그대로 들어간다', async () => {
+    const { renderServerPage } = (await load()) as EvMod;
+    const p = renderServerPage('ai.trendsmcp/google-trends', api())!;
+    const ev = block(p.html);
+    assert.equal(ev.schema, 'lowdown.evidence-snapshot');
+    assert.equal(ev.schema_version, 1);
+    assert.equal(ev.subject.record, 'https://lowdown-proxy.vercel.app/api/reputation/mcp:ai.trendsmcp/google-trends?menu=install-check');
+    assert.equal(ev.subject.page, 'https://lowdown-proxy.vercel.app/servers/ai.trendsmcp/google-trends');
+    assert.equal(ev.checks.response.result, 'responsive');
+    assert.equal(ev.checks.response.state, 'answered');
+    assert.deepEqual(ev.checks.response.checks_30d, { observed: 21, answered: 21, auth_required: 0, no_response: 0, mixed: 0 });
+    assert.equal(ev.checks.content_flags.result, 'checked');
+    assert.equal(ev.checks.content_flags.events[0].day, '2026-10-24');
+    assert.equal(ev.checks.payment.result, 'not_checked');
+    assert.equal(ev.checks.packages.result, 'not_checked');
+    assert.ok(ev.not_checked.some((x: any) => x.item === 'tool_calls'));
+    assert.ok(!/\{namespace\}|\{name\}/.test(p.html), '템플릿 URL 없음');
+    assert.ok(!/"available"/.test(JSON.stringify(ev)), '요약 라벨 없음');
+  });
+
+  test('원격 문자열의 </script> 는 블록을 닫지 못한다', async () => {
+    const { renderServerPage } = (await load()) as EvMod;
+    const bad = api({ payment: { observed: { latest_check: '2026-10-26', payment_required: true, remotes: [{ pay_to: '</script><script>bad()</script>' }] } } });
+    const p = renderServerPage('ai.trendsmcp/google-trends', bad)!;
+    assert.ok(!p.html.includes('<script>bad()'));
+    assert.equal((p.html.match(/<\/script>/g) ?? []).length, 1);
+    const ev = block(p.html);
+    assert.equal(ev.checks.payment.result, 'checked');
+    assert.equal(ev.checks.payment.observed.remotes[0].pay_to, '</script><script>bad()</script>');
+  });
+
+  test('status 없는 서버는 not_checked, 오래된 점검은 unknown, 401 은 responsive, no_response 는 failed', async () => {
+    const { renderServerPage, responseResult } = (await load()) as EvMod;
+    const p = renderServerPage('ai.trendsmcp/google-trends', api({ status: undefined }))!;
+    assert.equal(block(p.html).checks.response.result, 'not_checked');
+    assert.equal(block(p.html).window.last_observed_at, null);
+    assert.equal(responseResult({ state: 'answered', latest_check: '2026-10-26', stale: true }), 'unknown');
+    assert.equal(responseResult({ state: 'auth_required', latest_check: '2026-10-26', stale: false }), 'responsive');
+    assert.equal(responseResult({ state: 'no_response', latest_check: '2026-10-26', stale: false }), 'failed');
+    assert.equal(responseResult({ state: 'weird', latest_check: '2026-10-26', stale: false }), 'unknown');
+  });
+
+  test('설치 전 확인하는 법: 원격 MCP 줄은 항상, 프록시 줄은 npm/PyPI 패키지가 있을 때만', async () => {
+    const { renderServerPage } = (await load()) as EvMod;
+    const none = renderServerPage('ai.trendsmcp/google-trends', api())!;
+    assert.match(none.html, /<h2>Before installing: how to check<\/h2>/);
+    assert.match(none.html, /https:\/\/lowdown-proxy\.vercel\.app\/mcp/);
+    assert.match(none.html, /get_lowdown/);
+    assert.ok(!none.html.includes('npx -y lowdown-proxy'));
+    const withPkg = renderServerPage('ai.trendsmcp/google-trends', api({ packages: [{ registry: 'npm', name: '@acme/trends-mcp' }, { registry: 'pypi', name: 'trends-mcp' }, { registry: 'npm', name: 'bad name;rm' }] }))!;
+    assert.match(withPkg.html, /npx -y lowdown-proxy --target mcp:ai\.trendsmcp\/google-trends -- npx -y @acme\/trends-mcp/);
+    assert.match(withPkg.html, /npx -y lowdown-proxy --target mcp:ai\.trendsmcp\/google-trends -- uvx trends-mcp/);
+    assert.ok(!withPkg.html.includes('-- npx -y bad name'), '형식이 틀린 패키지 이름은 명령 줄에 넣지 않음');
+    assert.match(withPkg.html, /0\.1\.22/);
+    assert.equal(block(withPkg.html).checks.packages.result, 'checked');
+    assert.equal(block(withPkg.html).checks.packages.items.length, 3);
+  });
+});

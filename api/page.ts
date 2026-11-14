@@ -106,6 +106,114 @@ export function citeLine(name: string, j: Record<string, any>): string {
   return `<p class="muted">Cite this record: <code>${esc(cite)}</code></p>`;
 }
 
+// ── Evidence Snapshot (2026-11-14): install-check 값을 표준 JSON 으로 페이지에 심는다 ──
+// 값은 조회 응답에서 그대로 복사한다(요약 라벨 없음). 기록 없는 항목은 빼지 않고 result: "not_checked".
+// response.result 는 "HTTP 로 응답했는가"만 뜻한다: 401·402 도 responsive. 원래 state 를 항상 같이 싣는다.
+export const EVIDENCE_SCHEMA = "lowdown.evidence-snapshot";
+export const EVIDENCE_SCHEMA_VERSION = 1;
+const RESPONSIVE_STATES = new Set(["answered", "auth_required", "payment_required", "list_failed", "mixed"]);
+const FAILED_STATES = new Set(["no_response", "invalid_response"]);
+export const EVIDENCE_NOT_CHECKED = [
+  { item: "tool_calls", note: "Lowdown never calls a tool." },
+  { item: "payment_at_tool_call", note: "Payment asked only when a tool is called is not seen." },
+  { item: "stdio_sandbox", note: "Sandbox install-and-run results are not in this public record." },
+  { item: "radar", note: "Rule-based notable facts are recorded privately and not included." },
+];
+const EVIDENCE_BASIS =
+  "Dated observations from one network location: POST initialize, then tools/list; no tool calls, no credentials. " +
+  "Values are copied from the Lowdown record without summary labels. Not a score, grade or judgment. " +
+  "result: not_checked means Lowdown has no record for that item, which says nothing about the server.";
+const PKG_RE = /^[@A-Za-z0-9._\/-]{1,214}$/;
+
+const obj = (v: unknown): Record<string, any> | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, any>) : null);
+
+export function responseResult(st: Record<string, any> | null): "responsive" | "failed" | "not_checked" | "unknown" {
+  if (!st) return "not_checked";
+  if (st.stale === true || typeof st.state !== "string" || !day(st.latest_check)) return "unknown";
+  if (RESPONSIVE_STATES.has(st.state)) return "responsive";
+  if (FAILED_STATES.has(st.state)) return "failed";
+  return "unknown";
+}
+
+/** 전체 조회 응답 → Evidence Snapshot (페이지의 <script type="application/json" id="lowdown-evidence">) */
+export function evidenceSnapshot(name: string, j: Record<string, any>): Record<string, unknown> {
+  const st = obj(j.status);
+  const sc = obj(j.scanner);
+  const outOfSample = sc?.observed === false;
+  const record = `${SITE}/api/reputation/mcp:${name}?menu=install-check`;
+
+  const response: Record<string, unknown> = { result: responseResult(st) };
+  if (st) {
+    for (const k of ["state", "latest_check", "days_since_latest_check", "stale", "check_interval_days", "observation_basis", "checks_30d"]) {
+      if (st[k] !== undefined) response[k] = st[k];
+    }
+  }
+
+  const pay = obj(j.payment);
+  const payment: Record<string, unknown> = pay ? { result: "checked", ...(pay.observed !== undefined ? { observed: pay.observed } : {}), ...(pay.declared !== undefined ? { declared: pay.declared } : {}) } : { result: "not_checked" };
+
+  const pkgs = Array.isArray(j.packages) ? j.packages.filter((p: unknown) => obj(p)) : [];
+  const packages: Record<string, unknown> = pkgs.length > 0 ? { result: "checked", items: pkgs } : { result: "not_checked" };
+
+  const dvo = obj(sc?.declared_vs_observed);
+  const declaredVsObserved: Record<string, unknown> = dvo ? { result: "checked", value: dvo } : { result: "not_checked" };
+
+  const dc = obj(sc?.definition_changes);
+  const contentFlags: Record<string, unknown> =
+    dc && dc.content_flags_checked !== false
+      ? {
+          result: "checked",
+          events: (Array.isArray(dc.events) ? dc.events : [])
+            .filter((e: any) => Array.isArray(e?.new_flags) && e.new_flags.length > 0)
+            .map((e: any) => ({ day: e.day, new_flags: e.new_flags })),
+        }
+      : { result: "not_checked" };
+
+  return {
+    schema: EVIDENCE_SCHEMA,
+    schema_version: EVIDENCE_SCHEMA_VERSION,
+    subject: { registry_name: name, page: `${SITE}${pagePath(name)}`, record },
+    window: {
+      days: 30,
+      first_observed_at: sc?.first_observed_at ?? null,
+      last_observed_at: st ? day(st.latest_check) : null,
+      observation_basis: st?.observation_basis ?? (outOfSample ? "not_observed" : null),
+    },
+    checks: { response, payment, packages, declared_vs_observed: declaredVsObserved, content_flags: contentFlags },
+    not_checked: EVIDENCE_NOT_CHECKED,
+    retrieved_at: typeof j.source?.retrieved_at === "string" ? j.source.retrieved_at : null,
+    basis: EVIDENCE_BASIS,
+  };
+}
+
+/** <script> 안에 넣을 JSON: < > & 와 줄 구분 문자를 \u 로 — 원격 문자열이 블록을 닫지 못하게 */
+export function scriptJson(v: unknown): string {
+  return JSON.stringify(v).replace(/[<>&\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
+/** 설치 전 확인하는 법: 원격 MCP 한 줄 + (선언된 npm/PyPI 패키지가 있을 때만) 프록시로 감싸는 한 줄 */
+export function howToCheck(name: string, j: Record<string, any>): string {
+  const target = `mcp:${name}`;
+  const lines: string[] = [];
+  lines.push(`<h2>Before installing: how to check</h2>`);
+  lines.push(
+    `<p>From an agent: add the remote MCP server <code>${SITE}/mcp</code> (streamable HTTP, no authentication) and call ` +
+      `<code>get_lowdown</code> with <code>{"target": "${esc(target)}", "menu": "install-check"}</code>. ` +
+      `The same record without MCP: <a href="${esc(`${SITE}/api/reputation/${target}?menu=install-check`)}"><code>GET ${esc(`${SITE}/api/reputation/${target}?menu=install-check`)}</code></a></p>`,
+  );
+  const pkgs = (Array.isArray(j.packages) ? j.packages : []).filter((p: any) => (p?.registry === "npm" || p?.registry === "pypi") && typeof p.name === "string" && PKG_RE.test(p.name));
+  const cmds = pkgs.slice(0, 3).map((p: any) => `npx -y lowdown-proxy --target ${target} -- ${p.registry === "npm" ? `npx -y ${p.name}` : `uvx ${p.name}`}`);
+  if (cmds.length > 0) {
+    lines.push(
+      `<p>When running its declared package, wrap it with the stdio proxy. Since lowdown-proxy 0.1.22 the proxy adds this record (install-check) to the server's <code>initialize</code> response; it changes no tool result and blocks nothing:</p>` +
+        `<ul>${cmds.map((c: string) => `<li><code>${esc(c)}</code></li>`).join("")}</ul>`,
+    );
+  }
+  lines.push(`<p class="muted">The same facts in machine-readable form are in this page's <code>&lt;script type="application/json" id="lowdown-evidence"&gt;</code> block (schema <code>${EVIDENCE_SCHEMA}</code> v${EVIDENCE_SCHEMA_VERSION}).</p>`);
+  lines.push(`<script type="application/json" id="lowdown-evidence">${scriptJson(evidenceSnapshot(name, j))}</script>`);
+  return lines.join("\n");
+}
+
 export function renderServerPage(name: string, j: Record<string, any>): { html: string; noindex: boolean } | null {
   const st = j.status && typeof j.status === "object" ? j.status : null;
   const reg = j.registry && typeof j.registry === "object" ? j.registry : null;
@@ -207,6 +315,8 @@ export function renderServerPage(name: string, j: Record<string, any>): { html: 
     if (reg.removed_at) parts.push(`<li>Removed from the Registry: ${esc(day(reg.removed_at))}</li>`);
     parts.push(`</ul>`);
   }
+
+  parts.push(howToCheck(name, j));
 
   const lookup = typeof j.source?.lookup === "string" && j.source.lookup.startsWith(SITE) ? j.source.lookup : `${SITE}/api/reputation/mcp:${name}`;
   parts.push(
