@@ -60,6 +60,15 @@ describe('서버 카드', () => {
     assert.equal(c.remotes[0].url, sj.remotes[0].url);
   });
 
+  test('버전 한 곳: 원격 serverInfo = package.json = server.json(항목·npm 패키지)', async () => {
+    const { serverCard } = await load();
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const sj = JSON.parse(readFileSync(new URL('../server.json', import.meta.url), 'utf8'));
+    assert.equal(serverCard().version, pkg.version);
+    assert.equal(sj.version, pkg.version);
+    assert.equal(sj.packages.find((p: any) => p.registryType === 'npm' && p.identifier === 'lowdown-proxy').version, pkg.version);
+  });
+
   test('AI Catalog: 카드 1개를 url 로 가리킴', async () => {
     const { aiCatalog } = await load();
     const a = aiCatalog();

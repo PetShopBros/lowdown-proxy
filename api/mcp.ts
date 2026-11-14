@@ -20,7 +20,10 @@ import { z } from "zod";
 //   저장하지 않는 것: IP, 도구 인자 값, 검색어. clientInfo·x-agent-id 는 자기 선언(declared_*)으로만 둔다.
 
 export const SITE = "https://lowdown-proxy.vercel.app";
-const VERSION = "1.0.0";
+// serverInfo.version = 이 저장소의 릴리스 버전(package.json, server.json 과 같아야 한다 — scanner/server-card.test.ts 가 확인).
+// 2026-11-15 전까지 "1.0.0" 으로 따로 두어 Lowdown 자신의 기록에 declared 0.1.21 vs observed 1.0.0 불일치가 남았다.
+// package.json 을 읽지 않고 상수로 두는 이유: Vercel 함수 번들에 파일 읽기를 넣지 않으려고. 버전을 올릴 때 세 곳을 같이 바꾼다.
+const VERSION = "0.1.22";
 
 // 조회 메뉴 (api/reputation/[target].ts 의 SETS·DISHES 와 같아야 한다. 준비 중 메뉴는 넣지 않는다)
 export const MENUS = [
