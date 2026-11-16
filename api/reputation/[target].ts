@@ -61,7 +61,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 서버 카드 (2026-10-30, 2단계 주방): mcp:이름 그대로 온 기본 조회는 미리 만든 응답 1행을 꺼낸다.
     // 카드가 없거나, 오늘(UTC) 데이터 갱신 뒤에 만든 것이 아니거나, 읽기에 실패하면 아래 실시간 계산(기존과 같음).
     if (!taskType && !req.headers["x-lowdown-node-id"] && process.env.LOWDOWN_CARD_BUILD !== "1" && CARD_TARGET_RE.test(target)) {
-      const card = await readCard(supabase, target, Date.now());
+      const card = await readCard(supabase, target, Date.now(), ref === "page");
       if (card) {
         const logged = await supabase.from("reputation_lookups").insert({ ...lookupRow, ...(card.resultKind ? { result_kind: card.resultKind } : {}), ...(menu ? { menu } : {}) } as never);
         if (logged.error) await supabase.from("reputation_lookups").insert(lookupRow as never);
@@ -310,13 +310,15 @@ export const CARD_READY_UTC_HOUR = 4;
 const CARD_TARGET_RE = /^mcp:[A-Za-z0-9._~-]{1,200}\/[A-Za-z0-9._~-]{1,200}$/;
 
 /** 카드를 써도 되는가: 오늘(UTC) CARD_READY_UTC_HOUR 이후에 만든 것. */
-export function cardUsable(builtAt: unknown, now: number): boolean {
+export function cardUsable(builtAt: unknown, now: number, allowPrevious = false): boolean {
   if (typeof builtAt !== "string") return false;
   const t = Date.parse(builtAt);
   if (Number.isNaN(t) || t > now + 60_000) return false;
   const d = new Date(now);
   const ready = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), CARD_READY_UTC_HOUR);
-  return t >= ready;
+  if (t >= ready) return true;
+  // 서버 페이지(ref=page)는 00~04 UTC 사이 어제 카드도 쓴다 (2026-11-17: 이 구간 전수 수집이 실시간 계산으로 DB를 막은 일 대응)
+  return allowPrevious && now < ready && t >= ready - 86_400_000;
 }
 
 /** 카드 응답: 출처의 retrieved_at 만 지금 시각으로 바꾼다(cite 의 날짜는 같은 UTC 날이라 그대로). */
@@ -325,11 +327,11 @@ export function cardBody(body: Record<string, any>, now: number): Record<string,
   return { ...body, source: { ...body.source, retrieved_at: new Date(now).toISOString() } };
 }
 
-async function readCard(supabase: any, target: string, now: number): Promise<{ body: Record<string, any>; builtAt: string; resultKind: string | null } | null> {
+async function readCard(supabase: any, target: string, now: number, allowPrevious = false): Promise<{ body: Record<string, any>; builtAt: string; resultKind: string | null } | null> {
   try {
     const r = await supabase.from("server_cards").select("body,built_at,result_kind").eq("target_id", target).limit(1);
     const row = r.error ? null : (r.data ?? [])[0];
-    if (!row || !row.body || typeof row.body !== "object" || !cardUsable(row.built_at, now)) return null;
+    if (!row || !row.body || typeof row.body !== "object" || !cardUsable(row.built_at, now, allowPrevious)) return null;
     return { body: cardBody(row.body, now), builtAt: String(row.built_at), resultKind: typeof row.result_kind === "string" ? row.result_kind : null };
   } catch {
     return null; // 카드 읽기 실패 → 실시간 계산
