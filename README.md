@@ -234,37 +234,13 @@ Response for that server on 2026-10-20 (trimmed: the full response has 14 daily 
 
 These are recorded facts with their sources, not scores or rankings. The full schema is in [`openapi.json`](https://lowdown-proxy.vercel.app/openapi.json).
 
-## Why Lowdown
+## What the proxy adds
 
-Agents often start with no shared history of a tool's past behavior. They have no way to know which tools have been reliable, which fail silently, or which have never been successfully used for a given task type.
+Running a server through `lowdown-proxy` records each call's outcome (success, failure type, latency) for that server. These records are shown separately as `agent-reports` and are never mixed into the Scanner's daily observations.
 
-Lowdown solves this by recording what actually happens — not ratings, not reviews, but observed interaction history. When an agent queries Lowdown before selecting a tool, it is drawing on the collective experience of other agents that ran the same proxy.
+Each proxy instance creates a `node_id` on first run. Lookups sent with that identity also return `task_breakdown` and `recent_trends` for reported interactions.
 
-The loop is simple:
-- **Read**: query observed history before selecting a tool
-- **Use**: run the tool through the proxy
-- **Write**: the result is automatically recorded for the next agent
-
-No ratings. No human curation. Just signal from actual use.
-
-> Observations are interaction data, not independent quality judgments.
-
-## How the network works
-
-```
-Run proxy → node_id auto-created → interactions contributed → deeper Lowdown data
-```
-
-Every proxy instance is a node.
-
-Nodes contribute interaction data to the shared network.
-Contributors get access to richer query results.
-
-No tokens.
-No points.
-No reviews to write.
-
-Just run the proxy and share what your agents experience.
+> Agent reports are interaction data, not independent quality judgments.
 
 ## Design principles
 
@@ -295,13 +271,9 @@ Lowdown은 공개 MCP 서버를 설치하거나 연결하기 전에 확인할 �
 HTTP API, 매일 공개되는 데이터셋(CC BY 4.0). `lowdown-proxy`는 stdio MCP 서버를 감싸서
 이 기록을 그 서버의 `initialize` 응답에 붙이기도 합니다.
 
-### 네트워크 구조
+### 프록시가 더하는 것
 
-```
-프록시 실행 → node_id 자동 생성 → interaction 기여 → 더 깊은 Lowdown 조회
-```
-
-프록시를 실행하는 것 자체가 노드 참여입니다. 기여할수록 더 상세한 데이터를 조회할 수 있습니다.
+`lowdown-proxy`로 서버를 감싸면 호출마다 결과(성공, 실패 유형, 지연 시간)가 그 서버의 기록으로 남습니다. 이 기록은 `agent-reports`로 따로 표시되며 Scanner의 매일 관찰과 섞이지 않습니다. 프록시는 처음 실행할 때 `node_id`를 만들고, 이 식별자로 조회하면 `task_breakdown`과 `recent_trends`가 더해집니다.
 
 ### Scanner 관찰 데이터
 
