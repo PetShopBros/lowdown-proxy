@@ -275,7 +275,7 @@ Just run the proxy and share what your agents experience.
 
 ## Status
 
-Running continuously since September 2026. Since October 6, 2026 the Scanner has observed a fixed sample of MCP Registry entries every day: 2,000 entries through October 18, from October 19 a 5,000-entry sample that keeps all of the first 2,000, and from October 29 a 10,000-entry sample that keeps all of those 5,000. The daily report and raw data are public at [PetShopBros/lowdown-data](https://github.com/PetShopBros/lowdown-data), with a daily copy on [Hugging Face](https://huggingface.co/datasets/art2meta/lowdown-mcp-observations).
+Running continuously since September 2026. Since October 6, 2026 the Scanner has observed a fixed sample of MCP Registry entries every day: 2,000 entries through October 18, from October 19 a 5,000-entry sample that keeps all of the first 2,000, and from October 29 a 10,000-entry sample that keeps all of those 5,000. From November 9, 2026 the other Registry entries that can be checked are observed on a 3-day rotation, and servers someone looked up are checked every day; these observations are kept apart from the fixed sample, so the daily report's sample figures stay comparable. The daily report and raw data are public at [PetShopBros/lowdown-data](https://github.com/PetShopBros/lowdown-data), with a daily copy on [Hugging Face](https://huggingface.co/datasets/art2meta/lowdown-mcp-observations).
 Since October 21, 2026 the Scanner also keeps the full tool definitions it receives, privately and once per distinct definition, so that changes can be traced over time. Public data and API responses contain hashes only; the definitions themselves are not published.
 See [DESIGN.md](./DESIGN.md) for what's in scope and what's been ruled out.
 
@@ -287,17 +287,13 @@ MIT
 
 ## 한국어
 
-한 번도 거래한 적 없는 상대를 에이전트가 무조건 신뢰할 필요는 없습니다.
+Lowdown은 공개 MCP 서버를 설치하거나 연결하기 전에 확인할 수 있는, 날짜가 붙은 사실을 기록합니다:
+매일 점검에서 각 서버가 `initialize`와 `tools/list`에 응답했는지, 공식 MCP Registry와 서버 자신의 카드가
+무엇을 선언하는지, npm·PyPI 패키지 상태, 도구 정의가 언제 바뀌었는지, 서버가 밝힌 결제 조건. 점수가 아니라 사실입니다.
 
-`lowdown-proxy`는 AI 에이전트, 도구, 서비스 사이의 상호작용을 기록하고,
-그 이력을 누구나 조회할 수 있게 만듭니다. 도구를 선택하거나, API를 호출하거나,
-다른 에이전트에게 작업을 위임하기 전에 물어볼 수 있습니다:
-*네트워크는 이 상대에 대해 무엇을 봤는가?*
-
-MCP 서버를 감싸는 stdio 프록시가 첫 번째 진입점입니다.
-평판 레이어는 MCP에 국한되지 않고 모든 에이전트, 도구, 서비스에 열려 있습니다.
-
-기록된 데이터는 다른 에이전트가 판단할 때 참고할 수 있는 최소한의 공통 근거가 됩니다.
+조회 방법은 세 가지입니다: 원격 MCP 서버 `https://lowdown-proxy.vercel.app/mcp`(`get_lowdown`, `find_servers`),
+HTTP API, 매일 공개되는 데이터셋(CC BY 4.0). `lowdown-proxy`는 stdio MCP 서버를 감싸서
+이 기록을 그 서버의 `initialize` 응답에 붙이기도 합니다.
 
 ### 네트워크 구조
 
