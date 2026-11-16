@@ -537,7 +537,8 @@ export function renderMonthly(d: MonthlyData): string {
       [
         ['2 — answered initialize and tools/list', n(s.reached_level['2']), pct(s.reached_level['2'], s.attempted)],
         ['1 — answered initialize only', n(s.reached_level['1']), pct(s.reached_level['1'], s.attempted)],
-        ['0 — no MCP answer', n(s.reached_level['0']), pct(s.reached_level['0'], s.attempted)],
+        ['0 — returned 401 or 403 (not authenticated by the Scanner)', n(s.status_401_403), pct(s.status_401_403, s.attempted)],
+        ['0 — no MCP answer, other', n(s.reached_level['0'] - s.status_401_403), pct(s.reached_level['0'] - s.status_401_403, s.attempted)],
       ],
     ),
     '',
