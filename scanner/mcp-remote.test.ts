@@ -163,7 +163,7 @@ describe('원격 MCP 메시지별 기록', () => {
     assert.equal(j.result.resultType, 'complete');
     assert.ok(j.result.supportedVersions.includes('2025-11-25'));
     assert.ok(!j.result.supportedVersions.includes('2026-07-28'));
-    assert.deepEqual(j.result.capabilities, { tools: {} });
+    assert.deepEqual(j.result.capabilities, { tools: { listChanged: true } });
     assert.equal(j.result._meta['io.modelcontextprotocol/serverInfo'].name, 'lowdown');
     assert.match(j.result.instructions, /get_lowdown/);
     assert.equal(j.result.cacheScope, 'public');

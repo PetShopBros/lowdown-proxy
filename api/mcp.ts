@@ -378,7 +378,7 @@ export function discoverResult(id: unknown): Record<string, unknown> {
     result: {
       resultType: "complete",
       supportedVersions: [...SUPPORTED_PROTOCOL_VERSIONS],
-      capabilities: { tools: {} },
+      capabilities: { tools: { listChanged: true } },
       _meta: { "io.modelcontextprotocol/serverInfo": { name: "lowdown", version: VERSION } },
       instructions: INSTRUCTIONS,
       ttlMs: 3_600_000,

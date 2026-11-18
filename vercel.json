@@ -34,6 +34,10 @@
       "destination": "/public/.well-known/glama.json"
     },
     {
+      "source": "/.well-known/openai-apps-challenge",
+      "destination": "/public/.well-known/openai-apps-challenge.txt"
+    },
+    {
       "source": "/googleb19fff907d96fcb7.html",
       "destination": "/public/googleb19fff907d96fcb7.html"
     },
