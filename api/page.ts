@@ -347,7 +347,7 @@ export function renderPrivacy(): string {
     noindex: false,
     body:
       `<h1>Privacy policy</h1>` +
-      `<p class="muted">Effective 2026-11-05 (previous version 2026-10-30, before remote MCP call records and the public aggregates). Applies to ${esc(SITE)} (lookup API, server pages, discovery files, status and agent pages) and the remote MCP server at ${esc(SITE)}/mcp. Operated by ART2META (Republic of Korea).</p>` +
+      `<p class="muted">Effective 2026-11-19 (previous version 2026-11-05, which did not state how records relate to a person or why they are kept). Applies to ${esc(SITE)} (lookup API, server pages, discovery files, status and agent pages) and the remote MCP server at ${esc(SITE)}/mcp. Operated by ART2META (Republic of Korea).</p>` +
       `<h2>What Lowdown records</h2><ul>` +
       `<li><strong>Requests:</strong> the path and query of each request (for example the server name you looked up and the menu you chose), the HTTP method, the User-Agent header, the Referer header, and the time.</li>` +
       `<li><strong>Lookups:</strong> the lookup target or the Find conditions (including the words given in <code>does</code>), the User-Agent, the <code>ref</code> tag (for example <code>mcp</code> for the remote MCP server), the menu, and the kind of answer returned.</li>` +
@@ -363,7 +363,7 @@ export function renderPrivacy(): string {
       `<p>Lowdown publishes aggregates computed from these records: <a href="${SITE}/status.json">/status.json</a> (operating counts, updated hourly) and <a href="${SITE}/agents">/agents</a> (visits in the last 30 days grouped by the name a client declares in its User-Agent, with days seen, visit and request counts, path kinds, and remote MCP stages). Names are shown as declared, not as verified identities. Requests made by AI assistants on behalf of a person (for example Claude-User) are counted only in totals. To have a declared name removed from /agents, open a <a href="https://github.com/PetShopBros/lowdown-proxy/issues">GitHub issue</a> or write to the address below.</p>` +
       `<p>The public dataset contains Scanner observations and Registry records, not request records.</p>` +
       `<h2>Retention</h2>` +
-      `<p>Records are kept without a fixed deletion date, as part of Lowdown's long-term record.</p>` +
+      `<p>Records are kept without a fixed deletion date. Lowdown is a long-term record, and later counts of how it is used are computed from these records. Individual records are never published or sold (see above).</p><h2>Your choices</h2><p>Records carry no identifier that links them to a person: no IP address, account, cookie or device ID. For that reason Lowdown cannot find or delete the records of a particular person. If you do not want a lookup to be recorded, use the public dataset at <a href="https://github.com/PetShopBros/lowdown-data">PetShopBros/lowdown-data</a>, which contains the same Scanner observations and can be read without contacting Lowdown. To have a declared client name removed from <a href="${esc(SITE)}/agents">/agents</a>, use the contact below.</p>` +
       `<h2>Service providers</h2>` +
       `<p>Lowdown runs on Vercel (hosting) and Supabase (database). They process requests under their own terms and may keep operational logs, including IP addresses, as their own services do.</p>` +
       `<h2>Contact</h2>` +
