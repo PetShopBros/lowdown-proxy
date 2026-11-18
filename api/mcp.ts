@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { SUPPORTED_PROTOCOL_VERSIONS } from "@modelcontextprotocol/sdk/types.js";
+import { LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 // 원격 MCP 서버 (2026-10-30). https://lowdown-proxy.vercel.app/mcp (vercel.json rewrite → /api/mcp)
@@ -368,16 +368,29 @@ function observe(req: VercelRequest, res: VercelResponse) {
 }
 
 // server/discover (MCP 2026-07-28, SEP-2575: 서버 MUST 구현) — SDK(1.32.2, 최신)가 아직 모르는 메서드라 여기서 직접 답한다.
-//   supportedVersions 는 SDK 가 실제로 처리하는 버전만 적는다(2025-11-25 이하, initialize 방식). 2026-07-28 을 적지 않으므로
-//   새 스펙 클라이언트는 이 답을 보고 initialize 방식으로 내려온다. SDK 가 새 스펙을 지원하면 SDK 쪽으로 넘긴다.
+//   supportedVersions 에 2026-07-28 을 함께 적는다(2026-11-19). 이 서버는 원래 세션 없이 요청마다 답하므로 새 스펙의 요청 방식과 맞는다.
+//   OpenAI 스캐너는 2026-07-28 로 묻고, 목록에 그 버전이 없는데 complete 로 답하면 "inconsistent" 로 거절한다(initialize 로 내려오지 않음).
+//   2026-07-28 헤더 요청은 downgradeModernHeader 가 SDK 최신 버전으로 바꿔 SDK 에 넘긴다. SDK 가 새 스펙을 지원하면 이 우회를 뺀다.
 //   단일 메시지일 때만 여기서 답한다(배치 안의 server/discover 는 SDK 가 오류로 답하던 그대로).
+export const MODERN_PROTOCOL_VERSION = "2026-07-28";
+export const ADVERTISED_PROTOCOL_VERSIONS = [MODERN_PROTOCOL_VERSION, ...SUPPORTED_PROTOCOL_VERSIONS];
+// MCP-Protocol-Version: 2026-07-28 → SDK 최신 버전. SDK(1.32.2)는 이 헤더를 자기 목록으로 검사해 400 을 낸다.
+//   Node 어댑터가 rawHeaders 로 요청을 다시 만들기 때문에 둘 다 바꾼다. 관측 기록(observe)은 바꾸기 전 값을 이미 읽었다.
+export function downgradeModernHeader(req: { headers: Record<string, string | string[] | undefined>; rawHeaders?: string[] }): boolean {
+  const v = req.headers["mcp-protocol-version"];
+  if (typeof v !== "string" || v.trim() !== MODERN_PROTOCOL_VERSION) return false;
+  req.headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION;
+  const raw = req.rawHeaders;
+  if (Array.isArray(raw)) for (let i = 0; i + 1 < raw.length; i += 2) if (raw[i].toLowerCase() === "mcp-protocol-version") raw[i + 1] = LATEST_PROTOCOL_VERSION;
+  return true;
+}
 export function discoverResult(id: unknown): Record<string, unknown> {
   return {
     jsonrpc: "2.0",
     id,
     result: {
       resultType: "complete",
-      supportedVersions: [...SUPPORTED_PROTOCOL_VERSIONS],
+      supportedVersions: [...ADVERTISED_PROTOCOL_VERSIONS],
       capabilities: { tools: { listChanged: true } },
       _meta: { "io.modelcontextprotocol/serverInfo": { name: "lowdown", version: VERSION } },
       instructions: INSTRUCTIONS,
@@ -424,7 +437,7 @@ export function serverCard(): Record<string, unknown> {
     title: "Lowdown",
     websiteUrl: SITE,
     repository: { url: "https://github.com/PetShopBros/lowdown-proxy", source: "github" },
-    remotes: [{ type: "streamable-http", url: `${SITE}/mcp`, supportedProtocolVersions: [...SUPPORTED_PROTOCOL_VERSIONS] }],
+    remotes: [{ type: "streamable-http", url: `${SITE}/mcp`, supportedProtocolVersions: [...ADVERTISED_PROTOCOL_VERSIONS] }],
   };
 }
 export function aiCatalog(): Record<string, unknown> {
@@ -496,6 +509,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   });
   try {
     await server.connect(transport);
+    downgradeModernHeader(req);
     await transport.handleRequest(req, res, body);
   } catch (err) {
     console.error("mcp error", err);

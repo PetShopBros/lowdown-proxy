@@ -153,7 +153,7 @@ describe('원격 MCP 메시지별 기록', () => {
     const headers = Object.fromEntries([...r.headers].filter(([k]) => k !== 'date'));
     return { status: r.status, headers, text: await r.text() };
   };
-  test('server/discover (2026-07-28): SDK 가 처리하는 버전만 알리고, _meta 의 clientInfo 를 기록', async () => {
+  test('server/discover (2026-07-28): 2026-07-28 과 SDK 처리 버전을 알리고, _meta 의 clientInfo 를 기록', async () => {
     on(); rows.length = 0;
     const meta = { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientInfo': { name: 'new-client', version: '2.0' }, 'io.modelcontextprotocol/clientCapabilities': {} };
     const r = await post({ jsonrpc: '2.0', id: 'd1', method: 'server/discover', params: { _meta: meta } });
@@ -162,7 +162,7 @@ describe('원격 MCP 메시지별 기록', () => {
     assert.equal(j.id, 'd1');
     assert.equal(j.result.resultType, 'complete');
     assert.ok(j.result.supportedVersions.includes('2025-11-25'));
-    assert.ok(!j.result.supportedVersions.includes('2026-07-28'));
+    assert.ok(j.result.supportedVersions.includes('2026-07-28'));
     assert.deepEqual(j.result.capabilities, { tools: { listChanged: true } });
     assert.equal(j.result._meta['io.modelcontextprotocol/serverInfo'].name, 'lowdown');
     assert.match(j.result.instructions, /get_lowdown/);
