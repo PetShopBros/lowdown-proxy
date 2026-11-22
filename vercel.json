@@ -104,6 +104,15 @@
       "destination": "/api/page?kind=index"
     },
     {
+      "source": "/servers/:ns/:name/feed.xml",
+      "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
+      "destination": "/api/feed?ns=:ns&name=:name&nc=1"
+    },
+    {
+      "source": "/servers/:ns/:name/feed.xml",
+      "destination": "/api/feed?ns=:ns&name=:name"
+    },
+    {
       "source": "/servers/:ns/:name",
       "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
       "destination": "/api/page?kind=server&ns=:ns&name=:name&nc=1"
