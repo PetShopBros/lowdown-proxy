@@ -79,12 +79,12 @@ th,td{text-align:left;padding:.35em .45em;border-bottom:1px solid var(--line);ve
 .tile{border:1px solid var(--line);border-radius:8px;padding:.6em .9em;min-width:9em}.tile b{display:block;font-size:1.4rem}
 .bar{display:inline-block;height:.7em;background:var(--link);opacity:.55;vertical-align:middle}`;
 
-function shell(o: { title: string; description: string; canonical: string; noindex: boolean; body: string }): string {
+function shell(o: { title: string; description: string; canonical: string; noindex: boolean; body: string; feed?: string }): string {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(o.title)}</title>
 <meta name="description" content="${esc(o.description.slice(0, 300))}">
-${o.noindex ? '<meta name="robots" content="noindex">\n' : ""}<link rel="canonical" href="${esc(o.canonical)}">
+${o.noindex ? '<meta name="robots" content="noindex">\n' : ""}<link rel="canonical" href="${esc(o.canonical)}">${o.feed ? `\n<link rel="alternate" type="application/rss+xml" title="Changes to this server (RSS)" href="${esc(o.feed)}">` : ""}
 <meta property="og:site_name" content="Lowdown">
 <meta property="og:type" content="website">
 <meta property="og:title" content="${esc(o.title)}">
@@ -239,6 +239,15 @@ export function renderServerPage(name: string, j: Record<string, any>): { html: 
   );
 
   // 응답하는가
+  const feedUrl = st ? `${canonical}/feed.xml` : null;
+  if (feedUrl) {
+    parts.push(
+      `<p class="muted">Follow changes to this record: <a href="${esc(feedUrl)}">RSS feed</a> ` +
+        `(tool definition changes, check results, MCP Registry and package changes; rebuilt daily). ` +
+        `Add it to an RSS reader, or ask an AI assistant to check it on a schedule.</p>`,
+    );
+  }
+
   parts.push(`<h2>Does it respond?</h2>`);
   if (st) {
     const c = st.checks_30d ?? {};
@@ -334,6 +343,7 @@ export function renderServerPage(name: string, j: Record<string, any>): { html: 
     canonical,
     noindex,
     body: parts.join("\n"),
+    ...(feedUrl ? { feed: feedUrl } : {}),
   });
   return { html, noindex };
 }

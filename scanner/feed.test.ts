@@ -136,3 +136,12 @@ test("이상한 값은 건너뜀(날짜 형식, 종류 없음)", () => {
   const card = { registry: { changes_30d: [{ on: "not-a-day", kind: "version" }, { on: "2026-11-21" }] }, scanner: { definition_changes: { events: [{ day: "x" }] } } };
   assert.equal(feedItems(NAME, card, null).length, 0);
 });
+import { renderServerPage } from "../api/page.ts";
+
+test("서버 페이지: 관찰 기록이 있으면 RSS 자동 발견 태그·본문 링크, 없으면 둘 다 없음", () => {
+  const withSt = renderServerPage(NAME, { message: "m", status: { state: "responded", checks_30d: {} } })!;
+  assert.ok(withSt.html.includes(`<link rel="alternate" type="application/rss+xml" title="Changes to this server (RSS)" href="https://lowdown-proxy.vercel.app/servers/${NAME}/feed.xml">`));
+  assert.ok(withSt.html.includes(`href="https://lowdown-proxy.vercel.app/servers/${NAME}/feed.xml">RSS feed</a>`));
+  const noSt = renderServerPage(NAME, { message: "m", registry: { listed: true, name: NAME } })!;
+  assert.ok(!noSt.html.includes("feed.xml"));
+});
