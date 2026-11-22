@@ -65,7 +65,7 @@ import {
 } from './lib.ts';
 import { DECLARED_SOURCE, DECLARED_VERSION, DEFAULT_DECLARED_DAILY_CAP, DEFAULT_DECLARED_HOST_CAP, fetchDeclaredTargets, normEndpoint, pickDeclared } from './declared-lib.ts';
 import { DEFAULT_ROTATION_DAYS, MAX_ROTATION_DAYS, pickRotating, ROTATING_SOURCE, rotationMeta } from './rotating-lib.ts';
-import { DEFAULT_REQUESTED_DAILY_CAP, DEFAULT_REQUESTED_TOTAL_CAP, DEFAULT_REQUESTED_USER_DAILY_CAP, DEFAULT_REQUESTED_USER_TOTAL_CAP, fetchRecentLookups, fetchRequestedIds, LOOKUP_WINDOW_DAYS, pickRequested, REQUESTED_SOURCE, REQUESTED_VERSION, saveRequested } from './requested-lib.ts';
+import { DEFAULT_REQUESTED_DAILY_CAP, DEFAULT_REQUESTED_TOTAL_CAP, DEFAULT_REQUESTED_USER_DAILY_CAP, DEFAULT_REQUESTED_USER_TOTAL_CAP, fetchRecentLookups, fetchRequestedIds, LOOKUP_WINDOW_DAYS, pickRequested, reactivateRequested, REQUESTED_SOURCE, REQUESTED_VERSION, saveRequested } from './requested-lib.ts';
 import { diffRegistry, fetchRegistryState, insertRegistryChanges, upsertRegistryState } from './registry-diff.ts';
 import { aggregateObserved, computeFirstSeen, fetchFirstSeen, insertToolSets, isPublishable, toolSetRows, upsertFirstSeen } from './first-seen.ts';
 import { insertToolDefs, insertToolFlags, insertToolSetVersions, oversizeFlags, ToolDefCollector, toolDefRows, toolSetVersionRows } from './tool-defs.ts';
@@ -336,15 +336,17 @@ async function main(): Promise<void> {
         const fixed = new Set(cohortIds);
         const probeable = new Set(registry.targets.map((t) => t.name));
         const since = new Date(Date.now() - LOOKUP_WINDOW_DAYS * 86_400_000).toISOString();
-        const lookups = await fetchRecentLookups(cohortReadCfg, since);
+        const lookups = await fetchRecentLookups(cohortReadCfg, since, {}, { aiUserOnly: true });
         // 실사용 자리는 전체 상한을 넘어 쌓인 수만큼 줄어든다 (총 목록 = totalCap + userTotalCap 이하)
+        // 2026-11-22: 일반 자리 닫음(크롤러·이름 숨긴 수집기가 채웠음). AI 사용자 조회만 받고,
+        // 관찰 중(observed)인 바깥 고리 서버도 매일로 올린다. existing 은 은퇴하지 않은 행만(fetchRequestedIds).
         const pick = pickRequested(lookups, {
-          probeable, exclude: new Set([...fixed, ...existing]), dailyCap, remaining: Math.max(0, totalCap - existing.length),
-          userDailyCap, userRemaining: Math.max(0, totalCap + userTotalCap - Math.max(totalCap, existing.length)),
+          probeable, exclude: new Set([...fixed, ...existing]), dailyCap: 0, remaining: 0,
+          userDailyCap, userRemaining: Math.max(0, userTotalCap - existing.length),
         });
         let saved = 'dry-run (not written)';
-        if (supabase) saved = `sent ${await saveRequested(supabase, pick.picks)}`;
-        const ids = [...new Set([...existing, ...pick.picks.map((p) => p.target_id)])].filter((id) => !fixed.has(id)).slice(0, totalCap + userTotalCap);
+        if (supabase) saved = `sent ${await saveRequested(supabase, pick.picks)}, reactivated ${await reactivateRequested(supabase, pick.picks.map((p) => p.target_id))}`;
+        const ids = [...new Set([...existing, ...pick.picks.map((p) => p.target_id)])].filter((id) => !fixed.has(id)).slice(0, userTotalCap);
         const reqJobs = planCohortJobs(registry.targets, ids, registry.registryInfo).jobs;
         for (const j of reqJobs) requestedNames.add(j.name);
         jobs = [...jobs, ...reqJobs];
