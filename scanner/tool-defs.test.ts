@@ -164,3 +164,29 @@ describe('도구 정의 원문 — 수집·행', () => {
     assert.equal(seen[0]!.n, 1);
   });
 });
+
+// lowdown-toolhash/1 고정 시험 값 (2026-11-23, claude/lowdown-evidence-layer-2026-11-23.md 3.4절)
+// 이 값이 바뀌면 과거 관찰의 해시와 비교가 끊긴다. 규칙을 바꿔야 하면 이 테스트를 고치지 말고 새 이름(/2)의 해시를 추가한다.
+describe('lowdown-toolhash/1 fixed vectors', () => {
+  const A = { name: 'echo', description: 'Echo text', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } };
+  const B = { name: 'add', inputSchema: { type: 'object', properties: { a: { type: 'number' }, b: { type: 'number' } } } };
+
+  test('canonical body and def_hash', () => {
+    const a = toolDefOf(A);
+    assert.equal(a.body, '{"description":"Echo text","inputSchema":{"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"},"name":"echo"}');
+    assert.equal(a.def_hash, '91a7ca8994fd0eee0c0c40c63724c247b38990c319f61d541ad6b21a560d9408');
+    assert.equal(a.tool_schema_hash, 'ba2f8d20d08479f6470738db31b303f76f22439dc986f7da509784cc8e94fe04');
+    assert.equal(a.tool_desc_hash, '94a86a2e361c3e455f47e05d0a4147071ccbf3d386b17a5c941c714b6d364f3b');
+    const b = toolDefOf(B);
+    assert.equal(b.body, '{"inputSchema":{"properties":{"a":{"type":"number"},"b":{"type":"number"}},"type":"object"},"name":"add"}');
+    assert.equal(b.def_hash, 'f19593574a39892c04ae9e82b53d620d200fa133cadd8a7e3d9a02648801fd7a');
+  });
+
+  test('tool_set_hash ignores tool order', () => {
+    const a = toolDefOf(A).def_hash;
+    const b = toolDefOf(B).def_hash;
+    const want = '95496637f8aa7401ecda9e4b88b846bcabe68247691d8ebe0389a32c740d0d38';
+    assert.equal(toolSetHash([a, b]), want);
+    assert.equal(toolSetHash([b, a]), want);
+  });
+});
