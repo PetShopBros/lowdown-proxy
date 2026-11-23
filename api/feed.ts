@@ -98,8 +98,8 @@ function definitionItems(name: string, card: J): FeedItem[] {
       : sv ? `Server version changed: ${sv.replace("server version ", "")}` : "Tool definitions changed";
     const facts = [
       parts.length > 0 ? `Changed: ${parts.join(", ")}.` : "",
-      sv ? `${sv[0].toUpperCase()}${sv.slice(1)}.` : "",
-      tc ? `${tc[0].toUpperCase()}${tc.slice(1)}.` : "",
+      sv ? `${sv.charAt(0).toUpperCase()}${sv.slice(1)}.` : "",
+      tc ? `${tc.charAt(0).toUpperCase()}${tc.slice(1)}.` : "",
       flags.length > 0 ? `New content markers: ${flags.join(", ")}.` : "",
       dayOf(ev.compared_with) ? `Compared with the observation of ${dayOf(ev.compared_with)}.` : "",
       ev.returned_to_earlier_definition === true ? "The new definition matches one observed earlier." : "",
