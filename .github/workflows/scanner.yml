@@ -92,7 +92,8 @@ jobs:
           LOWDOWN_NODE_ID: ${{ secrets.LOWDOWN_NODE_ID }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           SCAN_LIMIT: ${{ inputs.limit }}
-          SKIP_IF_DONE: ${{ github.event_name == 'schedule' && '1' || '' }}
+                    # 2026-11-24: 정시 본 실행(daily)에도 켠다. 늦은 예비 예약(22:17 KST)이 UTC 날짜를 넘겨 먼저 한 바퀴를 돈 날, 본 실행이 또 돌아 하루 2회가 됐음.
+          SKIP_IF_DONE: ${{ (github.event_name == 'schedule' || inputs.daily) && '1' || '' }}
           # v3(2026-10-29): v2 5,000개 전부 + 추가 5,000개, 호스트당 상한 3. 선정 계산(10/29 plan-only): 후보 32,971, 부족분 0,
           #   고유 호스트 9,234, 상위 1개 호스트 2.1%. v2·v1 멤버 행에는 cohort_versions 로 이전 시계열이 이어진다.
           COHORT_VERSION: ${{ inputs.cohort_version || '2026-10-29-v3' }}
