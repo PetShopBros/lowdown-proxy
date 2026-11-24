@@ -13,6 +13,7 @@ Ask it three ways: the remote MCP server at `https://lowdown-proxy.vercel.app/mc
 `lowdown-proxy` also wraps a stdio MCP server and adds this record to its `initialize` response.
 
 See [DESIGN.md](./DESIGN.md) for background and design principles.
+Also listed on [Glama](https://glama.ai/mcp/servers/PetShopBros/lowdown-proxy).
 
 ## Quick start
 
