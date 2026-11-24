@@ -104,6 +104,14 @@
       "destination": "/api/page?kind=index"
     },
     {
+      "source": "/servers/:ns/:name/badge.svg",
+      "destination": "/api/badge?ns=:ns&name=:name"
+    },
+    {
+      "source": "/servers/:ns/:name/badge.json",
+      "destination": "/api/badge?ns=:ns&name=:name&format=json"
+    },
+    {
       "source": "/servers/:ns/:name/feed.xml",
       "has": [{ "type": "header", "key": "user-agent", "value": ".*(Claude-User|ChatGPT-User|Perplexity-User|Claude-SearchBot|OAI-SearchBot).*" }],
       "destination": "/api/feed?ns=:ns&name=:name&nc=1"

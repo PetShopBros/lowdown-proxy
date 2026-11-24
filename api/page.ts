@@ -41,6 +41,8 @@ export const esc = (v: unknown): string =>
 const int = (v: unknown): number | null => (Number.isInteger(v) && (v as number) >= 0 ? (v as number) : null);
 const day = (v: unknown): string | null => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null);
 export const pagePath = (name: string) => `/servers/${name}`;
+// README 배지 주소는 전용 도메인(2026-11-24 이반 결정). api/badge.ts 의 BADGE_SITE 와 같은 값.
+export const BADGE_SITE = "https://lowdown.art2meta.com";
 
 const KIND_TEXT: Record<string, string> = {
   schema_changed: "input or output schemas changed",
@@ -245,6 +247,16 @@ export function renderServerPage(name: string, j: Record<string, any>): { html: 
       `<p class="muted">Follow changes to this record: <a href="${esc(feedUrl)}">RSS feed</a> ` +
         `(tool definition changes, check results, MCP Registry and package changes; rebuilt daily). ` +
         `Add it to an RSS reader, or ask an AI assistant to check it on a schedule.</p>`,
+    );
+  }
+  // README 배지 (2026-11-24): 관찰 기록이 있는 서버만. 운영자가 스스로 가져가는 한 줄(api/badge.ts 의 badgeMarkdown 과 같은 모양).
+  if (st) {
+    const badgePage = `${BADGE_SITE}${pagePath(name)}`;
+    const badgeMd = `[![Lowdown](${badgePage}/badge.svg)](${badgePage}?ref=badge)`;
+    parts.push(
+      `<p class="muted">README badge: <img src="${esc(`${canonical}/badge.svg`)}" alt="Lowdown badge" height="20" style="vertical-align:middle"> ` +
+        `shows the date of Lowdown's latest check of this server. It records that the server is observed; it is not a rating. ` +
+        `Markdown: <code>${esc(badgeMd)}</code></p>`,
     );
   }
 
