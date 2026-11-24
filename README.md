@@ -1,6 +1,7 @@
 # lowdown-proxy
 
 [![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/petshopbros/lowdown-proxy)
+[![Lowdown](https://lowdown.art2meta.com/servers/io.github.PetShopBros/lowdown-proxy/badge.svg)](https://lowdown.art2meta.com/servers/io.github.PetShopBros/lowdown-proxy?ref=badge)
 
 Lowdown records dated facts about public MCP servers before you install or connect them:
 whether each server answered `initialize` and `tools/list` on daily checks, what the official
