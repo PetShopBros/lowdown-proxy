@@ -1,0 +1,27 @@
+name: Operator report request
+description: Request the first Lowdown report for an MCP server in the official MCP Registry
+title: "Operator report: <registry name>"
+labels: ["operator-report"]
+body:
+  - type: input
+    id: server
+    attributes:
+      label: MCP Registry name
+      description: For example io.github.user/server or com.example/server
+      placeholder: com.example/server
+    validations:
+      required: true
+  - type: dropdown
+    id: role
+    attributes:
+      label: Are you the operator of this server?
+      options:
+        - "Yes"
+        - "No"
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: |
+        The first report for each server is built from Lowdown's public records and is posted as a comment on this issue.
+        Lowdown does not store IP addresses. See https://lowdown.art2meta.com/privacy
