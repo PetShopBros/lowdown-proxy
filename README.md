@@ -52,9 +52,21 @@ Connect any MCP client to Lowdown with one URL. No install, no account, no authe
 https://lowdown-proxy.vercel.app/mcp
 ```
 
+### Add it to your client
+
+| Client | How |
+|---|---|
+| Claude | [Claude connectors directory](https://claude.ai/directory/connectors/lowdown), or a custom connector with the URL above and no sign-in |
+| ChatGPT | In the ChatGPT app directory, search for **Lowdown** (by ART2META) |
+| Cursor | [Add to Cursor on cursor.directory](https://cursor.directory/plugins/lowdown) |
+| Gemini CLI | `gemini extensions install https://github.com/PetShopBros/lowdown-proxy` |
+| OpenClaw | skill `lowdown-mcp-lookup` on ClawHub: `npx clawhub@latest install lowdown-mcp-lookup` |
+| Any MCP client | the Streamable HTTP URL above, no account, no authentication |
+
+Then ask, for example, "Before I install the MCP server io.github.user/server, what has Lowdown recorded about it?"
+
 - Transport: Streamable HTTP. Read-only.
 - Tools: `get_lowdown` with `target` (an `mcp:` Registry name, a short name, or an `npm:` / `pypi:` package) and an optional `menu` (`install-check` before installing, `change-watch` for recent changes, or one part such as `status`, `payment` or `packages`; see [menu.json](https://lowdown-proxy.vercel.app/menu.json)), and `find_servers` to list servers by what they do (`does`, e.g. `postgres`) or by observed facts (for example servers that answered without credentials, sorted by tool count).
-- In Claude: install it from the [Claude connectors directory](https://claude.ai/directory/connectors/lowdown), or add it as a custom connector with this URL and no sign-in. Then ask, for example, "Before I install the MCP server io.github.user/server, what has Lowdown recorded about it?"
 - Discovery before connecting: the [Server Card](https://lowdown-proxy.vercel.app/mcp/server-card) (SEP-2127, `application/mcp-server-card+json`) and the [AI Catalog](https://lowdown-proxy.vercel.app/.well-known/ai-catalog.json) that lists it. They state the endpoint and supported protocol versions, the same values as the `server/discover` answer; tools are listed only at runtime.
 - Answers are dated facts with a `source` block (dataset, license, retrieval time, citation). They are not scores. Absence of data says nothing about a server's status.
 - Lowdown's own operating status, updated hourly: [status.json](https://lowdown-proxy.vercel.app/status.json). Named systems that visited Lowdown in the last 30 days, by their declared User-Agent: [Agent Observatory](https://lowdown-proxy.vercel.app/agents).
@@ -272,6 +284,7 @@ Lowdown은 공개 MCP 서버를 설치하거나 연결하기 전에 확인할 �
 조회 방법은 세 가지입니다: 원격 MCP 서버 `https://lowdown-proxy.vercel.app/mcp`(`get_lowdown`, `find_servers`),
 HTTP API, 매일 공개되는 데이터셋(CC BY 4.0). `lowdown-proxy`는 stdio MCP 서버를 감싸서
 이 기록을 그 서버의 `initialize` 응답에 붙이기도 합니다.
+Claude·ChatGPT·Cursor·Gemini CLI·OpenClaw에서 바로 쓰는 방법은 위 [Add it to your client](#add-it-to-your-client) 표에 있습니다.
 
 ### 프록시가 더하는 것
 
