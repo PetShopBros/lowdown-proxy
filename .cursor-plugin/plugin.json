@@ -12,11 +12,5 @@
   "keywords": ["mcp", "mcp-registry", "monitoring", "developer-tools"],
   "logo": "https://lowdown-proxy.vercel.app/public/icon-512.png",
   "skills": "skills/",
-  "mcpServers": {
-    "mcpServers": {
-      "lowdown": {
-        "url": "https://lowdown-proxy.vercel.app/mcp"
-      }
-    }
-  }
+  "mcpServers": ".cursor-plugin/mcp.json"
 }
