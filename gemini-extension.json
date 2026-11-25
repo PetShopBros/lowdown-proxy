@@ -1,0 +1,10 @@
+{
+  "name": "lowdown",
+  "version": "0.1.23",
+  "description": "Dated facts on MCP servers: daily initialize/tools/list checks, MCP Registry and card declarations, npm/PyPI package state, tool-definition changes and payment terms. No scores.",
+  "mcpServers": {
+    "lowdown": {
+      "httpUrl": "https://lowdown-proxy.vercel.app/mcp"
+    }
+  }
+}
