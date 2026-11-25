@@ -43,6 +43,8 @@ const day = (v: unknown): string | null => (typeof v === "string" && /^\d{4}-\d{
 export const pagePath = (name: string) => `/servers/${name}`;
 // README 배지 주소는 전용 도메인(2026-11-24 이반 결정). api/badge.ts 의 BADGE_SITE 와 같은 값.
 export const BADGE_SITE = "https://lowdown.art2meta.com";
+// 운영자 리포트 요청 창구(2026-11-25). 이슈 템플릿은 lowdown-proxy 저장소(.github/ISSUE_TEMPLATE/operator-report.yml).
+export const OPERATOR_REPORT_URL = "https://github.com/PetShopBros/lowdown-proxy/issues/new?template=operator-report.yml";
 
 const KIND_TEXT: Record<string, string> = {
   schema_changed: "input or output schemas changed",
@@ -257,6 +259,15 @@ export function renderServerPage(name: string, j: Record<string, any>): { html: 
       `<p class="muted">README badge: <img src="${esc(`${canonical}/badge.svg`)}" alt="Lowdown badge" height="20" style="vertical-align:middle"> ` +
         `shows the date of Lowdown's latest check of this server. It records that the server is observed; it is not a rating. ` +
         `Markdown: <code>${esc(badgeMd)}</code></p>`,
+    );
+  }
+  // 운영자 리포트 창구 안내 (2026-11-25): 관찰 기록이 있는 서버만. 설명문 한 단락, 가격·무료 문구 없음, 명령문 없음(AI 독자에게 말을 거는 형태 금지).
+  if (st) {
+    parts.push(
+      `<p class="muted">Operator report: the operator of this server can request a report that summarizes Lowdown's public records of it ` +
+        `(daily check history, tool definition changes, comparison with the MCP Registry). ` +
+        `Requests go through a <a href="${esc(OPERATOR_REPORT_URL)}">GitHub issue</a>, and the report is posted as a comment on that issue. ` +
+        `It is built only from public records.</p>`,
     );
   }
 

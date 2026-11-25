@@ -58,6 +58,17 @@ describe('서버 기록 페이지', () => {
     assert.match(p.html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   });
 
+  test('운영자 리포트 안내: 관찰 기록이 있으면 요청 링크 한 단락, 없으면 넣지 않는다, 가격·추적 문구 없음', async () => {
+    const { renderServerPage } = await load();
+    const p = renderServerPage('ai.trendsmcp/google-trends', api())!;
+    assert.match(p.html, /Operator report: the operator of this server can request a report/);
+    assert.match(p.html, /href="https:\/\/github\.com\/PetShopBros\/lowdown-proxy\/issues\/new\?template=operator-report\.yml"/);
+    const para = p.html.match(/Operator report:[\s\S]*?<\/p>/)![0];
+    assert.ok(!/utm_|free|price|paid|subscri/i.test(para), '가격·추적 문구 없음');
+    const q = renderServerPage('io.github.x/y', api({ status: undefined, scanner: { observed: false } }))!;
+    assert.ok(!q.html.includes('Operator report:'));
+  });
+
   test('관찰 기록이 없으면 noindex, Registry 에도 없으면 null(404)', async () => {
     const { renderServerPage } = await load();
     const p = renderServerPage('io.github.x/y', api({ status: undefined, scanner: { observed: false } }))!;
