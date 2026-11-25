@@ -1,0 +1,22 @@
+{
+  "name": "lowdown",
+  "version": "0.1.23",
+  "description": "Dated facts on public MCP servers before you install one: daily initialize/tools/list checks, MCP Registry and card declarations, npm/PyPI package state, tool-definition changes and payment terms. No scores.",
+  "author": {
+    "name": "ART2META",
+    "email": "atom.art2meta@gmail.com"
+  },
+  "homepage": "https://lowdown-proxy.vercel.app",
+  "repository": "https://github.com/PetShopBros/lowdown-proxy",
+  "license": "MIT",
+  "keywords": ["mcp", "mcp-registry", "monitoring", "developer-tools"],
+  "logo": "https://lowdown-proxy.vercel.app/public/icon-512.png",
+  "skills": "skills/",
+  "mcpServers": {
+    "mcpServers": {
+      "lowdown": {
+        "url": "https://lowdown-proxy.vercel.app/mcp"
+      }
+    }
+  }
+}

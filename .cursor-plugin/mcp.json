@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "lowdown": {
+      "url": "https://lowdown-proxy.vercel.app/mcp"
+    }
+  }
+}
