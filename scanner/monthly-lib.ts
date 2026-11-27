@@ -16,6 +16,11 @@ export const MONTHLY_SOURCES = ['scanner', 'scanner_rotating', 'scanner_requeste
 /** 고정 코호트 추이(Q4): 조회된 코호트 멤버는 scanner_requested 로 기록되므로 함께 읽는다 */
 export const TREND_SOURCES = new Set(['scanner', 'scanner_requested']);
 export const DEFAULT_TREND_FROM = '2026-10-07';
+// 커버율(2026-11-27): 순환 링은 11/6 시작, 첫 바퀴가 11/11에 끝남 → 간격은 그 뒤부터 센다.
+// 순환 대상은 마지막 관찰 뒤 4일이 지나면 서버 페이지·점검표에서 "not a current status"가 된다(api/find.ts ROTATING_STALE_DAYS).
+export const ROTATION_STEADY_FROM = '2026-11-11';
+export const ROTATING_GAP_DAYS = 4;
+const DAY_MS = 86_400_000;
 
 export type Basis = 'fixed' | 'rotating' | 'requested';
 export const BASES: readonly Basis[] = ['fixed', 'rotating', 'requested'];
@@ -84,6 +89,8 @@ export interface TargetAcc {
   first: DaySummary | null;
   last: DaySummary | null;
   days: number;
+  steadyGaps: number; // ROTATION_STEADY_FROM 이후 연속된 두 관찰 날 사이 간격의 수 (커버율)
+  maxSteadyGap: number; // 그 간격 중 최대(일)
   remotes: Map<string, RemoteHash>; // 원격 주소별 tool_set_hash 연속 비교 (결과로 내보내지 않음)
 }
 
@@ -175,9 +182,14 @@ export function accumulate(state: MonthlyState, rows: readonly MonthRow[], range
     if (!basis) continue;
     state.rows++;
     let t = state.targets.get(r.target_id);
-    if (!t) state.targets.set(r.target_id, (t = { basis, first: null, last: null, days: 0, remotes: new Map() }));
+    if (!t) state.targets.set(r.target_id, (t = { basis, first: null, last: null, days: 0, steadyGaps: 0, maxSteadyGap: 0, remotes: new Map() }));
     t.basis = basis;
     if (!t.last || t.last.day !== day) {
+      if (t.last && t.last.day >= ROTATION_STEADY_FROM) {
+        const gap = Math.round((Date.parse(`${day}T00:00:00Z`) - Date.parse(`${t.last.day}T00:00:00Z`)) / DAY_MS);
+        t.steadyGaps++;
+        if (gap > t.maxSteadyGap) t.maxSteadyGap = gap;
+      }
       t.last = emptyDay(day);
       t.days++;
       if (!t.first) t.first = t.last;
@@ -398,6 +410,42 @@ export const NOTABLE_RULES = [
   'R3_tool_removed',
 ] as const;
 
+export interface CoverageSummary {
+  month_days: number; // 그 달 중 실행 시점까지 지난 날 수(UTC)
+  fixed: { servers: number; median_days: number | null };
+  rotating: { servers: number; compared: number; over_gap: number; gap_days: number; steady_from: string };
+}
+
+/** 7절 커버율: 고정 표본의 서버당 관찰 날 수 중앙값, 순환 대상 중 관찰 간격이 ROTATING_GAP_DAYS 를 넘은 적이 있는 서버 */
+export function coverage(state: MonthlyState, range: MonthRange, now: Date): CoverageSummary {
+  const end = Math.min(Date.parse(range.end), now.getTime());
+  const monthDays = Math.max(0, Math.ceil((end - Date.parse(range.start)) / DAY_MS));
+  const fixedDays: number[] = [];
+  const out: CoverageSummary = {
+    month_days: monthDays,
+    fixed: { servers: 0, median_days: null },
+    rotating: { servers: 0, compared: 0, over_gap: 0, gap_days: ROTATING_GAP_DAYS, steady_from: ROTATION_STEADY_FROM },
+  };
+  for (const t of state.targets.values()) {
+    if (t.basis === 'fixed') {
+      out.fixed.servers++;
+      fixedDays.push(t.days);
+    } else if (t.basis === 'rotating') {
+      out.rotating.servers++;
+      if (t.steadyGaps > 0) {
+        out.rotating.compared++;
+        if (t.maxSteadyGap > ROTATING_GAP_DAYS) out.rotating.over_gap++;
+      }
+    }
+  }
+  if (fixedDays.length) {
+    fixedDays.sort((a, b) => a - b);
+    const m = fixedDays.length >> 1;
+    out.fixed.median_days = fixedDays.length % 2 ? fixedDays[m]! : (fixedDays[m - 1]! + fixedDays[m]!) / 2;
+  }
+  return out;
+}
+
 export interface CountsInput {
   registry_changes: Record<string, number>;
   registry_active: number;
@@ -421,6 +469,7 @@ export interface MonthlyData {
   tool_changes: Record<Basis, ToolChangeSummary>;
   tool_count: ToolCountSummary;
   declared: DeclaredSummary;
+  coverage: CoverageSummary;
   trend: { cohort_version: string; cohort_size: number; from: string; weeks: TrendWeek[] };
   counts: CountsInput;
   sections: Record<string, { basis: string; reproducible: boolean }>;
@@ -456,6 +505,11 @@ export const SECTIONS: MonthlyData['sections'] = {
     basis: 'npm and PyPI packages declared in the MCP Registry: change records with detected_on in the month, and package state at the time of the run.',
     reproducible: false,
   },
+  coverage: {
+    basis:
+      'Days with a check record per server in the month (a blocked_url row counts as a check record). Fixed sample: median days per server against the days in the month so far. Rotating: servers with at least two check days on or after 2026-11-11 (the first full rotation), and how many of them had more than 4 days between two check days; after 4 days a rotating server\'s record is shown as not current.',
+    reproducible: true,
+  },
   private: {
     basis: 'Radar rules (scanner/RADAR.md) recorded in the month; stdio sandbox state since the first runs on 2026-10-23 (sandbox/README.md). Totals only.',
     reproducible: false,
@@ -481,6 +535,7 @@ export function buildMonthly(
     tool_changes: toolChanges(state),
     tool_count: toolCountDist(state),
     declared: declaredVsObserved(state, registry),
+    coverage: coverage(state, range, now),
     trend: { cohort_version: cohort.version, cohort_size: cohort.size, from: cohort.from, weeks: weeklyCohortTrend(state) },
     counts,
     sections: SECTIONS,
@@ -637,6 +692,22 @@ export function renderMonthly(d: MonthlyData): string {
     '- Radar rules: https://github.com/PetShopBros/lowdown-proxy/blob/main/scanner/RADAR.md',
     '- stdio sandbox: https://github.com/PetShopBros/lowdown-proxy/blob/main/sandbox/README.md',
     `- Observation rows read for the month: ${n(d.observation_rows)}`,
+    '',
+    '### Coverage',
+    '',
+    table(
+      ['Observed', 'Servers', 'Coverage'],
+      [
+        [BASIS_LABEL.fixed, n(d.coverage.fixed.servers), d.coverage.fixed.median_days === null ? 'n/a' : `median ${d.coverage.fixed.median_days} of ${d.coverage.month_days} days`],
+        [
+          BASIS_LABEL.rotating,
+          n(d.coverage.rotating.servers),
+          `${n(d.coverage.rotating.over_gap)} of ${n(d.coverage.rotating.compared)} (${pct(d.coverage.rotating.over_gap, d.coverage.rotating.compared)}) had a gap of more than ${d.coverage.rotating.gap_days} days since ${d.coverage.rotating.steady_from}`,
+        ],
+      ],
+    ),
+    '',
+    meta('coverage', d),
     '',
   ];
   return out.join('\n');

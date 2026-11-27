@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 import {
   accumulate,
   buildMonthly,
+  coverage,
   countRows,
   declaredVsObserved,
   fetchRegistryDecls,
@@ -203,7 +204,7 @@ describe('buildMonthly / renderMonthly', () => {
   });
 
   test('절마다 기준과 재계산 가능 여부, 해설 자리', () => {
-    assert.equal((md.match(/Reproducible from the public dataset: yes/g) ?? []).length, 6);
+    assert.equal((md.match(/Reproducible from the public dataset: yes/g) ?? []).length, 7); // 2026-11-27 coverage 절 추가
     assert.equal((md.match(/Reproducible from the public dataset: no/g) ?? []).length, 2);
     assert.equal((md.match(/<!-- TODO: commentary -->/g) ?? []).length, 7);
   });
@@ -273,5 +274,48 @@ describe('fetchRegistryDecls', () => {
   test('같은 페이지가 다시 오면 멈춘다', async () => {
     const { fetchImpl } = respond([[{ name: 'a/a' }, { name: 'a/b' }], [{ name: 'a/a' }, { name: 'a/b' }]]);
     await assert.rejects(fetchRegistryDecls(cfg, { fetchImpl, pageSize: 2 }), /keyset did not advance/);
+  });
+});
+
+describe('커버율 (7절, 2026-11-27)', () => {
+  test('고정 표본: 서버당 관찰 날 수 중앙값, 달 중간 실행이면 지난 날 수', () => {
+    const st = newState();
+    const rows = [
+      row('mcp:p', '2026-11-01T01:00:00Z'), row('mcp:p', '2026-11-02T01:00:00Z'), row('mcp:p', '2026-11-03T01:00:00Z'),
+      row('mcp:q', '2026-11-01T01:00:00Z'),
+      row('mcp:r', '2026-11-01T01:00:00Z'), row('mcp:r', '2026-11-03T01:00:00Z'),
+    ];
+    accumulate(st, rows, NOV, new Set());
+    const c = coverage(st, NOV, new Date('2026-11-27T03:00:00Z'));
+    assert.equal(c.month_days, 27);
+    assert.deepEqual(c.fixed, { servers: 3, median_days: 2 });
+    assert.equal(coverage(st, NOV, new Date('2026-12-02T00:00:00Z')).month_days, 30);
+  });
+
+  test('순환: 11/11 이후 간격만 세고, 4일 초과만 공백', () => {
+    const rot = { source: 'scanner_rotating' };
+    const st = newState();
+    accumulate(st, [
+      row('mcp:s', '2026-11-07T01:00:00Z', rot), row('mcp:s', '2026-11-12T01:00:00Z', rot), row('mcp:s', '2026-11-15T01:00:00Z', rot), // 11/7→11/12 는 11/11 전이라 안 셈, 11/12→15 = 3일
+      row('mcp:u', '2026-11-11T01:00:00Z', rot), row('mcp:u', '2026-11-16T01:00:00Z', rot), // 5일 → 공백
+      row('mcp:v', '2026-11-13T01:00:00Z', rot), row('mcp:v', '2026-11-17T01:00:00Z', rot), // 4일 → 공백 아님
+      row('mcp:w', '2026-11-20T01:00:00Z', rot), // 한 번뿐 → 비교 대상 아님
+    ], NOV, new Set());
+    const c = coverage(st, NOV, new Date('2026-12-02T00:00:00Z'));
+    assert.deepEqual(c.rotating, { servers: 4, compared: 3, over_gap: 1, gap_days: 4, steady_from: '2026-11-11' });
+  });
+
+  test('보고서 7절에 Coverage 표와 기준 문장', () => {
+    const st = newState();
+    accumulate(st, sample(), NOV, new Set());
+    const counts: CountsInput = {
+      registry_changes: {}, registry_active: 0, registry_with_remotes: 0, npm_changes: {}, npm_state: { found: 0, not_found: 0, deprecated: 0 },
+      pypi_changes: {}, pypi_state: { found: 0, not_found: 0, archived: 0, quarantined: 0, deprecated: 0 }, notable: {}, sandbox: { versions: 0, npm: 0, pypi: 0, done: 0, ok: 0 },
+    };
+    const md = renderMonthly(buildMonthly(st, new Map(), counts, NOV, { version: 'v1', size: 0, from: '2026-10-07' }, new Date('2026-12-02T00:00:00Z')));
+    assert.match(md, /### Coverage/);
+    assert.match(md, /\| Fixed sample \(daily\) \| \d+ \| median [\d.]+ of 30 days \|/);
+    assert.match(md, /had a gap of more than 4 days since 2026-11-11/);
+    assert.match(md, /_Basis: Days with a check record per server/);
   });
 });
