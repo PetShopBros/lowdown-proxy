@@ -81,7 +81,10 @@ footer{margin-top:2.5em;border-top:1px solid var(--line);padding-top:1em}
 th,td{text-align:left;padding:.35em .45em;border-bottom:1px solid var(--line);vertical-align:top}
 .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.tiles{display:flex;flex-wrap:wrap;gap:12px;margin:1em 0}
 .tile{border:1px solid var(--line);border-radius:8px;padding:.6em .9em;min-width:9em}.tile b{display:block;font-size:1.4rem}
-.bar{display:inline-block;height:.7em;background:var(--link);opacity:.55;vertical-align:middle}`;
+.bar{display:inline-block;height:.7em;background:var(--link);opacity:.55;vertical-align:middle}
+.search{display:flex;flex-wrap:wrap;gap:.5em;align-items:center;margin:1em 0 .3em}
+.search input{flex:1 1 18em;font:inherit;padding:.4em .6em;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.search button{font:inherit;padding:.4em 1em;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--link);cursor:pointer}`;
 
 function shell(o: { title: string; description: string; canonical: string; noindex: boolean; body: string; feed?: string }): string {
   return `<!doctype html>
@@ -678,13 +681,89 @@ export function renderIndex(rows: ListRow[], opts: { home?: boolean; statusHtml?
       (home
         ? `<h1>Lowdown</h1><p class="lead">Lowdown records, once a day, what MCP Registry servers actually do: whether they answer initialize and tools/list, whether they require authentication, and when their tool definitions change. Recorded facts with dates, not scores.</p>` +
           `<p>Look up one server: <code>GET ${SITE}/api/reputation/mcp:{namespace}/{name}</code> · <a href="${SITE}/llms.txt">llms.txt</a> · <a href="${SITE}/openapi.json">OpenAPI</a> · <a href="https://github.com/PetShopBros/lowdown-data">daily dataset (CC BY 4.0)</a> · <a href="https://github.com/PetShopBros/lowdown-proxy">source</a></p>` +
+          searchForm() +
           BULK_LINE +
           (opts.statusHtml ?? "") +
           `<h2>Observed servers</h2>`
-        : `<h1>MCP servers observed by Lowdown</h1>` + BULK_LINE) +
+        : `<h1>MCP servers observed by Lowdown</h1>` + searchForm() + BULK_LINE) +
       `<p class="lead">${esc(items.length)} MCP Registry servers with a recorded daily check. Each page states whether the server answered initialize and tools/list, whether it required authentication, and how its tool definitions changed, with dates.</p>` +
       `<p class="muted">Recorded facts from one network location, not scores. <a href="${SITE}/llms.txt">llms.txt</a> · <a href="https://github.com/PetShopBros/lowdown-data">dataset</a></p>` +
       `<ul>${items.join("")}</ul>`,
+  });
+}
+
+// ── 사람용 검색 (2026-11-27) ─────────────────────────────
+// 입력 1칸(GET /search?q=). 서버 페이지처럼 /api/find 를 ref=page 로 불러 HTML 로 바꾼다 → 검색 로직·쿼리를 새로 만들지 않는다.
+//   "ns/name"(앞의 mcp: 허용)이 정확히 맞으면 그 서버 페이지로 302. 아니면 결과 목록.
+//   슬래시 없는 단어 1~3개 → does(Registry 이름 + 관측된 도구 이름), 슬래시가 든 이름 일부 → q(Registry 이름 일부).
+// 결과 페이지는 noindex. 점수·정렬 선택 없음(이름순, 최대 SEARCH_LIMIT개).
+export const SEARCH_LIMIT = 20;
+const SEARCH_DOES_RE = /^[A-Za-z0-9._-]{2,30}( [A-Za-z0-9._-]{2,30}){0,2}$/;
+const SEARCH_Q_RE = /^[A-Za-z0-9._~\-/]{2,100}$/;
+
+export type SearchPlan =
+  | { kind: "empty" }
+  | { kind: "bad" }
+  | { kind: "name"; name: string; param: "q"; value: string }
+  | { kind: "words"; param: "does"; value: string }
+  | { kind: "part"; param: "q"; value: string };
+
+export function planSearch(raw: unknown): SearchPlan {
+  const s = (typeof raw === "string" ? raw : "").trim().replace(/\s+/g, " ").replace(/^mcp:/i, "");
+  if (!s) return { kind: "empty" };
+  if (NAME_RE.test(s) && s.length <= 100) return { kind: "name", name: s, param: "q", value: s };
+  if (!s.includes("/") && SEARCH_DOES_RE.test(s)) return { kind: "words", param: "does", value: s.toLowerCase() };
+  if (SEARCH_Q_RE.test(s)) return { kind: "part", param: "q", value: s };
+  return { kind: "bad" };
+}
+
+export function searchForm(value = ""): string {
+  return (
+    `<form class="search" action="/search" method="get" role="search">` +
+    `<label for="lowdown-q">Find a server</label>` +
+    `<input id="lowdown-q" name="q" type="search" value="${esc(value)}" maxlength="100" placeholder="io.github.user/server or postgres" autocomplete="off">` +
+    `<button type="submit">Search</button></form>` +
+    `<p class="muted">A full Registry name (namespace/name) opens its page. One to three words match Registry names and observed tool names.</p>`
+  );
+}
+
+export function renderSearch(input: string, plan: SearchPlan, found: { total: number | null; results: unknown[] } | null): string {
+  const parts: string[] = [`<h1>Find an MCP server</h1>`, searchForm(input)];
+  if (plan.kind === "empty") {
+    parts.push(`<p>Type a Registry name (for example <code>io.github.user/server</code>) or what the server does (for example <code>postgres</code>).</p>`);
+  } else if (plan.kind === "bad" || !found) {
+    parts.push(`<p>Use a Registry name (2-100 characters: letters, digits, . _ ~ - /) or one to three words of 2-30 characters each.</p>`);
+  } else {
+    const rows = found.results
+      .map((x) => {
+        const r = (x && typeof x === "object" ? x : {}) as Record<string, unknown>;
+        const n = typeof r.name === "string" && NAME_RE.test(r.name) ? r.name : null;
+        if (!n) return "";
+        const d = typeof r.latest_check === "string" ? r.latest_check.slice(0, 10) : null;
+        const st = typeof r.state === "string" ? STATE_TEXT[r.state] ?? "" : "";
+        const what = st || (d ? "last checked" : "no check recorded");
+        const tools = typeof r.tool_count === "number" && Number.isInteger(r.tool_count) ? `, ${r.tool_count} tools` : "";
+        return `<li><a href="${esc(pagePath(n))}">${esc(n)}</a> <span class="muted">${esc(what)}${d ? `, ${esc(d)}` : ""}${esc(tools)}</span></li>`;
+      })
+      .filter((s) => s !== "");
+    const total = typeof found.total === "number" ? found.total : rows.length;
+    if (!rows.length) {
+      parts.push(`<p>No observed server matched <strong>${esc(input)}</strong>. Lowdown searches Registry names and the tool names it observed. Having no record here says nothing about a server.</p>`);
+    } else {
+      parts.push(`<p>${esc(total)} server${total === 1 ? "" : "s"} matched${total > rows.length ? `, first ${rows.length} by name` : ""}. Recorded facts with dates, not scores; the order is by name only.</p><ul>${rows.join("")}</ul>`);
+      if (total > rows.length) {
+        const api = `${SITE}/api/find?${plan.param}=${encodeURIComponent(plan.value)}`;
+        parts.push(`<p class="muted">Add a word to narrow the list, or read every match from <a href="${esc(api)}">the find API</a> (next_offset for the following pages).</p>`);
+      }
+    }
+  }
+  parts.push(`<p class="muted"><a href="/">Home</a> · <a href="/servers">All observed servers</a></p>`);
+  return shell({
+    title: "Find an MCP server | Lowdown",
+    description: "Search MCP servers observed by Lowdown by Registry name or by what they do. Recorded facts with dates, not scores.",
+    canonical: `${SITE}/search`,
+    noindex: true,
+    body: parts.join(""),
   });
 }
 
@@ -869,6 +948,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const utm = typeof req.query.utm_source === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(req.query.utm_source) ? req.query.utm_source : null;
     path = kind === "index" ? "/servers" : `/${utm ? `?utm_source=${utm}` : ""}`;
     body = renderIndex(rows, { home: kind === "home", statusHtml: renderStatus(await statusP) });
+  } else if (kind === "search") {
+    const input = typeof req.query.q === "string" ? req.query.q.slice(0, 120) : "";
+    let plan = planSearch(input);
+    let found: { total: number | null; results: unknown[] } | null = null;
+    path = "/search";
+    if (plan.kind === "name" || plan.kind === "words" || plan.kind === "part") {
+      const host = header(req, "host", 200) ?? "lowdown-proxy.vercel.app";
+      let r: Response;
+      try {
+        r = await fetch(
+          `https://${host}/api/find?${plan.param}=${encodeURIComponent(plan.value)}&limit=${SEARCH_LIMIT}&ref=page${req.query.nc === "1" ? "&nc=1" : ""}`,
+          { headers: { "user-agent": ua ?? "", accept: "application/json" }, signal: AbortSignal.timeout(9000) },
+        );
+      } catch {
+        return unavailable();
+      }
+      if (r.status === 503) return unavailable();
+      if (r.ok) {
+        const j = (await r.json()) as Record<string, any>;
+        const results: unknown[] = Array.isArray(j.results) ? j.results : [];
+        if (plan.kind === "name") {
+          const want = plan.name.toLowerCase();
+          const hit = results.find((x: any) => typeof x?.name === "string" && NAME_RE.test(x.name) && x.name.toLowerCase() === want) as { name: string } | undefined;
+          if (hit) {
+            res.setHeader("Cache-Control", req.query.nc === "1" ? "no-store" : "public, max-age=0, s-maxage=21600, stale-while-revalidate=86400");
+            res.setHeader("Location", pagePath(hit.name));
+            return res.status(302).end();
+          }
+        }
+        found = { total: typeof j.total === "number" ? j.total : null, results };
+      } else {
+        plan = { kind: "bad" }; // find 가 400 이면 형식 안내
+      }
+    }
+    body = renderSearch(input, plan, found);
   } else {
     return res.status(404).send("Not found");
   }

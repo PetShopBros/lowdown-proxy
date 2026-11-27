@@ -12,6 +12,7 @@ export const config = {
     "/",
     "/servers",
     "/servers/:path*",
+    "/search", // 2026-11-27: 사람용 검색(api/page.ts kind=search). 검색어는 경로의 ?q= 로 남는다(/api/find 와 같은 수준)
     "/sitemap.xml",
     "/sitemaps/:path*",
     "/llms.txt",
