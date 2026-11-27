@@ -305,7 +305,7 @@ describe('커버율 (7절, 2026-11-27)', () => {
     assert.deepEqual(c.rotating, { servers: 4, compared: 3, over_gap: 1, stale_in_registry: null, reference_day: '2026-12-01', gap_days: 4, steady_from: '2026-11-11' });
   });
 
-  test('순환: 관찰이 끊긴 서버는 Registry 에 원격과 함께 남아 있을 때만 셈', () => {
+  test('순환: 관찰이 끊긴 서버는 Registry 에 active·원격과 함께 남아 있을 때만 셈', () => {
     const rot = { source: 'scanner_rotating' };
     const st = newState();
     accumulate(st, [
@@ -316,13 +316,16 @@ describe('커버율 (7절, 2026-11-27)', () => {
       row('mcp:z', '2026-11-10T01:00:00Z', rot), // 11/11 전에 끊김도 셈
     ], NOV, new Set());
     const reg = new Map([
-      ['k', { version: '', hosts: ['k.example.com'] }],
-      ['l', { version: '', hosts: ['l.example.com'] }],
-      ['o', { version: '', hosts: [] }],
-      ['z', { version: '', hosts: ['z.example.com'] }],
+      ['k', { version: '', hosts: ['k.example.com'], status: 'active' }],
+      ['l', { version: '', hosts: ['l.example.com'], status: 'active' }],
+      ['o', { version: '', hosts: [], status: 'active' }],
+      ['z', { version: '', hosts: ['z.example.com'], status: 'active' }],
+      ['p', { version: '', hosts: ['p.example.com'], status: 'deprecated' }],
     ]);
+    accumulate(st, [row('mcp:p', '2026-11-15T01:00:00Z', rot)], NOV, new Set()); // deprecated 로 끊김 → 정상, 제외
     const c = coverage(st, NOV, new Date('2026-11-27T03:00:00Z'), reg);
     assert.equal(c.rotating.reference_day, '2026-11-27');
+    assert.equal(c.rotating.servers, 6);
     assert.equal(c.rotating.stale_in_registry, 2);
     assert.equal(coverage(st, NOV, new Date('2026-12-02T00:00:00Z'), reg).rotating.stale_in_registry, 3); // 기준일 12/1: l 도 8일
   });
@@ -337,7 +340,7 @@ describe('커버율 (7절, 2026-11-27)', () => {
     const md = renderMonthly(buildMonthly(st, new Map(), counts, NOV, { version: 'v1', size: 0, from: '2026-10-07' }, new Date('2026-12-02T00:00:00Z')));
     assert.match(md, /### Coverage/);
     assert.match(md, /\| Fixed sample \(daily\) \| \d+ \| median [\d.]+ of 30 days \|/);
-    assert.match(md, /had a gap of more than 4 days since 2026-11-11; \d+ still in the Registry with a remote had no check in the 4 days before 2026-12-01/);
+    assert.match(md, /had a gap of more than 4 days since 2026-11-11; \d+ still active in the Registry with a remote had no check in the 4 days before 2026-12-01/);
     assert.match(md, /_Basis: Days with a check record per server/);
   });
 });

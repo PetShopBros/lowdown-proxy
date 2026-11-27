@@ -344,6 +344,7 @@ export function toolCountDist(state: MonthlyState): ToolCountSummary {
 export interface RegistryDecl {
   version: string;
   hosts: readonly string[];
+  status?: string | null; // 공식 메타 status (active, deprecated 등). 커버율에서 active 만 "점검 대상"으로 본다
 }
 
 export interface DeclaredSummary {
@@ -413,9 +414,10 @@ export const NOTABLE_RULES = [
 export interface CoverageSummary {
   month_days: number; // 그 달 중 실행 시점까지 지난 날 수(UTC)
   fixed: { servers: number; median_days: number | null };
-  // stale_in_registry: 마지막 관찰이 기준일보다 gap_days 넘게 오래됐고, 실행 시점에 아직 Registry 에 원격과 함께 있는 서버.
+  // stale_in_registry: 마지막 관찰이 기준일보다 gap_days 넘게 오래됐고, 실행 시점에 아직 Registry 에 status active·원격과 함께 있는 서버.
   //   관찰 사이 간격(over_gap)은 다음 관찰이 있어야 잡히므로, 순환에서 빠져 관찰이 끊긴 서버는 이 값으로 센다.
-  //   Registry 에서 빠졌거나 원격 선언이 없어진 서버는 관찰이 끊기는 게 정상이라 제외. registry 를 안 주면 null.
+  //   Registry 에서 빠졌거나, active 가 아니거나(스캐너는 active·최신만 점검, lib.ts fetchRegistryTargets), 원격 선언이 없어진 서버는
+  //   관찰이 끊기는 게 정상이라 제외(2026-11-27 첫 시험: 85개 모두 deprecated). registry 를 안 주면 null.
   rotating: { servers: number; compared: number; over_gap: number; stale_in_registry: number | null; reference_day: string; gap_days: number; steady_from: string };
 }
 
@@ -444,7 +446,7 @@ export function coverage(state: MonthlyState, range: MonthRange, now: Date, regi
       if (registry && t.last) {
         const decl = id.startsWith('mcp:') ? registry.get(id.slice(4)) : undefined;
         const since = Math.round((Date.parse(`${refDay}T00:00:00Z`) - Date.parse(`${t.last.day}T00:00:00Z`)) / DAY_MS);
-        if (decl && decl.hosts.length > 0 && since > ROTATING_GAP_DAYS) out.rotating.stale_in_registry!++;
+        if (decl && decl.status === 'active' && decl.hosts.length > 0 && since > ROTATING_GAP_DAYS) out.rotating.stale_in_registry!++;
       }
     }
   }
@@ -517,7 +519,7 @@ export const SECTIONS: MonthlyData['sections'] = {
   },
   coverage: {
     basis:
-      'Days with a check record per server in the month (a blocked_url row counts as a check record). Fixed sample: median days per server against the days in the month so far. Rotating: servers with at least two check days on or after 2026-11-11 (the first full rotation), and how many of them had more than 4 days between two check days; separately, rotating servers whose last check is more than 4 days before the reference day (the first day of the next month, or the run day for a draft) and that the Registry still lists with a remote. After 4 days a rotating server\'s record is shown as not current.',
+      'Days with a check record per server in the month (a blocked_url row counts as a check record). Fixed sample: median days per server against the days in the month so far. Rotating: servers with at least two check days on or after 2026-11-11 (the first full rotation), and how many of them had more than 4 days between two check days; separately, rotating servers whose last check is more than 4 days before the reference day (the first day of the next month, or the run day for a draft) and that the Registry still lists as active with a remote (the Scanner checks active, latest entries only, so deprecated servers are expected to stop). After 4 days a rotating server\'s record is shown as not current.',
     reproducible: true,
   },
   private: {
@@ -715,7 +717,7 @@ export function renderMonthly(d: MonthlyData): string {
           `${n(d.coverage.rotating.over_gap)} of ${n(d.coverage.rotating.compared)} (${pct(d.coverage.rotating.over_gap, d.coverage.rotating.compared)}) had a gap of more than ${d.coverage.rotating.gap_days} days since ${d.coverage.rotating.steady_from}` +
             (d.coverage.rotating.stale_in_registry === null
               ? ''
-              : `; ${n(d.coverage.rotating.stale_in_registry)} still in the Registry with a remote had no check in the ${d.coverage.rotating.gap_days} days before ${d.coverage.rotating.reference_day}`),
+              : `; ${n(d.coverage.rotating.stale_in_registry)} still active in the Registry with a remote had no check in the ${d.coverage.rotating.gap_days} days before ${d.coverage.rotating.reference_day}`),
         ],
       ],
     ),
@@ -789,7 +791,7 @@ export async function fetchRegistryDecls(cfg: SupabaseConfig, deps: MonthlyDeps 
   const out = new Map<string, RegistryDecl>();
   let after: string | null = null;
   for (;;) {
-    const qs = new URLSearchParams({ select: 'name,version,hosts', removed_at: 'is.null', order: 'name.asc', limit: String(pageSize) });
+    const qs = new URLSearchParams({ select: 'name,version,hosts,status', removed_at: 'is.null', order: 'name.asc', limit: String(pageSize) });
     if (after !== null) qs.set('name', `gt.${after}`);
     const res = await get(
       `${base}/rest/v1/registry_state?${qs.toString()}`,
@@ -797,12 +799,12 @@ export async function fetchRegistryDecls(cfg: SupabaseConfig, deps: MonthlyDeps 
       'registry_state read',
       deps,
     );
-    const page = (await res.json()) as Array<{ name: string; version: string | null; hosts: string[] | null }>;
+    const page = (await res.json()) as Array<{ name: string; version: string | null; hosts: string[] | null; status?: string | null }>;
     if (!Array.isArray(page)) throw new Error('registry_state read: unexpected response shape');
     // 진행 판정은 "새 이름이 들어왔는가"로 한다. DB 정렬(콜레이션)과 JS 문자열 비교는 대소문자·기호 순서가 달라서
     // last <= after 로 비교하면 실제로는 넘어간 페이지를 멈춘 것으로 잘못 판정한다(2026-11-15 시험 실행에서 발생).
     const before = out.size;
-    for (const r of page) out.set(r.name, { version: r.version ?? '', hosts: Array.isArray(r.hosts) ? r.hosts : [] });
+    for (const r of page) out.set(r.name, { version: r.version ?? '', hosts: Array.isArray(r.hosts) ? r.hosts : [], status: typeof r.status === 'string' ? r.status : null });
     if (page.length < pageSize) break;
     const last = page[page.length - 1]!.name;
     if (out.size === before || last === after) throw new Error('registry_state read: keyset did not advance');
