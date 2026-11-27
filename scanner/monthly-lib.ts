@@ -413,20 +413,25 @@ export const NOTABLE_RULES = [
 export interface CoverageSummary {
   month_days: number; // 그 달 중 실행 시점까지 지난 날 수(UTC)
   fixed: { servers: number; median_days: number | null };
-  rotating: { servers: number; compared: number; over_gap: number; gap_days: number; steady_from: string };
+  // stale_in_registry: 마지막 관찰이 기준일보다 gap_days 넘게 오래됐고, 실행 시점에 아직 Registry 에 원격과 함께 있는 서버.
+  //   관찰 사이 간격(over_gap)은 다음 관찰이 있어야 잡히므로, 순환에서 빠져 관찰이 끊긴 서버는 이 값으로 센다.
+  //   Registry 에서 빠졌거나 원격 선언이 없어진 서버는 관찰이 끊기는 게 정상이라 제외. registry 를 안 주면 null.
+  rotating: { servers: number; compared: number; over_gap: number; stale_in_registry: number | null; reference_day: string; gap_days: number; steady_from: string };
 }
 
 /** 7절 커버율: 고정 표본의 서버당 관찰 날 수 중앙값, 순환 대상 중 관찰 간격이 ROTATING_GAP_DAYS 를 넘은 적이 있는 서버 */
-export function coverage(state: MonthlyState, range: MonthRange, now: Date): CoverageSummary {
+export function coverage(state: MonthlyState, range: MonthRange, now: Date, registry: ReadonlyMap<string, RegistryDecl> | null = null): CoverageSummary {
   const end = Math.min(Date.parse(range.end), now.getTime());
+  // 기준일: 달이 끝났으면 다음 달 1일, 아니면 실행일(UTC). 기준일 - 마지막 관찰일 > gap_days 이면 끊김.
+  const refDay = new Date(end).toISOString().slice(0, 10);
   const monthDays = Math.max(0, Math.ceil((end - Date.parse(range.start)) / DAY_MS));
   const fixedDays: number[] = [];
   const out: CoverageSummary = {
     month_days: monthDays,
     fixed: { servers: 0, median_days: null },
-    rotating: { servers: 0, compared: 0, over_gap: 0, gap_days: ROTATING_GAP_DAYS, steady_from: ROTATION_STEADY_FROM },
+    rotating: { servers: 0, compared: 0, over_gap: 0, stale_in_registry: registry ? 0 : null, reference_day: refDay, gap_days: ROTATING_GAP_DAYS, steady_from: ROTATION_STEADY_FROM },
   };
-  for (const t of state.targets.values()) {
+  for (const [id, t] of state.targets) {
     if (t.basis === 'fixed') {
       out.fixed.servers++;
       fixedDays.push(t.days);
@@ -435,6 +440,11 @@ export function coverage(state: MonthlyState, range: MonthRange, now: Date): Cov
       if (t.steadyGaps > 0) {
         out.rotating.compared++;
         if (t.maxSteadyGap > ROTATING_GAP_DAYS) out.rotating.over_gap++;
+      }
+      if (registry && t.last) {
+        const decl = id.startsWith('mcp:') ? registry.get(id.slice(4)) : undefined;
+        const since = Math.round((Date.parse(`${refDay}T00:00:00Z`) - Date.parse(`${t.last.day}T00:00:00Z`)) / DAY_MS);
+        if (decl && decl.hosts.length > 0 && since > ROTATING_GAP_DAYS) out.rotating.stale_in_registry!++;
       }
     }
   }
@@ -507,7 +517,7 @@ export const SECTIONS: MonthlyData['sections'] = {
   },
   coverage: {
     basis:
-      'Days with a check record per server in the month (a blocked_url row counts as a check record). Fixed sample: median days per server against the days in the month so far. Rotating: servers with at least two check days on or after 2026-11-11 (the first full rotation), and how many of them had more than 4 days between two check days; after 4 days a rotating server\'s record is shown as not current.',
+      'Days with a check record per server in the month (a blocked_url row counts as a check record). Fixed sample: median days per server against the days in the month so far. Rotating: servers with at least two check days on or after 2026-11-11 (the first full rotation), and how many of them had more than 4 days between two check days; separately, rotating servers whose last check is more than 4 days before the reference day (the first day of the next month, or the run day for a draft) and that the Registry still lists with a remote. After 4 days a rotating server\'s record is shown as not current.',
     reproducible: true,
   },
   private: {
@@ -535,7 +545,7 @@ export function buildMonthly(
     tool_changes: toolChanges(state),
     tool_count: toolCountDist(state),
     declared: declaredVsObserved(state, registry),
-    coverage: coverage(state, range, now),
+    coverage: coverage(state, range, now, registry),
     trend: { cohort_version: cohort.version, cohort_size: cohort.size, from: cohort.from, weeks: weeklyCohortTrend(state) },
     counts,
     sections: SECTIONS,
@@ -702,7 +712,10 @@ export function renderMonthly(d: MonthlyData): string {
         [
           BASIS_LABEL.rotating,
           n(d.coverage.rotating.servers),
-          `${n(d.coverage.rotating.over_gap)} of ${n(d.coverage.rotating.compared)} (${pct(d.coverage.rotating.over_gap, d.coverage.rotating.compared)}) had a gap of more than ${d.coverage.rotating.gap_days} days since ${d.coverage.rotating.steady_from}`,
+          `${n(d.coverage.rotating.over_gap)} of ${n(d.coverage.rotating.compared)} (${pct(d.coverage.rotating.over_gap, d.coverage.rotating.compared)}) had a gap of more than ${d.coverage.rotating.gap_days} days since ${d.coverage.rotating.steady_from}` +
+            (d.coverage.rotating.stale_in_registry === null
+              ? ''
+              : `; ${n(d.coverage.rotating.stale_in_registry)} still in the Registry with a remote had no check in the ${d.coverage.rotating.gap_days} days before ${d.coverage.rotating.reference_day}`),
         ],
       ],
     ),
