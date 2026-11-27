@@ -221,6 +221,80 @@ export function howToCheck(name: string, j: Record<string, any>): string {
   return lines.join("\n");
 }
 
+// ── 한눈에 보기 (2026-11-27): 조회 응답에 이미 있는 값 6개를 표 한 장으로 ──
+// 총점·개수·통과/실패 표시·색 없음(점수가 되지 않게). 관측값과 날짜만, 값이 없으면 "not recorded".
+// 순서와 항목은 고정: 최근 점검, 30일 응답일, 버전 일치, 호스트 일치, 도구 정의 변경, 서버·에이전트 카드.
+const objOf = (v: unknown): Record<string, any> | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, any>) : null);
+
+function compareText(s: Record<string, any> | null, detail: string): string {
+  if (!s || typeof s.match !== "boolean") return "not compared";
+  return `${s.match ? "match" : "differ"}${detail ? ` (${detail})` : ""}`;
+}
+
+const CARD_TEXT: [string, string][] = [
+  ["mcp_well_known", "MCP .well-known server card"],
+  ["a2a_agent_card", "A2A agent card"],
+  ["ai_catalog", "AI catalog"],
+];
+
+export function atAGlance(j: Record<string, any>): string {
+  const st = objOf(j.status);
+  if (!st) return "";
+  const sc = objOf(j.scanner);
+  const dvo = objOf(sc?.declared_vs_observed);
+  const since = objOf(dvo?.since);
+  const dc = objOf(sc?.definition_changes);
+  const rows: [string, string, string | null][] = [];
+
+  rows.push(["Latest daily check", `${STATE_TEXT[st.state] ?? "checked"}${st.stale ? " (not a current status)" : ""}`, day(st.latest_check)]);
+
+  const c = objOf(st.checks_30d) ?? {};
+  const obs = int(c.observed);
+  rows.push(["Answered initialize and tools/list, last 30 days", obs !== null ? `${int(c.answered) ?? 0} of ${obs} observed days` : "not recorded", null]);
+
+  const sv = objOf(since?.version);
+  const vDetail = [dvo?.declared_version ? `Registry ${dvo.declared_version}` : "", dvo?.observed_server_version ? `server ${dvo.observed_server_version}` : ""].filter(Boolean).join(", ");
+  rows.push(["Registry version vs version the server sent", compareText(sv, vDetail), day(sv?.last_compared)]);
+
+  const sh = objOf(since?.hosts);
+  const hosts = Array.isArray(dvo?.observed_hosts) ? dvo.observed_hosts.filter((h: unknown) => typeof h === "string").slice(0, 3) : [];
+  rows.push(["Registry hosts vs observed hosts", compareText(sh, hosts.join(", ")), day(sh?.last_compared)]);
+
+  if (dc && day(dc.last_change)) {
+    const ev = (Array.isArray(dc.events) ? dc.events : []).find((e: any) => day(e?.day) === day(dc.last_change));
+    const kinds = (Array.isArray(ev?.kinds) ? ev.kinds : []).map((k: string) => KIND_TEXT[k]).filter(Boolean).join(", ");
+    rows.push(["Tool definitions", `last changed${kinds ? `: ${kinds}` : ""}`, day(dc.last_change)]);
+  } else if (dc && int(dc.compared_days)) {
+    rows.push(["Tool definitions", `no change in ${int(dc.compared_days)} compared days`, day(dc.first_compared_day) ? `since ${day(dc.first_compared_day)}` : null]);
+  } else {
+    rows.push(["Tool definitions", "not recorded", null]);
+  }
+
+  const cards = objOf(dvo?.cards);
+  if (cards && cards.checked === true) {
+    const found = new Set<string>();
+    let checked: string | null = null;
+    for (const r of Array.isArray(cards.remotes) ? cards.remotes : []) {
+      if (r?.server_card?.outcome === "found") found.add("MCP server card");
+      checked = checked ?? day(r?.checked_on);
+    }
+    for (const h of Array.isArray(cards.hosts) ? cards.hosts : []) {
+      for (const [k, t] of CARD_TEXT) if (h?.[k]?.outcome === "found") found.add(t);
+      checked = checked ?? day(h?.checked_on);
+    }
+    rows.push(["Server and agent cards", found.size ? `found: ${[...found].join(", ")}` : "none found at the standard paths", checked]);
+  } else {
+    rows.push(["Server and agent cards", "not recorded", null]);
+  }
+
+  return (
+    `<h2>At a glance</h2><div class="scroll"><table><thead><tr><th>Item</th><th>Recorded</th><th>Date</th></tr></thead><tbody>` +
+    rows.map(([k, v, d]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td><td>${esc(d ?? "")}</td></tr>`).join("") +
+    `</tbody></table></div>` +
+    `<p class="muted">Recorded facts with dates, not a score. Nothing here is counted, weighted or ranked. Details and definitions are in the sections below and in <a href="${SITE}/llms.txt">llms.txt</a>.</p>`
+  );
+}
+
 export function renderServerPage(name: string, j: Record<string, any>): { html: string; noindex: boolean } | null {
   const st = j.status && typeof j.status === "object" ? j.status : null;
   const reg = j.registry && typeof j.registry === "object" ? j.registry : null;
@@ -244,6 +318,9 @@ export function renderServerPage(name: string, j: Record<string, any>): { html: 
     `<p class="muted">Before installing or connecting: <a href="${esc(`${lookupTop}?menu=install-check`)}"><code>GET ${esc(lookupTop)}?menu=install-check</code></a> · ` +
       `other questions: <a href="${SITE}/menu.json">menu</a></p>`,
   );
+
+  // 한눈에 보기 (2026-11-27): 첫 화면에. 관찰 기록이 있는 서버만.
+  parts.push(atAGlance(j));
 
   // 응답하는가
   const feedUrl = st ? `${canonical}/feed.xml` : null;
