@@ -1,0 +1,70 @@
+name: monthly
+
+# 월간 MCP 보고서 초안 생성 (수동 실행만, 2026-11-27)
+#   node scanner/monthly.ts <YYYY-MM> out → MONTHLY-YYYY-MM.md(표 + 해설 자리 TODO)를 artifact 로 올린다.
+#   monthly-YYYY-MM.json 은 내부용(게시 금지, claude/lowdown-monthly-report-plan-2026-11-09.md)이라 올리지 않는다.
+#   공개 저장소의 artifact 는 GitHub 로그인한 누구나 받을 수 있으므로 md 만, 보관 7일.
+# 실행 시각: 달이 끝난 뒤(UTC 1일 00:00 = KST 09:00 이후). 그 전에 돌리면 md 에 DRAFT 표시가 붙는다.
+#   본 관찰(scanner, KST 10:17~11:00 전후)과 겹치지 않게 그 뒤에 돌린다 — 큰 표를 페이지로 읽는 작업(supabase/QUERY_RULES.md).
+on:
+  workflow_dispatch:
+    inputs:
+      month:
+        description: '보고서 달 (YYYY-MM)'
+        type: string
+        required: true
+      trend_from:
+        description: '고정 표본 추이 시작일 (YYYY-MM-DD)'
+        type: string
+        default: '2026-10-07'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monthly
+  cancel-in-progress: false
+
+jobs:
+  monthly:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check inputs
+        env:
+          MONTH: ${{ inputs.month }}
+          TREND_FROM: ${{ inputs.trend_from }}
+        run: |
+          [[ "$MONTH" =~ ^[0-9]{4}-[0-9]{2}$ ]] || { echo "::error::month 는 YYYY-MM: $MONTH"; exit 1; }
+          [[ "$TREND_FROM" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "::error::trend_from 은 YYYY-MM-DD: $TREND_FROM"; exit 1; }
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Monthly report draft
+        run: node scanner/monthly.ts "$MONTH" out "--trend-from=$TREND_FROM"
+        env:
+          MONTH: ${{ inputs.month }}
+          TREND_FROM: ${{ inputs.trend_from }}
+          LOWDOWN_SUPABASE_URL: ${{ secrets.LOWDOWN_SUPABASE_URL }}
+          LOWDOWN_SCANNER_KEY: ${{ secrets.LOWDOWN_SCANNER_KEY }}
+
+      - name: Summary
+        env:
+          MONTH: ${{ inputs.month }}
+        run: |
+          {
+            echo "### MONTHLY-$MONTH.md"
+            echo
+            head -n 20 "out/MONTHLY-$MONTH.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: monthly-${{ inputs.month }}
+          path: out/MONTHLY-${{ inputs.month }}.md
+          retention-days: 7
+          if-no-files-found: error
