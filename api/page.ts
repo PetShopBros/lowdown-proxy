@@ -295,7 +295,21 @@ export function atAGlance(j: Record<string, any>): string {
   );
 }
 
-export function renderServerPage(name: string, j: Record<string, any>): { html: string; noindex: boolean } | null {
+// 변경 알림 관심 버튼 (2026-11-27): 기능이 없는 상태에서 수요만 센다. 가격·약속 문구 없음.
+//   GET 양식 → 같은 페이지 ?interest=alerts. 누른 기록은 middleware 가 edge_hits 경로로 남긴다(새 저장소 없음).
+//   링크(<a>)가 아니라 양식 버튼: 크롤러가 따라가 부풀리지 않게.
+export function interestBlock(name: string, clicked: boolean, feedUrl: string | null): string {
+  if (clicked) {
+    return `<p class="muted">Alerts are not offered. This click was counted as interest.${feedUrl ? ` Changes to this record are listed in its <a href="${esc(feedUrl)}">RSS feed</a>.` : ""}</p>`;
+  }
+  return (
+    `<form class="search" action="${esc(pagePath(name))}" method="get">` +
+    `<input type="hidden" name="interest" value="alerts">` +
+    `<button type="submit">Alerts for this server</button></form>`
+  );
+}
+
+export function renderServerPage(name: string, j: Record<string, any>, opts: { interest?: boolean } = {}): { html: string; noindex: boolean } | null {
   const st = j.status && typeof j.status === "object" ? j.status : null;
   const reg = j.registry && typeof j.registry === "object" ? j.registry : null;
   const inRegistry = reg && (reg.listed === true || reg.removed_at);
@@ -319,8 +333,9 @@ export function renderServerPage(name: string, j: Record<string, any>): { html: 
       `other questions: <a href="${SITE}/menu.json">menu</a></p>`,
   );
 
-  // 한눈에 보기 (2026-11-27): 첫 화면에. 관찰 기록이 있는 서버만.
+  // 한눈에 보기 (2026-11-27): 첫 화면에. 관찰 기록이 있는 서버만. 바로 아래 변경 알림 관심 버튼.
   parts.push(atAGlance(j));
+  if (st) parts.push(interestBlock(name, opts.interest === true, `${canonical}/feed.xml`));
 
   // 응답하는가
   const feedUrl = st ? `${canonical}/feed.xml` : null;
@@ -968,7 +983,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     if (r.status === 503) return unavailable();
     if (!r.ok) return res.status(404).send("Not found");
-    const page = renderServerPage(name, (await r.json()) as Record<string, any>);
+    const page = renderServerPage(name, (await r.json()) as Record<string, any>, { interest: req.query.interest === "alerts" });
     if (!page) {
       status = 404;
       body = "Not found";
